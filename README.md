@@ -38,6 +38,7 @@ helm install cas-server int2nexus/cas-server \
   --set secrets.dbPassword=int2nexus \
   --set storage.mode=nfs \
   --set storage.nfs.backends[0].id=nas-1 \
+  --set storage.nfs.backends[0].name=nas-1 \
   --set storage.nfs.backends[0].mountPath=/mnt/nas1 \
   --set storage.nfs.backends[0].storageClassName=nfs-client \
   --set storage.nfs.backends[0].storage=1Ti
@@ -124,6 +125,7 @@ helm install cas-server int2nexus/cas-server \
   --set externalDatabase.database=cas_metadata \
   --set secrets.dbPassword=localtest \
   --set storage.nfs.backends[0].id=local \
+  --set storage.nfs.backends[0].name=nas-1 \
   --set storage.nfs.backends[0].mountPath=/data/cas \
   --set storage.nfs.backends[0].storageClassName=hostpath \
   --set storage.nfs.backends[0].storage=5Gi
@@ -168,7 +170,7 @@ kubectl run cas-bench --rm -it \
   --image int2jieun/cas-server:0.1.0 \
   -n <namespace> \
   -- /app/cas-bench \
-    --server http://cas-server \
+    --server http://cas-server:80 \
     --sizes 1MB,100MB,1GB \
     --runs 5
 ```
