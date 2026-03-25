@@ -148,6 +148,59 @@ kubectl -n cas-local port-forward svc/cas-server 8080:80
 
 전체 설정값은 [values.yaml](charts/cas-server/values.yaml)을 참고하세요.
 
+## 벤치마크 (cas-bench)
+
+`cas-bench`는 CAS 서버 성능을 측정하는 도구로, `cas-server` 이미지에 `/app/cas-bench`로 포함되어 있습니다.
+
+### 시나리오
+
+| 시나리오 | 설명 |
+|----------|------|
+| A | NAS direct copy (SMB/NFS) — `--direct-path` 지정 시 실행 |
+| B | HTTP PUT, 서버에서 BLAKE3 해시 계산 |
+| C | HTTP PUT, 클라이언트가 `x-cas-hash` 헤더로 해시 제공 |
+| D | Dedup hit — 동일 내용 재업로드 (물리 쓰기 없음) |
+
+### K8s에서 실행
+
+```bash
+kubectl run cas-bench --rm -it \
+  --image int2jieun/cas-server:0.1.0 \
+  -n <namespace> \
+  -- /app/cas-bench \
+    --server http://cas-server \
+    --sizes 1MB,100MB,1GB \
+    --runs 5
+```
+
+### 옵션
+
+| 옵션 | 기본값 | 설명 |
+|------|--------|------|
+| `--server` | `http://localhost:8080` | CAS 서버 URL |
+| `--bucket` | `bench-bucket` | 사용할 버킷명 |
+| `--sizes` | `1KB,1MB,10MB` | 테스트 파일 크기 (콤마 구분) |
+| `--runs` | `5` | 시나리오당 반복 횟수 |
+| `--direct-path` | (없음) | 시나리오 A용 NAS 마운트 경로 |
+| `--output` | (없음) | 결과를 CSV 파일로 저장 |
+
+### 출력 예시
+
+```
+=== CAS Performance Benchmark ===
+Server : http://cas-server
+Bucket : bench-bucket
+Runs   : 5
+
+── File Size: 100 MB ──
+
+Scenario                          Min (ms)   P50 (ms)   P95 (ms)       MB/s
+────────────────────────────────────────────────────────────────────────────
+B. CAS HTTP (server BLAKE3)          312.4      334.1      401.2      299.3
+C. CAS HTTP (client BLAKE3 hdr)      287.6      301.8      355.9      331.5
+D. CAS HTTP (dedup BLAKE3)            18.2       20.1       24.7     4975.1
+```
+
 ## 업그레이드
 
 ```bash
