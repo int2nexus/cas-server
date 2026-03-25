@@ -1,0 +1,50 @@
+✅ cas-server 배포 완료!
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+접속 방법
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{{- if .Values.ingress.enabled }}
+  URL: http{{ if .Values.ingress.tls }}s{{ end }}://{{ .Values.ingress.host }}
+{{- else }}
+  클러스터 외부에서 접근하려면 포트 포워딩을 사용하세요:
+
+    kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "cas-server.fullname" . }} 8080:{{ .Values.service.port }}
+
+  접속: http://localhost:8080
+{{- end }}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+상태 확인
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # Pod 상태
+  kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/name=cas-server
+
+  # 로그 확인
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "cas-server.fullname" . }} -f
+
+  # 기대 로그:
+  #   INFO cas_server: CAS server starting (multi-backend mode) backend_count=N
+  #   INFO cas_server: listening on 0.0.0.0:{{ .Values.config.port }}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+스토리지 모드: {{ .Values.storage.mode | upper }}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{{- if eq .Values.storage.mode "nfs" }}
+  NFS 백엔드: {{ len .Values.storage.nfs.backends }}개
+  {{- range .Values.storage.nfs.backends }}
+  - {{ .id }} ({{ .name }}): {{ .mountPath }}
+  {{- end }}
+{{- else if eq .Values.storage.mode "s3" }}
+  S3 엔드포인트: {{ .Values.storage.s3.endpoint | default "AWS S3 기본값" }}
+  S3 버킷: {{ .Values.storage.s3.bucket }}
+{{- end }}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️  보안 주의사항
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{{- if eq .Values.secrets.dbPassword "changeme" }}
+  ❌ secrets.dbPassword 가 기본값입니다! 반드시 변경하세요.
+     helm upgrade {{ .Release.Name }} ./helm/cas-server --set secrets.dbPassword=<강력한비밀번호>
+{{- end }}
+  - 이 서버는 인증 없이 동작합니다 (내부망 전용).
+  - 프로덕션에서는 Ingress에서 TLS 및 IP 화이트리스트를 적용하세요.

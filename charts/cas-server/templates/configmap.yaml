@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cas-server.fullname" . }}
+  labels:
+    {{- include "cas-server.labels" . | nindent 4 }}
+data:
+  # Deployment에서 /app/config/default.toml 로 마운트됨
+  # db_url 은 여기에 포함하지 않음 — Secret 기반 환경변수 CAS__DB_URL 로 주입
+  default.toml: |
+    port                    = {{ .Values.config.port }}
+    max_upload_size_bytes   = {{ .Values.config.maxUploadSizeBytes }}
+    inline_hash_limit_bytes = {{ .Values.config.inlineHashLimitBytes }}
+
+    {{- if eq .Values.storage.mode "nfs" }}
+    {{- range .Values.storage.nfs.backends }}
+
+    [[storage_backends]]
+    id         = {{ .id | quote }}
+    name       = {{ .name | quote }}
+    mount_path = {{ .mountPath | quote }}
+    {{- end }}
+    {{- end }}
+
+    {{- if eq .Values.storage.mode "s3" }}
+
+    [[storage_backends]]
+    id         = "s3-default"
+    name       = "s3"
+    type       = "s3"
+    endpoint   = {{ .Values.storage.s3.endpoint | quote }}
+    bucket     = {{ .Values.storage.s3.bucket | quote }}
+    region     = {{ .Values.storage.s3.region | quote }}
+    key_prefix = {{ .Values.storage.s3.keyPrefix | quote }}
+    allow_http = {{ .Values.storage.s3.allowHttp }}
+    # access_key_id / secret_access_key 는 AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+    # 환경변수로 주입 (object_store crate가 AWS 표준 자격증명 체인을 통해 읽음)
+    {{- end }}

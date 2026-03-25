@@ -1,0 +1,18 @@
+{{- if eq .Values.storage.mode "nfs" }}
+{{- range .Values.storage.nfs.backends }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "cas-server.pvcName" (dict "root" $ "backend" .) }}
+  labels:
+    {{- include "cas-server.labels" $ | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .accessMode | default "ReadWriteMany" }}
+  storageClassName: {{ .storageClassName | quote }}
+  resources:
+    requests:
+      storage: {{ .storage | quote }}
+{{- end }}
+{{- end }}

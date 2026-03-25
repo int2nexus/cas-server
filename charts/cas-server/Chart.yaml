@@ -1,0 +1,6 @@
+apiVersion: v2
+name: cas-server
+description: BLAKE3 기반 Content-Addressable Storage 서버. S3-호환 HTTP API 제공.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

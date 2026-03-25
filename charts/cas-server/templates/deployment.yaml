@@ -1,0 +1,184 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cas-server.fullname" . }}
+  labels:
+    {{- include "cas-server.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "cas-server.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "cas-server.selectorLabels" . | nindent 8 }}
+      annotations:
+        # ConfigMap/Secret 변경 시 Pod 자동 재시작을 위한 체크섬
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      # ── Init Containers ───────────────────────────────────────────────────
+      initContainers:
+        # PostgreSQL이 준비될 때까지 대기
+        # 앱 자체가 시작 시 CREATE TABLE IF NOT EXISTS를 실행하므로
+        # DB 접속만 확인하면 됨 (별도 스키마 Job 불필요)
+        - name: wait-for-postgres
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for PostgreSQL at {{ include "cas-server.dbHost" . }}:{{ include "cas-server.dbPort" . }}..."
+              until nc -z {{ include "cas-server.dbHost" . }} {{ include "cas-server.dbPort" . }}; do
+                echo "PostgreSQL not ready, retrying in 2s..."
+                sleep 2
+              done
+              echo "PostgreSQL is ready."
+
+        {{- if eq .Values.storage.mode "nfs" }}
+        # NFS 마운트가 활성화되었는지 확인
+        # LocalFsBlobStore 는 시작 시 각 마운트 경로에 create_dir_all 을 호출하므로
+        # 경로가 존재하고 쓰기 가능해야 함
+        - name: wait-for-nfs
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              {{- range .Values.storage.nfs.backends }}
+              echo "Checking NFS mount {{ .mountPath }}..."
+              until [ -d {{ .mountPath }} ]; do
+                echo "{{ .mountPath }} not available, retrying in 2s..."
+                sleep 2
+              done
+              echo "{{ .mountPath }} is ready."
+              {{- end }}
+          volumeMounts:
+            {{- range .Values.storage.nfs.backends }}
+            - name: nas-{{ .id }}
+              mountPath: {{ .mountPath }}
+            {{- end }}
+        {{- end }}
+
+      # ── Main Container ────────────────────────────────────────────────────
+      containers:
+        - name: cas-server
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.config.port }}
+              protocol: TCP
+
+          # ── 환경변수 ────────────────────────────────────────────────────
+          env:
+            - name: RUST_LOG
+              value: "info"
+            # Secret에서 DB 비밀번호를 먼저 로드
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cas-server.fullname" . }}
+                  key: db-password
+            # CAS__DB_URL: $(DB_PASSWORD)는 Kubernetes가 위 env var 값으로 확장
+            - name: CAS__DB_URL
+              value: "postgresql://{{ include "cas-server.dbUser" . }}:$(DB_PASSWORD)@{{ include "cas-server.dbHost" . }}:{{ include "cas-server.dbPort" . }}/{{ include "cas-server.dbName" . }}"
+
+            {{- if eq .Values.storage.mode "s3" }}
+            # object_store crate는 AWS 표준 자격증명 체인을 지원:
+            # AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY 환경변수를 자동으로 읽음
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cas-server.fullname" . }}
+                  key: s3-access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cas-server.fullname" . }}
+                  key: s3-secret-access-key
+            {{- end }}
+
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+
+          # ── 볼륨 마운트 ─────────────────────────────────────────────────
+          volumeMounts:
+            # ConfigMap → /app/config/default.toml
+            - name: config
+              mountPath: /app/config
+              readOnly: true
+
+            {{- if eq .Values.storage.mode "nfs" }}
+            {{- range .Values.storage.nfs.backends }}
+            - name: nas-{{ .id }}
+              mountPath: {{ .mountPath }}
+            {{- end }}
+            {{- end }}
+
+          # ── 헬스체크 ────────────────────────────────────────────────────
+          # GET / → list_buckets() DB 쿼리 실행 → DB 연결 상태까지 검증
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.livenessProbe.httpGet.path }}
+              port: {{ .Values.livenessProbe.httpGet.port }}
+            initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+            failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.readinessProbe.httpGet.path }}
+              port: {{ .Values.readinessProbe.httpGet.port }}
+            initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+            failureThreshold: {{ .Values.readinessProbe.failureThreshold }}
+
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+
+      # ── 볼륨 정의 ──────────────────────────────────────────────────────────
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "cas-server.fullname" . }}
+            items:
+              - key: default.toml
+                path: default.toml
+
+        {{- if eq .Values.storage.mode "nfs" }}
+        {{- range .Values.storage.nfs.backends }}
+        - name: nas-{{ .id }}
+          persistentVolumeClaim:
+            claimName: {{ include "cas-server.pvcName" (dict "root" $ "backend" .) }}
+        {{- end }}
+        {{- end }}
+
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
