@@ -13,8 +13,6 @@ image:
 
 imagePullSecrets: []
 
-# NFS 모드에서 복수 Pod가 동시에 같은 NFS 경로에 쓰면 멀티파트 업로드 경쟁 발생.
-# S3 모드에서는 스케일 아웃 가능.
 replicaCount: 1
 
 # ── 앱 설정 (ConfigMap → /app/config/default.toml) ───────────────────────────
@@ -22,77 +20,41 @@ config:
   port: 8080
   maxUploadSizeBytes: 10737418240    # 10 GiB
   inlineHashLimitBytes: 268435456   # 256 MiB
+  gcIntervalSecs: 3600              # 배경 GC 주기 (0 = 비활성화, 수동 트리거만)
+  dbMaxConnections: 10              # DB 커넥션 풀 최대 연결 수
+  dbAcquireTimeoutSecs: 30          # DB 커넥션 획득 타임아웃 (초)
 
 # ── 스토리지 백엔드 ────────────────────────────────────────────────────────────
-# mode: "nfs" = 로컬 NAS/NFS PVC 사용
-#       "s3"  = S3/MinIO 오브젝트 스토리지 사용
 storage:
-  mode: "nfs"
-
-  # NFS 모드: 백엔드마다 PVC가 하나씩 생성됨
-  nfs:
-    backends:
-      # - id: "nas-1"
-      #   name: "iptime_1"
-      #   mountPath: "/mnt/nas1"
-      #   # 클러스터에 설치된 NFS StorageClass 이름으로 교체
-      #   storageClassName: "nfs-client"
-      #   storage: "10Ti"
-      #   # pvcName: ""  # 비워두면 "{{ .Release.Name }}-nas-1" 으로 자동 생성
-
-      # - id: "nas-2"
-      #   name: "synology_1"
-      #   mountPath: "/mnt/nas2"
-      #   storageClassName: "nfs-client"
-      #   storage: "20Ti"
-
-      - id: "nas-3"
-        name: "synology_2"
-        mountPath: "/mnt/nas3"
-        storageClassName: "nfs-client"
-        storage: "20Ti"
-
+  mode: "s3"
   # S3 모드: 자격증명은 secrets 섹션에서 Secret으로 주입
-  # s3:
-  #   endpoint: ""              # 예: "http://minio.minio-system:9000"
-  #   bucket: "cas-blobs"
-  #   region: "us-east-1"
-  #   keyPrefix: "cas/"
-  #   allowHttp: false          # MinIO TLS 없는 환경에서 true로 설정
-
-# ── PostgreSQL ────────────────────────────────────────────────────────────────
-# PostgreSQL은 별도 helm release로 설치합니다 (bitnami OCI 레지스트리 사용):
-#
-#   helm install postgresql oci://registry-1.docker.io/bitnamicharts/postgresql \
-#     --version 18.3.0 -n <namespace> \
-#     --set auth.username=cas \
-#     --set auth.password=<password> \
-#     --set auth.database=cas_metadata \
-#     --set primary.persistence.storageClass=<storageClass>
-#
-# 설치 후 아래 externalDatabase 값을 환경에 맞게 설정하세요.
+  s3:
+    endpoint: "http://192.168.50.52:9000"
+    bucket: "objects"           # TODO: 실제 버킷 이름으로 변경
+    region: ""        # S3 호환 스토리지의 경우 region은 임의값 가능
+    keyPrefix: ""
+    allowHttp: true               # HTTP endpoint
 
 # ── 외부 DB 접속 정보 ─────────────────────────────────────────────────────────
 externalDatabase:
-  host: ""          # postgresql 서비스명 (예: "postgresql", "postgresql.cas-prod")
+  host: "192.168.50.78"
   port: 5432
-  username: "cas"
+  username: "int2"
   database: "cas_metadata"
   # 비밀번호는 secrets.dbPassword 에서 가져옴
 
 # ── 자격증명 (Kubernetes Secret으로 생성됨) ──────────────────────────────────
 secrets:
-  # DB 비밀번호 (postgresql.auth.password 와 동일하게 설정)
   dbPassword: "int2nexus"
-  # S3 모드에서만 사용
-  s3AccessKeyId: ""
-  s3SecretAccessKey: ""
+  s3AccessKeyId: "L3TNITdZEfqerj2yc4tL"
+  s3SecretAccessKey: "2qqeGJm6ID61eMUUitZyVlMoxMWppTnjo0c6xXcE"
 
 # ── 서비스 ────────────────────────────────────────────────────────────────────
 service:
-  type: ClusterIP
+  type: NodePort
   port: 80
   targetPort: 8080
+  nodePort: 30080
 
 # ── Ingress ───────────────────────────────────────────────────────────────────
 ingress:
@@ -106,10 +68,6 @@ ingress:
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
   host: cas.example.com
   tls: []
-  # tls:
-  #   - secretName: cas-tls
-  #     hosts:
-  #       - cas.example.com
 
 # ── 리소스 ────────────────────────────────────────────────────────────────────
 resources:
@@ -121,10 +79,10 @@ resources:
     memory: "2Gi"
 
 # ── 헬스체크 프로브 ───────────────────────────────────────────────────────────
-# GET / 는 list_buckets() DB 쿼리를 실행 → DB 연결 상태까지 검증
+# GET /_internal/health → DB ping + 백엔드 가용성 검사 (503 if degraded)
 livenessProbe:
   httpGet:
-    path: /
+    path: /_internal/health
     port: 8080
   initialDelaySeconds: 15
   periodSeconds: 30
@@ -132,7 +90,7 @@ livenessProbe:
 
 readinessProbe:
   httpGet:
-    path: /
+    path: /_internal/health
     port: 8080
   initialDelaySeconds: 5
   periodSeconds: 10

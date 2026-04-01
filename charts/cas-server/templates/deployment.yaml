@@ -132,7 +132,7 @@ spec:
             {{- end }}
 
           # ── 헬스체크 ────────────────────────────────────────────────────
-          # GET / → list_buckets() DB 쿼리 실행 → DB 연결 상태까지 검증
+          # GET /_internal/health → DB ping + 백엔드 가용성 검사
           livenessProbe:
             httpGet:
               path: {{ .Values.livenessProbe.httpGet.path }}

@@ -11,6 +11,9 @@ data:
     port                    = {{ .Values.config.port }}
     max_upload_size_bytes   = {{ .Values.config.maxUploadSizeBytes }}
     inline_hash_limit_bytes = {{ .Values.config.inlineHashLimitBytes }}
+    gc_interval_secs        = {{ .Values.config.gcIntervalSecs }}
+    db_max_connections      = {{ .Values.config.dbMaxConnections }}
+    db_acquire_timeout_secs = {{ .Values.config.dbAcquireTimeoutSecs }}
 
     {{- if eq .Values.storage.mode "nfs" }}
     {{- range .Values.storage.nfs.backends }}
@@ -30,9 +33,13 @@ data:
     type       = "s3"
     endpoint   = {{ .Values.storage.s3.endpoint | quote }}
     bucket     = {{ .Values.storage.s3.bucket | quote }}
-    region     = {{ .Values.storage.s3.region | quote }}
-    key_prefix = {{ .Values.storage.s3.keyPrefix | quote }}
     allow_http = {{ .Values.storage.s3.allowHttp }}
+    {{- if .Values.storage.s3.region }}
+    region     = {{ .Values.storage.s3.region | quote }}
+    {{- end }}
+    {{- if .Values.storage.s3.keyPrefix }}
+    key_prefix = {{ .Values.storage.s3.keyPrefix | quote }}
+    {{- end }}
     # access_key_id / secret_access_key 는 AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
     # 환경변수로 주입 (object_store crate가 AWS 표준 자격증명 체인을 통해 읽음)
     {{- end }}

@@ -47,4 +47,3 @@
      helm upgrade {{ .Release.Name }} ./helm/cas-server --set secrets.dbPassword=<강력한비밀번호>
 {{- end }}
   - 이 서버는 인증 없이 동작합니다 (내부망 전용).
-  - 프로덕션에서는 Ingress에서 TLS 및 IP 화이트리스트를 적용하세요.
