@@ -1,6 +1,6 @@
 # cas-server Helm Chart
 
-BLAKE3 기반 Content-Addressable Storage 서버의 Helm chart 레포지토리입니다.
+BLAKE3 기반 CAS(Content-Addressable Storage) 서버의 Helm chart 레포지토리입니다.
 
 ## Helm 레포 추가
 
@@ -11,37 +11,8 @@ helm repo update
 
 ## 설치
 
-### 1. PostgreSQL 먼저 설치 (필수)
-
-cas-server에서 메타데이터 저장소로 사용하는 PostgreSQL을 bitnami/postgresql subchart 대신 별도 helm release로 설치합니다.
-(bitnami가 OCI 레지스트리로 이전하면서 subchart 방식(`helm dependency`)이 정상 동작하지 않아 아래와 같이 별도 설치)
-
 ```bash
-helm install postgresql oci://registry-1.docker.io/bitnamicharts/postgresql \
-  --version 18.3.0 \
-  -n <namespace> --create-namespace \
-  --set auth.username=cas \
-  --set auth.password=int2nexus \
-  --set auth.database=cas_metadata \
-  --set primary.persistence.storageClass=<storageClass> \
-  --set primary.persistence.size=1Gi
-```
-
-### 2. cas-server 설치
-
-```bash
-helm install cas-server int2nexus/cas-server \
-  -n <namespace> \
-  --set externalDatabase.host=postgresql \
-  --set externalDatabase.username=cas \
-  --set externalDatabase.database=cas_metadata \
-  --set secrets.dbPassword=int2nexus \
-  --set storage.mode=nfs \
-  --set storage.nfs.backends[0].id=nas-1 \
-  --set storage.nfs.backends[0].name=nas-1 \
-  --set storage.nfs.backends[0].mountPath=/mnt/nas1 \
-  --set storage.nfs.backends[0].storageClassName=nfs-client \
-  --set storage.nfs.backends[0].storage=1Ti
+helm install cas-server int2nexus/cas-server -n <namespace>
 ```
 
 또는 values 파일 사용:
@@ -52,42 +23,14 @@ helm install cas-server int2nexus/cas-server -n <namespace> -f values-prod.yaml
 
 ## values 파일 예시
 
-### NFS 모드 (멀티 NAS)
-
-```yaml
-externalDatabase:
-  host: "postgresql"
-  port: 5432
-  username: "cas"
-  database: "cas_metadata"
-
-secrets:
-  dbPassword: "int2nexus"
-
-storage:
-  mode: "nfs"
-  nfs:
-    backends:
-      - id: "nas-1"
-        name: "nas1"
-        mountPath: "/mnt/nas1"
-        storageClassName: "nfs-client"
-        storage: "10Ti"
-      - id: "nas-2"
-        name: "nas2"
-        mountPath: "/mnt/nas2"
-        storageClassName: "nfs-client"
-        storage: "20Ti"
-```
-
 ### S3 / MinIO 모드
 
 ```yaml
 externalDatabase:
   host: "postgresql"
   port: 5432
-  username: "cas"
-  database: "cas_metadata"
+  username: "username"
+  database: "database"
 
 secrets:
   dbPassword: "<your-password>"
@@ -97,41 +40,11 @@ secrets:
 storage:
   mode: "s3"
   s3:
-    endpoint: "http://minio.minio-system:9000"
-    bucket: "cas-blobs"
-    region: "us-east-1"
-    keyPrefix: "cas/"
-    allowHttp: true   # MinIO TLS 없는 환경
-```
-
-### 로컬 테스트 (Docker Desktop Kubernetes)
-
-```bash
-# 1. PostgreSQL 설치
-helm install postgresql oci://registry-1.docker.io/bitnamicharts/postgresql \
-  --version 18.3.0 \
-  -n cas-local --create-namespace \
-  --set auth.username=cas \
-  --set auth.password=localtest \
-  --set auth.database=cas_metadata \
-  --set primary.persistence.storageClass=hostpath \
-  --set primary.persistence.size=1Gi
-
-# 2. cas-server 설치
-helm install cas-server int2nexus/cas-server \
-  -n cas-local \
-  --set externalDatabase.host=postgresql \
-  --set externalDatabase.username=cas \
-  --set externalDatabase.database=cas_metadata \
-  --set secrets.dbPassword=localtest \
-  --set storage.nfs.backends[0].id=local \
-  --set storage.nfs.backends[0].name=nas-1 \
-  --set storage.nfs.backends[0].mountPath=/data/cas \
-  --set storage.nfs.backends[0].storageClassName=hostpath \
-  --set storage.nfs.backends[0].storage=5Gi
-
-# 3. 포트 포워딩
-kubectl -n cas-local port-forward svc/cas-server 8080:80
+    endpoint: "storage-endpoint-url"
+    bucket: "your-bucket"
+    region: ""
+    keyPrefix: ""
+    allowHttp: true
 ```
 
 ## 설정 값 (values.yaml)
@@ -140,8 +53,7 @@ kubectl -n cas-local port-forward svc/cas-server 8080:80
 |----|--------|------|
 | `image.repository` | `int2jieun/cas-server` | Docker 이미지 |
 | `image.tag` | `0.1.0` | 이미지 태그 |
-| `replicaCount` | `1` | NFS 모드에서는 1 권장 |
-| `storage.mode` | `nfs` | `nfs` 또는 `s3` |
+| `storage.mode` | `s3` | s3 호환 스토리지 |
 | `externalDatabase.host` | `""` | PostgreSQL 서비스명 |
 | `externalDatabase.port` | `5432` | PostgreSQL 포트 |
 | `secrets.dbPassword` | `""` | DB 비밀번호 |
@@ -149,59 +61,6 @@ kubectl -n cas-local port-forward svc/cas-server 8080:80
 | `config.maxUploadSizeBytes` | `10737418240` | 최대 업로드 크기 (10 GiB) |
 
 전체 설정값은 [values.yaml](charts/cas-server/values.yaml)을 참고하세요.
-
-## 벤치마크 (cas-bench)
-
-`cas-bench`는 CAS 서버 성능을 측정하는 도구로, `cas-server` 이미지에 `/app/cas-bench`로 포함되어 있습니다.
-
-### 시나리오
-
-| 시나리오 | 설명 |
-|----------|------|
-| A | NAS direct copy (SMB/NFS) — `--direct-path` 지정 시 실행 |
-| B | HTTP PUT, 서버에서 BLAKE3 해시 계산 |
-| C | HTTP PUT, 클라이언트가 `x-cas-hash` 헤더로 해시 제공 |
-| D | Dedup hit — 동일 내용 재업로드 (물리 쓰기 없음) |
-
-### K8s에서 실행
-
-```bash
-kubectl run cas-bench --rm -it \
-  --image int2jieun/cas-server:0.1.0 \
-  -n <namespace> \
-  -- /app/cas-bench \
-    --server http://cas-server:80 \
-    --sizes 1MB,100MB,1GB \
-    --runs 5
-```
-
-### 옵션
-
-| 옵션 | 기본값 | 설명 |
-|------|--------|------|
-| `--server` | `http://localhost:8080` | CAS 서버 URL |
-| `--bucket` | `bench-bucket` | 사용할 버킷명 |
-| `--sizes` | `1KB,1MB,10MB` | 테스트 파일 크기 (콤마 구분) |
-| `--runs` | `5` | 시나리오당 반복 횟수 |
-| `--direct-path` | (없음) | 시나리오 A용 NAS 마운트 경로 |
-| `--output` | (없음) | 결과를 CSV 파일로 저장 |
-
-### 출력 예시
-
-```
-=== CAS Performance Benchmark ===
-Server : http://cas-server
-Bucket : bench-bucket
-Runs   : 5
-
-── File Size: 100 MB ──
-
-Scenario                          Min (ms)   P50 (ms)   P95 (ms)       MB/s
-────────────────────────────────────────────────────────────────────────────
-B. CAS HTTP (server BLAKE3)          312.4      334.1      401.2      299.3
-C. CAS HTTP (client BLAKE3 hdr)      287.6      301.8      355.9      331.5
-D. CAS HTTP (dedup BLAKE3)            18.2       20.1       24.7     4975.1
-```
 
 ## 업그레이드
 
