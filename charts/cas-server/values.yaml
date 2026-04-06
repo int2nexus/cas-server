@@ -8,21 +8,21 @@
 # ── 이미지 ────────────────────────────────────────────────────────────────────
 image:
   repository: int2jieun/cas-server # Docker Hub에 미리 빌드된 이미지 사용
-  tag: "0.1.2"
+  tag: "0.1.3"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
 
-replicaCount: 1
+replicaCount: 3
 
 # ── 앱 설정 (ConfigMap → /app/config/default.toml) ───────────────────────────
 config:
   port: 8080
   maxUploadSizeBytes: 10737418240    # 10 GiB
   inlineHashLimitBytes: 268435456   # 256 MiB
-  gcIntervalSecs: 3600              # 배경 GC 주기 (0 = 비활성화, 수동 트리거만)
-  dbMaxConnections: 10              # DB 커넥션 풀 최대 연결 수
-  dbAcquireTimeoutSecs: 30          # DB 커넥션 획득 타임아웃 (초)
+  gcIntervalSecs: 3600              # GC 주기 (0 = 비활성화, 수동 트리거만)
+  dbMaxConnections: 40              # DB 커넥션 풀 최대 연결 수 (replica 수 × 값이 PG max_connections 미만이어야 함)
+  dbAcquireTimeoutSecs: 10          # DB 커넥션 획득 타임아웃 (초) — 부하 시 빠른 실패 선호
 
 # ── 스토리지 백엔드 ────────────────────────────────────────────────────────────
 storage:
@@ -72,11 +72,11 @@ ingress:
 # ── 리소스 ────────────────────────────────────────────────────────────────────
 resources:
   requests:
-    cpu: "500m"
-    memory: "512Mi"
-  limits:
     cpu: "2000m"
     memory: "2Gi"
+  limits:
+    cpu: "8000m"
+    memory: "8Gi"
 
 # ── 헬스체크 프로브 ───────────────────────────────────────────────────────────
 # GET /_internal/health → DB ping + 백엔드 가용성 검사 (503 if degraded)
@@ -84,7 +84,7 @@ livenessProbe:
   httpGet:
     path: /_internal/health
     port: 8080
-  initialDelaySeconds: 15
+  initialDelaySeconds: 30
   periodSeconds: 30
   failureThreshold: 3
 
