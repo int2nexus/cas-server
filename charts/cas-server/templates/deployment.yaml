@@ -86,8 +86,6 @@ spec:
 
           # ── 환경변수 ────────────────────────────────────────────────────
           env:
-            - name: RUST_LOG
-              value: "info"
             # Secret에서 DB 비밀번호를 먼저 로드
             - name: DB_PASSWORD
               valueFrom:

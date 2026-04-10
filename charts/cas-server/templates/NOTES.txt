@@ -44,6 +44,6 @@
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {{- if eq .Values.secrets.dbPassword "changeme" }}
   ❌ secrets.dbPassword 가 기본값입니다! 반드시 변경하세요.
-     helm upgrade {{ .Release.Name }} ./helm/cas-server --set secrets.dbPassword=<강력한비밀번호>
+     helm upgrade {{ .Release.Name }} ./charts/cas-server --set secrets.dbPassword=<강력한비밀번호>
 {{- end }}
   - 이 서버는 인증 없이 동작합니다 (내부망 전용).

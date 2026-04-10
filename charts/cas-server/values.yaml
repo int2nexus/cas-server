@@ -8,20 +8,20 @@
 # ── 이미지 ────────────────────────────────────────────────────────────────────
 image:
   repository: int2jieun/cas-server # Docker Hub에 미리 빌드된 이미지 사용
-  tag: "0.1.3"
+  tag: "0.1.4"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
 
-replicaCount: 3
+replicaCount: 1
 
 # ── 앱 설정 (ConfigMap → /app/config/default.toml) ───────────────────────────
 config:
   port: 8080
   maxUploadSizeBytes: 10737418240    # 10 GiB
   inlineHashLimitBytes: 268435456   # 256 MiB
-  gcIntervalSecs: 3600              # GC 주기 (0 = 비활성화, 수동 트리거만)
-  dbMaxConnections: 40              # DB 커넥션 풀 최대 연결 수 (replica 수 × 값이 PG max_connections 미만이어야 함)
+  gcIntervalSecs: 0                 # Pod 자체 GC 비활성화 — gc-cronjob이 단독으로 트리거
+  dbMaxConnections: 20              # DB 커넥션 풀 최대 연결 수 (replica 수 × 값이 PG max_connections 미만이어야 함)
   dbAcquireTimeoutSecs: 10          # DB 커넥션 획득 타임아웃 (초) — 부하 시 빠른 실패 선호
 
 # ── 스토리지 백엔드 ────────────────────────────────────────────────────────────
@@ -72,11 +72,13 @@ ingress:
 # ── 리소스 ────────────────────────────────────────────────────────────────────
 resources:
   requests:
+    cpu: "500m"
+    memory: "512Mi"
+  limits:
     cpu: "2000m"
     memory: "2Gi"
-  limits:
-    cpu: "8000m"
-    memory: "8Gi"
+
+terminationGracePeriodSeconds: 60
 
 # ── 헬스체크 프로브 ───────────────────────────────────────────────────────────
 # GET /_internal/health → DB ping + 백엔드 가용성 검사 (503 if degraded)
@@ -86,6 +88,7 @@ livenessProbe:
     port: 8080
   initialDelaySeconds: 30
   periodSeconds: 30
+  timeoutSeconds: 5
   failureThreshold: 3
 
 readinessProbe:
@@ -94,14 +97,14 @@ readinessProbe:
     port: 8080
   initialDelaySeconds: 5
   periodSeconds: 10
+  timeoutSeconds: 5
   failureThreshold: 3
 
 # ── 추가 환경변수 ─────────────────────────────────────────────────────────────
 # 표준 CAS__ env var 형태로 추가 설정 주입 가능
-# extraEnv:
-#   - name: RUST_LOG
-#     value: "debug"
-extraEnv: []
+extraEnv:
+  - name: RUST_LOG
+    value: "info"
 
 # ── Pod 보안 컨텍스트 ─────────────────────────────────────────────────────────
 podSecurityContext: {}
@@ -117,3 +120,17 @@ affinity: {}
 serviceAccount:
   create: false
   name: ""
+
+# ── GC CronJob ────────────────────────────────────────────────────────────────
+# Pod 자체 GC(gcIntervalSecs=0)를 끄고 CronJob 한 대만 GC를 트리거.
+# concurrencyPolicy: Forbid 로 GC Job이 겹쳐서 실행되지 않도록 보장.
+gc:
+  enabled: true
+  # cron 표현식 — 기본 1시간마다 (서버 시작 후 첫 실행은 다음 정각)
+  schedule: "0 * * * *"
+  # Job이 이 시간(초) 안에 완료되지 않으면 강제 종료
+  activeDeadlineSeconds: 3600
+  image:
+    repository: curlimages/curl
+    tag: "8.7.1"
+    pullPolicy: IfNotPresent

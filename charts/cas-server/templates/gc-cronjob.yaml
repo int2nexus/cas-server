@@ -1,0 +1,49 @@
+{{- if .Values.gc.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "cas-server.fullname" . }}-gc
+  labels:
+    {{- include "cas-server.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.gc.schedule | quote }}
+  # 이전 GC Job이 아직 실행 중이면 새 Job을 시작하지 않음.
+  # GC가 겹쳐서 실행되는 것을 방지하는 핵심 설정.
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      # Job 실패 시 최대 재시도 횟수
+      backoffLimit: 2
+      # Job이 이 시간 안에 완료되지 않으면 강제 종료
+      activeDeadlineSeconds: {{ .Values.gc.activeDeadlineSeconds }}
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: {{ include "cas-server.name" . }}-gc
+            app.kubernetes.io/instance: {{ .Release.Name }}
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: gc-trigger
+            image: "{{ .Values.gc.image.repository }}:{{ .Values.gc.image.tag }}"
+            imagePullPolicy: {{ .Values.gc.image.pullPolicy }}
+            command:
+            - curl
+            - --fail          # HTTP 4xx/5xx 를 종료 코드 에러로 처리
+            - --silent
+            - --show-error
+            - --max-time
+            - {{ .Values.gc.activeDeadlineSeconds | toString | quote }}
+            - -X
+            - POST
+            - "http://{{ include "cas-server.fullname" . }}:{{ .Values.service.port }}/_internal/gc"
+            resources:
+              requests:
+                cpu: "10m"
+                memory: "16Mi"
+              limits:
+                cpu: "100m"
+                memory: "64Mi"
+{{- end }}
