@@ -111,6 +111,28 @@ spec:
                   key: s3-secret-access-key
             {{- end }}
 
+            # CAS__AUTH__* 환경변수: Secret에서 주입. 빈 값이면 서버가 NoAuth 모드로 동작.
+            - name: CAS__AUTH__SECRET_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cas-server.fullname" . }}
+                  key: auth-secret-master-key
+            - name: CAS__AUTH__ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cas-server.fullname" . }}
+                  key: auth-admin-token
+            - name: CAS__AUTH__ROOT_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cas-server.fullname" . }}
+                  key: auth-root-access-key-id
+            - name: CAS__AUTH__ROOT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cas-server.fullname" . }}
+                  key: auth-root-secret-key
+
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

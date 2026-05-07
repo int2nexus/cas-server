@@ -30,15 +30,24 @@ spec:
             image: "{{ .Values.gc.image.repository }}:{{ .Values.gc.image.tag }}"
             imagePullPolicy: {{ .Values.gc.image.pullPolicy }}
             command:
-            - curl
-            - --fail          # HTTP 4xx/5xx 를 종료 코드 에러로 처리
-            - --silent
-            - --show-error
-            - --max-time
-            - {{ .Values.gc.activeDeadlineSeconds | toString | quote }}
-            - -X
-            - POST
-            - "http://{{ include "cas-server.fullname" . }}:{{ .Values.service.port }}/_internal/gc"
+            - sh
+            - -c
+            - |
+              curl --fail --silent --show-error \
+                --max-time {{ .Values.gc.activeDeadlineSeconds }} \
+                {{- if .Values.auth.adminToken }}
+                -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+                {{- end }}
+                -X POST \
+                "http://{{ include "cas-server.fullname" . }}:{{ .Values.service.port }}/_internal/gc"
+            {{- if .Values.auth.adminToken }}
+            env:
+            - name: ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cas-server.fullname" . }}
+                  key: auth-admin-token
+            {{- end }}
             resources:
               requests:
                 cpu: "10m"

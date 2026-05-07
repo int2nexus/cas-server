@@ -8,7 +8,7 @@
 # ── 이미지 ────────────────────────────────────────────────────────────────────
 image:
   repository: int2jieun/cas-server # Docker Hub에 미리 빌드된 이미지 사용
-  tag: "0.1.6"
+  tag: "0.1.7"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -48,6 +48,21 @@ secrets:
   dbPassword: "int2nexus"
   s3AccessKeyId: "L3TNITdZEfqerj2yc4tL"
   s3SecretAccessKey: "2qqeGJm6ID61eMUUitZyVlMoxMWppTnjo0c6xXcE"
+
+# ── 인증 설정 ─────────────────────────────────────────────────────────────────
+# 빈 문자열로 두면 NoAuth 모드 (auth 비활성화, 하위호환 유지)
+# secretMasterKey 설정 시 SigV4 인증 활성화
+#   openssl rand -hex 32  →  64자 hex 문자열 생성
+auth:
+  # AES-GCM 마스터 키 (64 hex chars = 32 bytes). 빈 문자열이면 auth 비활성.
+  #secretMasterKey: "b396646cf0890e7db6127732e0ac614f91e1e5b7441c336dabb65c711e3eb27f"
+  secretMasterKey: ""
+  # Admin API (/_internal/*) 보호용 Bearer 토큰. 빈 문자열이면 인증 스킵.
+  adminToken: ""
+  # 서버 시작 시 자동 프로비저닝될 루트 IAM 키 ID
+  rootAccessKeyId: ""
+  # 루트 키의 시크릿 (평문, 서버가 암호화해서 저장)
+  rootSecretKey: ""
 
 # ── 서비스 ────────────────────────────────────────────────────────────────────
 service:
