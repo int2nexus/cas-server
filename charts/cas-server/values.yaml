@@ -8,7 +8,7 @@
 # ── 이미지 ────────────────────────────────────────────────────────────────────
 image:
   repository: int2jieun/cas-server # Docker Hub에 미리 빌드된 이미지 사용
-  tag: "0.1.7"
+  tag: "0.1.8"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -29,40 +29,34 @@ storage:
   mode: "s3"
   # S3 모드: 자격증명은 secrets 섹션에서 Secret으로 주입
   s3:
-    endpoint: "http://192.168.50.52:9000"
-    bucket: "objects"           # TODO: 실제 버킷 이름으로 변경
+    endpoint: ""
+    bucket: ""        # TODO: 실제 버킷 이름으로 변경
     region: ""        # S3 호환 스토리지의 경우 region은 임의값 가능
     keyPrefix: ""
-    allowHttp: true               # HTTP endpoint
+    allowHttp: true   # S3 호환 스토리지에서 HTTP 사용 시 true로 설정 (예: MinIO 로컬 배포)      
 
 # ── 외부 DB 접속 정보 ─────────────────────────────────────────────────────────
 externalDatabase:
-  host: "192.168.50.78"
+  host: ""
   port: 5432
-  username: "int2"
-  database: "cas_metadata"
+  username: ""
+  database: ""
   # 비밀번호는 secrets.dbPassword 에서 가져옴
 
 # ── 자격증명 (Kubernetes Secret으로 생성됨) ──────────────────────────────────
 secrets:
-  dbPassword: "int2nexus"
-  s3AccessKeyId: "L3TNITdZEfqerj2yc4tL"
-  s3SecretAccessKey: "2qqeGJm6ID61eMUUitZyVlMoxMWppTnjo0c6xXcE"
+  dbPassword: ""
+  s3AccessKeyId: ""
+  s3SecretAccessKey: ""
 
 # ── 인증 설정 ─────────────────────────────────────────────────────────────────
 # 빈 문자열로 두면 NoAuth 모드 (auth 비활성화, 하위호환 유지)
 # secretMasterKey 설정 시 SigV4 인증 활성화
-#   openssl rand -hex 32  →  64자 hex 문자열 생성
 auth:
-  # AES-GCM 마스터 키 (64 hex chars = 32 bytes). 빈 문자열이면 auth 비활성.
-  #secretMasterKey: "b396646cf0890e7db6127732e0ac614f91e1e5b7441c336dabb65c711e3eb27f"
-  secretMasterKey: ""
-  # Admin API (/_internal/*) 보호용 Bearer 토큰. 빈 문자열이면 인증 스킵.
-  adminToken: ""
-  # 서버 시작 시 자동 프로비저닝될 루트 IAM 키 ID
-  rootAccessKeyId: ""
-  # 루트 키의 시크릿 (평문, 서버가 암호화해서 저장)
-  rootSecretKey: ""
+  secretMasterKey: ""   # AES-GCM 마스터 키 (64 hex chars = 32 bytes). openssl rand -hex 32  →  64자 hex 문자열 생성
+  adminToken: ""        # Admin API (/_internal/*) 보호용 Bearer 토큰. 빈 문자열이면 인증 스킵.
+  rootAccessKeyId: ""   # 서버 시작 시 자동 프로비저닝될 루트 IAM 키 ID
+  rootSecretKey: ""     # 루트 키의 시크릿 (평문, 서버가 암호화해서 저장)
 
 # ── 서비스 ────────────────────────────────────────────────────────────────────
 service:
