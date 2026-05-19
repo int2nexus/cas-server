@@ -2,6 +2,16 @@ apiVersion: v1
 entries:
   cas-server:
   - apiVersion: v2
+    appVersion: 0.1.10
+    created: "2026-05-19T07:26:11.143928047Z"
+    description: BLAKE3 기반 Content-Addressable Storage 서버. S3-호환 HTTP API 제공.
+    digest: 276b7d19c9e9d29b1050423a6ac5ac148661a7b22ff2c43b4666e303af5d4209
+    name: cas-server
+    type: application
+    urls:
+    - https://github.com/int2nexus/cas-server/releases/download/cas-server-0.1.10/cas-server-0.1.10.tgz
+    version: 0.1.10
+  - apiVersion: v2
     appVersion: 0.1.9
     created: "2026-05-19T06:17:31.386195829Z"
     description: BLAKE3 기반 Content-Addressable Storage 서버. S3-호환 HTTP API 제공.
@@ -101,4 +111,4 @@ entries:
     urls:
     - https://int2nexus.github.io/cas-server/cas-server-0.1.0.tgz
     version: 0.1.0
-generated: "2026-05-19T06:17:31.386240864Z"
+generated: "2026-05-19T07:26:11.143976435Z"
