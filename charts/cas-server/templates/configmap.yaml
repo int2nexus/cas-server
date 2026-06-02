@@ -14,6 +14,7 @@ data:
     gc_interval_secs        = {{ .Values.config.gcIntervalSecs }}
     db_max_connections      = {{ .Values.config.dbMaxConnections }}
     db_acquire_timeout_secs = {{ .Values.config.dbAcquireTimeoutSecs }}
+    presigned_redirect_secs = {{ .Values.config.presignedRedirectSecs }}
 
     {{- if eq .Values.storage.mode "nfs" }}
     {{- range .Values.storage.nfs.backends }}

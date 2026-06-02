@@ -132,6 +132,8 @@ spec:
                 secretKeyRef:
                   name: {{ include "cas-server.fullname" . }}
                   key: auth-root-secret-key
+            - name: CAS__AUTH__ANONYMOUS_GET
+              value: {{ .Values.auth.anonymousGet | quote }}
 
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
