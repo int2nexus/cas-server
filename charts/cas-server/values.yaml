@@ -23,7 +23,7 @@ config:
   gcIntervalSecs: 0                 # Pod 자체 GC 비활성화 — gc-cronjob이 단독으로 트리거
   dbMaxConnections: 20              # DB 커넥션 풀 최대 연결 수 (replica 수 × 값이 PG max_connections 미만이어야 함)
   dbAcquireTimeoutSecs: 10          # DB 커넥션 획득 타임아웃 (초) — 부하 시 빠른 실패 선호
-  presignedRedirectSecs: 3600          # GET presigned redirect URL 유효 시간 (초). 0=비활성화. S3 엔드포인트가 클라이언트에서 직접 접근 가능한 경우에만 활성화
+  presignedRedirectSecs: 0          # GET presigned redirect URL 유효 시간 (초). 0=비활성화. S3 엔드포인트가 클라이언트에서 직접 접근 가능한 경우에만 활성화
 
 # ── 스토리지 백엔드 ────────────────────────────────────────────────────────────
 storage:
