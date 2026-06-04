@@ -44,20 +44,15 @@ externalDatabase:
   database: ""
   # 비밀번호는 secrets.dbPassword 에서 가져옴
 
-# ── 자격증명 (Kubernetes Secret으로 생성됨) ──────────────────────────────────
-secrets:
-  dbPassword: ""
-  s3AccessKeyId: ""
-  s3SecretAccessKey: ""
+# ── 자격증명 ─────────────────────────────────────────────────────────────────
+# 아래 7개 시크릿은 values.yaml에 포함되지 않습니다.
+# kubeseal로 암호화한 sealed-secret.yaml을 통해 클러스터에 주입합니다.
+#   db-password, s3-access-key-id, s3-secret-access-key
+#   auth-secret-master-key, auth-admin-token
+#   auth-root-access-key-id, auth-root-secret-key
 
 # ── 인증 설정 ─────────────────────────────────────────────────────────────────
-# 빈 문자열로 두면 NoAuth 모드 (auth 비활성화, 하위호환 유지)
-# secretMasterKey 설정 시 SigV4 인증 활성화
 auth:
-  secretMasterKey: ""   # AES-GCM 마스터 키 (64 hex chars = 32 bytes). openssl rand -hex 32  →  64자 hex 문자열 생성
-  adminToken: ""        # Admin API (/_internal/*) 보호용 Bearer 토큰. 빈 문자열이면 인증 스킵.
-  rootAccessKeyId: ""   # 서버 시작 시 자동 프로비저닝될 루트 IAM 키 ID
-  rootSecretKey: ""     # 루트 키의 시크릿 (평문, 서버가 암호화해서 저장)
   anonymousGet: true   # true이면 GET/HEAD /{bucket}/{key} 를 인증 없이 허용 (이미지 서버, FiftyOne 등)
 
 # ── 서비스 ────────────────────────────────────────────────────────────────────

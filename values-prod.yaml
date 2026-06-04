@@ -1,0 +1,54 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# cas-server 프로덕션 배포용 오버라이드 값
+#
+# 사용법:
+#   helm install cas-server ./charts/cas-server -f values-prod.yaml
+#   helm upgrade  cas-server ./charts/cas-server -f values-prod.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── 앱 설정 ───────────────────────────────────────────────────────────────────
+config:
+  # DB 커넥션 풀: replicaCount × dbMaxConnections < PostgreSQL max_connections
+  dbMaxConnections: 20
+
+# ── S3 스토리지 ───────────────────────────────────────────────────────────────
+storage:
+  mode: "s3"
+  s3:
+    endpoint: ""      # 예: http://minio.example.com:9000
+    bucket: ""        # 미리 생성된 버킷 이름
+    region: ""        # S3 호환 스토리지는 임의값 가능. 예: "us-east-1"
+    keyPrefix: "cas/" # 버킷 내 키 프리픽스 (다른 용도와 버킷을 공유할 경우 구분용)
+    allowHttp: true   # HTTPS 사용 시 false로 변경
+
+# ── PostgreSQL 접속 정보 ──────────────────────────────────────────────────────
+externalDatabase:
+  host: ""      # PostgreSQL 호스트
+  port: 5432
+  username: ""  # DB 사용자명
+  database: ""  # DB 이름
+
+# ── 자격증명 ─────────────────────────────────────────────────────────────────
+# 7개 시크릿은 sealed-secret.yaml로 관리합니다. 이 파일에 포함하지 마세요.
+# 적용 방법: kubectl apply -f sealed-secret.yaml (Helm 배포 전에 실행)
+
+
+# ── GC CronJob ────────────────────────────────────────────────────────────────
+# 초기 마이그레이션 중에는 false로 두고, 마이그레이션 완료 후 true로 활성화.
+# GC는 orphaned blob만 삭제하므로 꺼둬도 데이터 손실 없음.
+# 단, 장기간 꺼두면 삭제된 오브젝트의 S3 파일이 누적됨.
+gc:
+  enabled: false
+  schedule: "0 * * * *"   # 활성화 시 실행 주기 (기본: 매시 정각)
+  activeDeadlineSeconds: 3600
+
+# ── 모니터링 ─────────────────────────────────────────────────────────────────
+# cas-server는 /_internal/metrics 에서 Prometheus 메트릭을 노출함.
+# 접근에는 auth.adminToken Bearer 인증이 필요.
+# 클러스터에 Prometheus Operator가 있다면 ServiceMonitor 추가.
+#
+# 주요 메트릭:
+#   cas_blob_dedup_total        — dedup hit 횟수 (중복 업로드 절감 지표)
+#   cas_blob_put_bytes_total    — 실제 기록된 총 바이트
+#   cas_gc_deleted_blobs_total  — GC가 삭제한 blob 수
+#   http_requests_total         — HTTP 요청 수 (메서드/상태코드별)

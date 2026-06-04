@@ -14,9 +14,9 @@ spec:
       labels:
         {{- include "cas-server.selectorLabels" . | nindent 8 }}
       annotations:
-        # ConfigMap/Secret 변경 시 Pod 자동 재시작을 위한 체크섬
+        # ConfigMap 변경 시 Pod 자동 재시작을 위한 체크섬
+        # Secret은 SealedSecret으로 관리되므로 체크섬 불필요
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
-        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
