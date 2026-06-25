@@ -1,0 +1,15 @@
+nexus-server 가 배포되었습니다.
+
+서비스: {{ include "nexus-server.fullname" . }} (port {{ .Values.service.port }} → {{ .Values.service.targetPort }})
+이미지: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+
+전제:
+  - 외부 PostgreSQL 접속 정보가 시크릿 NEXUS__DATABASE__URL 로 주입되어야 합니다.
+  - 시크릿 '{{ include "nexus-server.secretName" . }}' 에 아래 4키가 있어야 합니다:
+      NEXUS__DATABASE__URL, NEXUS__CAS__KEY_ID, NEXUS__CAS__SECRET, NEXUS__JWT__SECRET
+  - CAS 연결: {{ .Values.cas.baseUrl }}
+
+상태 확인:
+  kubectl get pods -l app.kubernetes.io/instance={{ .Release.Name }}
+  kubectl port-forward svc/{{ include "nexus-server.fullname" . }} 8090:{{ .Values.service.port }}
+  curl localhost:8090/_internal/health

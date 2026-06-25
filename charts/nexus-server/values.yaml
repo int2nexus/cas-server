@@ -1,0 +1,85 @@
+# nexus-server Helm Chart — values.yaml
+# 비밀(NEXUS__DATABASE__URL, NEXUS__CAS__KEY_ID/SECRET, NEXUS__JWT__SECRET)은
+# 여기에 두지 않는다 — sealed-secret으로 클러스터에 주입하고 envFrom으로 받는다.
+
+image:
+  repository: int2jieun/nexus-server
+  tag: "0.0.1"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+replicaCount: 1
+
+nameOverride: ""
+fullnameOverride: ""
+
+# ── 앱 설정 (비밀 외 env) ─────────────────────────────────────────────
+server:
+  port: 8090
+  host: "0.0.0.0"
+
+cas:
+  baseUrl: "http://cas-server:80"   # 클러스터 내 cas-server 서비스
+  region: "cas-default"
+  defaultBucket: "data"
+
+# ── 비밀 Secret 참조 ─────────────────────────────────────────────────
+# 이 Secret(아래 4키 보유)을 sealed-secret으로 미리 주입해야 한다:
+#   NEXUS__DATABASE__URL, NEXUS__CAS__KEY_ID, NEXUS__CAS__SECRET, NEXUS__JWT__SECRET
+# existingSecret 비우면 기본 이름(<fullname>) 사용.
+secret:
+  existingSecret: ""
+
+service:
+  type: NodePort
+  port: 80
+  targetPort: 8090
+  nodePort: 30090
+
+ingress:
+  enabled: false
+  className: "nginx"
+  annotations: {}
+  host: nexus.example.com
+  tls: []
+
+resources:
+  requests:
+    cpu: "250m"
+    memory: "256Mi"
+  limits:
+    cpu: "1000m"
+    memory: "1Gi"
+
+terminationGracePeriodSeconds: 30
+
+livenessProbe:
+  httpGet:
+    path: /_internal/health
+    port: 8090
+  initialDelaySeconds: 20
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /_internal/health
+    port: 8090
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+extraEnv:
+  - name: RUST_LOG
+    value: "info"
+
+podSecurityContext: {}
+securityContext: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+serviceAccount:
+  create: false
+  name: ""
