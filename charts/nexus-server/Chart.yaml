@@ -2,5 +2,5 @@ apiVersion: v2
 name: nexus-server
 description: ML 학습 데이터 카탈로그 서버 (cas-server 위 Sample→Dataset 버전 관리)
 type: application
-version: 0.0.2
-appVersion: "0.0.1"
+version: 0.0.3
+appVersion: "0.0.2"
