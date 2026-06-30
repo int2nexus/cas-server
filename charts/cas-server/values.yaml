@@ -50,6 +50,10 @@ externalDatabase:
 #   db-password, s3-access-key-id, s3-secret-access-key
 #   auth-secret-master-key, auth-admin-token
 #   auth-root-access-key-id, auth-root-secret-key
+# kubeseal 로 생성된 Secret 이 클러스터에 이미 존재하므로
+# helm 은 Secret 생성을 건너뜁니다.
+secrets:
+  useExternalSecret: true
 
 # ── 인증 설정 ─────────────────────────────────────────────────────────────────
 auth:
