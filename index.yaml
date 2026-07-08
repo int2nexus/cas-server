@@ -161,6 +161,17 @@ entries:
     urls:
     - https://int2nexus.github.io/cas-server/cas-server-0.1.0.tgz
     version: 0.1.0
+  nexus-client:
+  - apiVersion: v2
+    appVersion: 0.1.0
+    created: "2026-07-08T09:01:15.609514467Z"
+    description: Nexus 데이터셋 탐색기 웹 UI (Caddy 정적 서빙 + /api 리버스 프록시)
+    digest: fbf3e281444a94f82de801e16c05f3caf3007ca2eb22c539a9213e0efa982f5f
+    name: nexus-client
+    type: application
+    urls:
+    - https://github.com/int2nexus/cas-server/releases/download/nexus-client-0.1.0/nexus-client-0.1.0.tgz
+    version: 0.1.0
   nexus-server:
   - apiVersion: v2
     appVersion: 0.0.3
@@ -202,4 +213,4 @@ entries:
     urls:
     - https://github.com/int2nexus/cas-server/releases/download/nexus-server-0.0.1/nexus-server-0.0.1.tgz
     version: 0.0.1
-generated: "2026-07-02T05:35:45.588858671Z"
+generated: "2026-07-08T09:01:15.609610047Z"
