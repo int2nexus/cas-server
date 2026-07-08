@@ -1,6 +1,6 @@
 apiVersion: v2
 name: nexus-client
-description: Nexus 데이터셋 탐색기 웹 UI (Caddy 정적 서빙 + /api 리버스 프록시)
+description: Nexus 웹 UI
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
