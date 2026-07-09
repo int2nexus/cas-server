@@ -1,0 +1,67 @@
+# nexus-client Helm Chart — values.yaml
+
+image:
+  repository: jiwonkim97/nexus-client
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+replicaCount: 1
+
+nameOverride: ""
+fullnameOverride: ""
+
+# ── Caddy 프록시 대상 ─────────────────────────────────────────────────
+backendUrl: "http://nexus-server:80"
+# 이미지(CAS)를 same-origin 으로 프록시할 때만 설정(Caddyfile 의 /cas 블록도 함께 활성화).
+# 보통 불필요 — 백엔드가 브라우저에서 닿는 CAS URL 을 반환하면 <img> 로 직접 로드된다.
+casUrl: ""
+
+service:
+  type: NodePort
+  port: 80
+  targetPort: 80
+  nodePort: 30070
+
+ingress:
+  enabled: false
+  className: "nginx"
+  annotations: {}
+  host: nexus.example.com
+  tls: []
+
+resources:
+  requests:
+    cpu: "50m"
+    memory: "64Mi"
+  limits:
+    cpu: "200m"
+    memory: "128Mi"
+
+terminationGracePeriodSeconds: 30
+
+# Caddy 는 정적 서버라 '/' GET 으로 헬스 판단.
+livenessProbe:
+  httpGet:
+    path: /
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /
+    port: http
+  initialDelaySeconds: 3
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+extraEnv: []
+podSecurityContext: {}
+securityContext: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

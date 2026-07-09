@@ -1,0 +1,19 @@
+nexus-client 배포됨.
+
+  서비스  {{ include "nexus-client.fullname" . }} ({{ .Values.service.type }})
+  이미지  {{ .Values.image.repository }}:{{ .Values.image.tag }}
+  프록시  /api → {{ .Values.backendUrl }}
+
+{{- if .Values.ingress.enabled }}
+
+접속: http{{ if .Values.ingress.tls }}s{{ end }}://{{ .Values.ingress.host }}/
+{{- else if eq .Values.service.type "NodePort" }}
+
+접속: http://<노드IP>:{{ .Values.service.nodePort }}/   (노드IP: kubectl get nodes -o wide)
+{{- else }}
+
+접속: kubectl port-forward --address 0.0.0.0 svc/{{ include "nexus-client.fullname" . }} 3000:{{ .Values.service.port }} -n {{ .Release.Namespace }}
+      → http://<이 PC IP>:3000/  (같은 네트워크의 다른 PC에서도)
+{{- end }}
+
+상태: kubectl get pods -l app.kubernetes.io/instance={{ .Release.Name }} -n {{ .Release.Namespace }}
