@@ -23,6 +23,20 @@ cas:
   region: "cas-default"
   defaultBucket: "data"
 
+# ── DB 풀 / ingest 동시성 ────────────────────────────────────────────
+# 불변식: (SDK flush workers) × ingest.batchItemConcurrency + 예약(≈4) ≤ database.maxConnections.
+#   SDK 기본 workers=4 → 4×3 + 4 = 16. 초과하면 커넥션 경합으로 적재가 정체된다.
+#   처리량을 더 원하면 둘을 함께 올릴 것(예: maxConnections=40 / batchItemConcurrency=8).
+#   replicaCount>1이면 전 replica 풀 합(replicaCount × maxConnections)이 Postgres max_connections 이하여야 함.
+database:
+  maxConnections: 16          # 항상 주입(어떤 이미지든 안전 — DB url은 secret에서 옴)
+ingest:
+  # 이미지 코드 기본값이 이미 3이라 보통 비워도 됨(그럼 env 미주입).
+  # 값을 넣어 override하려면 **이미지가 config 수정본(IngestConfig 전 필드 serde default) 이상**이어야 한다 —
+  # 그 이전 이미지(예: appVersion 0.0.3)에 이 env를 주면 ingest 부분 역직렬화 실패로 기동이 깨진다.
+  # 새 이미지로 image.tag를 올린 뒤 3 등으로 설정할 것.
+  batchItemConcurrency: ""
+
 # ── 비밀 Secret 참조 ─────────────────────────────────────────────────
 # 이 Secret(아래 4키 보유)을 sealed-secret으로 미리 주입해야 한다:
 #   NEXUS__DATABASE__URL, NEXUS__CAS__KEY_ID, NEXUS__CAS__SECRET, NEXUS__JWT__SECRET

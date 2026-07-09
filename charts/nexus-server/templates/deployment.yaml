@@ -46,6 +46,12 @@ spec:
               value: {{ .Values.cas.region | quote }}
             - name: NEXUS__CAS__DEFAULT_BUCKET
               value: {{ .Values.cas.defaultBucket | quote }}
+            - name: NEXUS__DATABASE__MAX_CONNECTIONS
+              value: {{ .Values.database.maxConnections | quote }}
+            {{- if .Values.ingest.batchItemConcurrency }}
+            - name: NEXUS__INGEST__BATCH_ITEM_CONCURRENCY
+              value: {{ .Values.ingest.batchItemConcurrency | quote }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
