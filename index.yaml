@@ -3,6 +3,16 @@ entries:
   cas-server:
   - apiVersion: v2
     appVersion: 0.1.12
+    created: "2026-07-09T06:48:26.004098333Z"
+    description: BLAKE3 기반 Content-Addressable Storage 서버. S3-호환 HTTP API 제공.
+    digest: 30df72a23d1a4907a2c0b1ba8dc06d9ce902255c020aa3524594272d4e0cc32e
+    name: cas-server
+    type: application
+    urls:
+    - https://github.com/int2nexus/cas-server/releases/download/cas-server-0.1.16/cas-server-0.1.16.tgz
+    version: 0.1.16
+  - apiVersion: v2
+    appVersion: 0.1.12
     created: "2026-07-02T05:35:45.41040573Z"
     description: BLAKE3 기반 Content-Addressable Storage 서버. S3-호환 HTTP API 제공.
     digest: c1accc3cf3bc41724720a393d39ac49e22846f92edc14c36d79e5cc27140f937
@@ -184,6 +194,16 @@ entries:
     version: 0.1.0
   nexus-server:
   - apiVersion: v2
+    appVersion: 0.0.4
+    created: "2026-07-09T06:48:26.328211809Z"
+    description: ML 학습 데이터 카탈로그 서버 (cas-server 위 Sample→Dataset 버전 관리)
+    digest: c08898c9fe99408f927e30c72cc3a95a38d63e68b9ec0a3652e47426bac94143
+    name: nexus-server
+    type: application
+    urls:
+    - https://github.com/int2nexus/cas-server/releases/download/nexus-server-0.0.6/nexus-server-0.0.6.tgz
+    version: 0.0.6
+  - apiVersion: v2
     appVersion: 0.0.3
     created: "2026-07-02T05:35:45.58878293Z"
     description: ML 학습 데이터 카탈로그 서버 (cas-server 위 Sample→Dataset 버전 관리)
@@ -223,4 +243,4 @@ entries:
     urls:
     - https://github.com/int2nexus/cas-server/releases/download/nexus-server-0.0.1/nexus-server-0.0.1.tgz
     version: 0.0.1
-generated: "2026-07-09T06:43:19.446276066Z"
+generated: "2026-07-09T06:48:26.328343608Z"
