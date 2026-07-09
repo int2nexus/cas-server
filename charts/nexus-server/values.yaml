@@ -4,7 +4,7 @@
 
 image:
   repository: int2jieun/nexus-server
-  tag: "0.0.3"
+  tag: "0.0.4"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -35,7 +35,7 @@ ingest:
   # 값을 넣어 override하려면 **이미지가 config 수정본(IngestConfig 전 필드 serde default) 이상**이어야 한다 —
   # 그 이전 이미지(예: appVersion 0.0.3)에 이 env를 주면 ingest 부분 역직렬화 실패로 기동이 깨진다.
   # 새 이미지로 image.tag를 올린 뒤 3 등으로 설정할 것.
-  batchItemConcurrency: ""
+  batchItemConcurrency: "3"
 
 # ── 비밀 Secret 참조 ─────────────────────────────────────────────────
 # 이 Secret(아래 4키 보유)을 sealed-secret으로 미리 주입해야 한다:
