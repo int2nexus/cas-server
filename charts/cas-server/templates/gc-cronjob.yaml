@@ -33,13 +33,44 @@ spec:
             - sh
             - -c
             - |
-              curl --fail --silent --show-error \
-                --max-time {{ .Values.gc.activeDeadlineSeconds }} \
-                {{- if .Values.auth.adminToken }}
-                -H "Authorization: Bearer ${ADMIN_TOKEN}" \
-                {{- end }}
-                -X POST \
-                "http://{{ include "cas-server.fullname" . }}:{{ .Values.service.port }}/_internal/gc"
+              set -u
+              BASE="http://{{ include "cas-server.fullname" . }}:{{ .Values.service.port }}"
+              POLL_INTERVAL=10
+              # activeDeadlineSeconds보다 조금 일찍 끝내, k8s SIGKILL 전에 타임아웃 로그를 남긴다.
+              MAX_WAIT={{ .Values.gc.activeDeadlineSeconds }}
+              [ "$MAX_WAIT" -gt 60 ] && MAX_WAIT=$((MAX_WAIT - 60))
+
+              # 인증 헤더를 positional params에 저장 (공백 보존).
+              {{- if .Values.auth.adminToken }}
+              set -- -H "Authorization: Bearer ${ADMIN_TOKEN}"
+              {{- else }}
+              set --
+              {{- end }}
+
+              # 1) 트리거 전 마지막 ran_at 기록 (이번 실행 완료 감지 기준)
+              prev=$(curl -sS --max-time 30 "$@" "$BASE/_api/gc/last-result" | grep -o '"ran_at":"[^"]*"' || true)
+              echo "이전 ran_at: ${prev:-<none>}"
+
+              # 2) GC 트리거 — 서버는 백그라운드로 실행하고 202를 즉시 반환한다.
+              code=$(curl -sS --max-time 30 -o /tmp/resp -w '%{http_code}' -X POST "$@" "$BASE/_internal/gc?dry_run=false")
+              echo "트리거 응답: $code $(cat /tmp/resp 2>/dev/null)"
+              if [ "$code" = "409" ]; then echo "이미 GC 실행 중 — 스킵"; exit 0; fi
+              if [ "$code" != "202" ] && [ "$code" != "200" ]; then echo "GC 트리거 실패 (HTTP $code)"; exit 1; fi
+
+              # 3) last-result의 ran_at이 바뀔 때까지(=이번 GC 완료) 폴링
+              elapsed=0
+              while [ "$elapsed" -lt "$MAX_WAIT" ]; do
+                sleep "$POLL_INTERVAL"; elapsed=$((elapsed + POLL_INTERVAL))
+                body=$(curl -sS --max-time 30 "$@" "$BASE/_api/gc/last-result" || true)
+                cur=$(printf '%s' "$body" | grep -o '"ran_at":"[^"]*"' || true)
+                if [ -n "$cur" ] && [ "$cur" != "$prev" ]; then
+                  status=$(printf '%s' "$body" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
+                  echo "GC 완료: $body"
+                  if [ "$status" = "failed" ]; then echo "GC 실행이 실패로 기록됨"; exit 1; fi
+                  exit 0
+                fi
+              done
+              echo "GC 완료 대기 타임아웃 (${MAX_WAIT}s)"; exit 1
             {{- if .Values.auth.adminToken }}
             env:
             - name: ADMIN_TOKEN
