@@ -2,7 +2,7 @@ apiVersion: v2
 name: nexus-server
 description: ML 학습 데이터 카탈로그 서버 (cas-server 위 Sample→Dataset 버전 관리)
 type: application
-version: 0.0.6
-appVersion: "0.0.4"
+version: 0.0.7
+appVersion: "0.0.5"
 # NOTE: ingest.batchItemConcurrency를 설정하려면 IngestConfig 전 필드 serde default가 든
 # 새 이미지(> 0.0.3)가 필요하다. 그 전 이미지엔 database.maxConnections만 주입해도 안전.
