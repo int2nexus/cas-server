@@ -4,7 +4,7 @@
 
 image:
   repository: int2jieun/nexus-server
-  tag: "0.0.5"
+  tag: "0.1.0"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
