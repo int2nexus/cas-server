@@ -1,6 +1,18 @@
-# cas-server Helm Chart
+# int2nexus Helm Charts & SDK
 
-BLAKE3 기반 CAS(Content-Addressable Storage) 서버의 Helm chart 레포지토리입니다.
+BLAKE3 기반 CAS(Content-Addressable Storage) 서버와 이를 사용하는 nexus 데이터 카탈로그 스택을
+Kubernetes에 배포하기 위한 Helm chart 레포입니다. Python SDK도 이 레포(GitHub Pages)를 통해
+배포됩니다. 애플리케이션 소스코드는 포함되지 않으며, Docker 이미지는 외부에서 빌드됩니다.
+
+## 차트
+
+| 차트 | 설명 |
+|---|---|
+| [cas-server](charts/cas-server/README.md) | BLAKE3 기반 CAS 서버 (S3/NFS 백엔드) |
+| [nexus-server](charts/nexus-server/README.md) | ML 학습 데이터 카탈로그 서버 (cas-server 위 Sample→Dataset 버전 관리) |
+| [nexus-client](charts/nexus-client/README.md) | nexus-server 웹 UI |
+
+설치/values/시크릿 주입 방법 등 상세 내용은 각 차트 README를 참고하세요.
 
 ## Helm 레포 추가
 
@@ -9,110 +21,32 @@ helm repo add int2nexus https://int2nexus.github.io/cas-server
 helm repo update
 ```
 
-## 설치
-
 ```bash
 helm install cas-server int2nexus/cas-server -n <namespace>
+helm install nexus-server int2nexus/nexus-server -n <namespace>
+helm install nexus-client int2nexus/nexus-client -n <namespace>
 ```
 
-또는 values 파일 사용:
+시크릿 주입, values 오버라이드 등 배포 전 준비 사항은 차트별 README를 따르세요.
+
+## SDK 설치 (Python)
+
+int2nexus SDK는 wheel/sdist 파일로 이 레포의 GitHub Pages(`sdk/simple/`, PEP 503 simple index)에
+게시됩니다:
 
 ```bash
-helm install cas-server int2nexus/cas-server -n <namespace> -f values-prod.yaml
+pip install int2nexus-sdk --index-url https://int2nexus.github.io/cas-server/sdk/simple/
 ```
 
-## values 파일 예시
+## 릴리즈 방법
 
-### S3 / MinIO 모드
+`main` 브랜치에 push하면 GitHub Actions(`release.yaml`)가 `helm/chart-releaser-action`을 통해 자동으로
+GitHub Releases와 `index.yaml`을 업데이트합니다. 새 버전을 릴리즈하려면 각 차트의 `Chart.yaml`의
+`version`/`appVersion`과 `values.yaml`의 `image.tag`를 함께 맞춰 커밋합니다.
 
-```yaml
-externalDatabase:
-  host: "postgresql"
-  port: 5432
-  username: "username"
-  database: "database"
+## 주의사항
 
-secrets:
-  dbPassword: "<your-password>"
-  s3AccessKeyId: "<access-key>"
-  s3SecretAccessKey: "<secret-key>"
-
-storage:
-  mode: "s3"
-  s3:
-    endpoint: "storage-endpoint-url"
-    bucket: "your-bucket"
-    region: ""
-    keyPrefix: ""
-    allowHttp: true
-```
-
-## 설정 값 (values.yaml)
-
-| 키 | 기본값 | 설명 |
-|----|--------|------|
-| `image.repository` | `int2jieun/cas-server` | Docker 이미지 |
-| `image.tag` | `0.1.0` | 이미지 태그 |
-| `storage.mode` | `s3` | s3 호환 스토리지 |
-| `externalDatabase.host` | `""` | PostgreSQL 서비스명 |
-| `externalDatabase.port` | `5432` | PostgreSQL 포트 |
-| `secrets.dbPassword` | `""` | DB 비밀번호 |
-| `ingress.enabled` | `false` | Ingress 활성화 |
-| `config.maxUploadSizeBytes` | `10737418240` | 최대 업로드 크기 (10 GiB) |
-
-전체 설정값은 [values.yaml](charts/cas-server/values.yaml)을 참고하세요.
-
-## 업그레이드
-
-```bash
-helm repo update
-helm upgrade cas-server int2nexus/cas-server -n <namespace> -f values-prod.yaml
-```
-
-## 삭제
-
-```bash
-helm uninstall cas-server -n <namespace>
-helm uninstall postgresql -n <namespace>
-kubectl delete namespace <namespace>
-```
-
----
-
-# nexus-server Helm Chart
-
-ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 Sample→Dataset 단위로 묶어 버전을 관리합니다. (이미지: `int2jieun/nexus-server`)
-
-## 레포 추가
-
-```bash
-helm repo add int2nexus https://int2nexus.github.io/cas-server
-helm repo update
-```
-
-## 시크릿 (sealed-secret) 먼저 주입
-
-`nexus-server` Secret에 4키가 필요합니다(외부 Postgres DSN·CAS 자격증명·JWT). 비밀은 차트(values)에 두지 않고 sealed-secret으로 주입합니다:
-
-```bash
-kubectl create secret generic nexus-server -n <namespace> --dry-run=client -o yaml \
-  --from-literal=NEXUS__DATABASE__URL='postgres://user:pass@pg-host:5432/nexus' \
-  --from-literal=NEXUS__CAS__KEY_ID='...' \
-  --from-literal=NEXUS__CAS__SECRET='...' \
-  --from-literal=NEXUS__JWT__SECRET='...' \
-  | kubeseal --format yaml > sealed-nexus-server.yaml
-kubectl apply -f sealed-nexus-server.yaml -n <namespace>
-```
-
-평문 예시: `charts/nexus-server/examples/secret.example.yaml`.
-
-## 설치
-
-```bash
-helm install nexus-server int2nexus/nexus-server -n <namespace> \
-  --set image.tag=0.0.1 \
-  --set cas.baseUrl=http://cas-server:80
-```
-
-- 외부 PostgreSQL과 cas-server가 클러스터에 있어야 합니다. DB 마이그레이션은 기동 시 자동 적용됩니다.
-- 설정은 `NEXUS__` 환경변수로 주입됩니다(`values.yaml`의 `server`/`cas`, 비밀은 Secret).
+- 프로덕션 자격증명·values는 커밋하지 마세요. 각 차트의 `examples/`는 실제 값이 없는 예시/placeholder만
+  포함합니다.
+- 클라이언트 인증은 선택적입니다. cas-server의 `auth.secretMasterKey`를 설정하면 SigV4 인증이
+  활성화되고, 비워두면 NoAuth 모드(인증 없음, 내부망 전용)로 동작합니다.

@@ -1,6 +1,6 @@
 # nexus-server Helm Chart
 
-ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample → Dataset → DatasetVersion** 단위로 묶어 버전을 관리한다. (이미지: `int2jieun/nexus-server`)
+ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample → Dataset → DatasetVersion** 단위로 묶어 버전을 관리한다.
 
 ## 전제
 
@@ -38,7 +38,6 @@ Secret 이름은 `secret.existingSecret`(비우면 릴리즈 fullname, 기본 `n
 
 ```bash
 helm install nexus-server int2nexus/nexus-server -n <namespace> \
-  --set image.tag=0.0.1 \
   --set cas.baseUrl=http://cas-server:80
 ```
 
@@ -48,7 +47,6 @@ helm install nexus-server int2nexus/nexus-server -n <namespace> \
 
 | 키 | 기본값 | 설명 |
 |---|---|---|
-| `image.repository` / `image.tag` | `int2jieun/nexus-server` / `0.0.1` | 서버 이미지 |
 | `server.port` | `8090` | 컨테이너 포트 |
 | `cas.baseUrl` | `http://cas-server:80` | CAS(cas-server) 주소 |
 | `cas.region` / `cas.defaultBucket` | `cas-default` / `data` | CAS region·기본 버킷 |
