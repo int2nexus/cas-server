@@ -38,3 +38,9 @@
   S3 엔드포인트: {{ .Values.storage.s3.endpoint | default "AWS S3 기본값" }}
   S3 버킷: {{ .Values.storage.s3.bucket }}
 {{- end }}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+문서
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  아키텍처: https://github.com/int2nexus/cas-server/blob/main/charts/cas-server/docs/architecture.md
+  사용법:   https://github.com/int2nexus/cas-server/blob/main/charts/cas-server/docs/usage.md

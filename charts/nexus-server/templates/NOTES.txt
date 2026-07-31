@@ -13,3 +13,7 @@ nexus-server 가 배포되었습니다.
   kubectl get pods -l app.kubernetes.io/instance={{ .Release.Name }}
   kubectl port-forward svc/{{ include "nexus-server.fullname" . }} 8090:{{ .Values.service.port }}
   curl localhost:8090/_internal/health
+
+문서:
+  아키텍처: https://github.com/int2nexus/cas-server/blob/main/charts/nexus-server/docs/architecture.md
+  사용법:   https://github.com/int2nexus/cas-server/blob/main/charts/nexus-server/docs/usage.md
