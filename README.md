@@ -1,5 +1,10 @@
 # int2nexus Helm Charts & SDK
 
+[![cas-server](https://img.shields.io/github/v/release/int2nexus/cas-server?filter=cas-server-*&label=cas-server)](https://github.com/int2nexus/cas-server/releases)
+[![nexus-server](https://img.shields.io/github/v/release/int2nexus/cas-server?filter=nexus-server-*&label=nexus-server)](https://github.com/int2nexus/cas-server/releases)
+[![nexus-client](https://img.shields.io/github/v/release/int2nexus/cas-server?filter=nexus-client-*&label=nexus-client)](https://github.com/int2nexus/cas-server/releases)
+[![python-sdk](https://img.shields.io/badge/python--sdk-0.1.0-blue)](https://int2nexus.github.io/cas-server/sdk/simple/int2nexus-sdk/)
+
 BLAKE3 기반 CAS(Content-Addressable Storage) 서버와 이를 사용하는 nexus 데이터 카탈로그 스택을
 Kubernetes에 배포하기 위한 Helm chart 레포입니다. Python SDK도 이 레포(GitHub Pages)를 통해
 배포됩니다. 애플리케이션 소스코드는 포함되지 않으며, Docker 이미지는 외부에서 빌드됩니다.
@@ -42,7 +47,12 @@ pip install int2nexus-sdk --index-url https://int2nexus.github.io/cas-server/sdk
 
 `main` 브랜치에 push하면 GitHub Actions(`release.yaml`)가 `helm/chart-releaser-action`을 통해 자동으로
 GitHub Releases와 `index.yaml`을 업데이트합니다. 새 버전을 릴리즈하려면 각 차트의 `Chart.yaml`의
-`version`/`appVersion`과 `values.yaml`의 `image.tag`를 함께 맞춰 커밋합니다.
+`version`/`appVersion`과 `values.yaml`의 `image.tag`를 함께 맞춰 커밋합니다. 릴리즈 태그가
+`<차트명>-<version>` 형식으로 생성되므로 위 cas-server/nexus-server/nexus-client 배지는 자동으로
+최신 버전을 반영합니다.
+
+python-sdk는 GitHub Releases 태그가 없는 별도 배포 경로(`sdk/simple/` PEP 503 인덱스)라 배지가
+자동 갱신되지 않습니다 — 새 SDK 버전을 게시하면 위 배지의 버전 숫자를 수동으로 맞춰주세요.
 
 ## 주의사항
 
