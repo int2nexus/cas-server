@@ -204,6 +204,16 @@ entries:
   nexus-client:
   - apiVersion: v2
     appVersion: 0.1.4
+    created: "2026-08-03T04:35:12.11535012Z"
+    description: Nexus 웹 UI
+    digest: 8ab7d5956494fd506050dea3eba9472d2ee4e27401ab3ef0d0a89ba3c530f337
+    name: nexus-client
+    type: application
+    urls:
+    - https://github.com/int2nexus/cas-server/releases/download/nexus-client-0.1.4/nexus-client-0.1.4.tgz
+    version: 0.1.4
+  - apiVersion: v2
+    appVersion: 0.1.4
     created: "2026-07-24T04:09:37.025853979Z"
     description: Nexus 웹 UI
     digest: f1bc68544de5fb73b55409e9686cb8ba07b15a3ce3d156f7edfb0334a24f62d7
@@ -243,6 +253,16 @@ entries:
     - https://github.com/int2nexus/cas-server/releases/download/nexus-client-0.1.0/nexus-client-0.1.0.tgz
     version: 0.1.0
   nexus-server:
+  - apiVersion: v2
+    appVersion: 0.1.0
+    created: "2026-08-03T04:35:12.307047706Z"
+    description: ML 학습 데이터 카탈로그 서버 (cas-server 위 Sample→Dataset 버전 관리)
+    digest: d9de4060b0605db9f77a65fa31afae6928194b8dac999489c1fc8e07ba6125a3
+    name: nexus-server
+    type: application
+    urls:
+    - https://github.com/int2nexus/cas-server/releases/download/nexus-server-0.0.9/nexus-server-0.0.9.tgz
+    version: 0.0.9
   - apiVersion: v2
     appVersion: 0.1.0
     created: "2026-07-24T04:04:15.554330434Z"
@@ -313,4 +333,4 @@ entries:
     urls:
     - https://github.com/int2nexus/cas-server/releases/download/nexus-server-0.0.1/nexus-server-0.0.1.tgz
     version: 0.0.1
-generated: "2026-08-03T04:32:48.120796397Z"
+generated: "2026-08-03T04:35:12.307160666Z"
