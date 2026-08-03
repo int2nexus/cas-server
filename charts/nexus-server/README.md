@@ -2,6 +2,13 @@
 
 ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample → Dataset → DatasetVersion** 단위로 묶어 버전을 관리한다.
 
+## 문서
+
+- [아키텍처](https://github.com/int2nexus/cas-server/blob/main/charts/nexus-server/docs/architecture.md)
+  — 도메인 모델, Version 생명주기, Annotation CoW, 스냅샷·Manifest 구조
+- [사용법](https://github.com/int2nexus/cas-server/blob/main/charts/nexus-server/docs/usage.md)
+  — 설치, Python SDK 연결, Dataset 적재·검색·seal 워크플로우, API 레퍼런스
+
 ## 전제
 
 - **외부 PostgreSQL** — 접속 정보(비번 포함 DSN)는 시크릿으로 주입. 차트가 DB를 띄우지 않는다.

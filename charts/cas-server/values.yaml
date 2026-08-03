@@ -2,7 +2,15 @@
 # cas-server Helm Chart — values.yaml
 #
 # 배포 환경별 오버라이드는 별도 values-{env}.yaml 파일 사용:
-#   helm install cas-server ./helm/cas-server -f values-prod.yaml
+#   helm install cas-server ./charts/cas-server -f values-prod.yaml
+#
+# ── 문서 ─────────────────────────────────────────────────────────────────────
+#   아키텍처 (스토리지 모델·백엔드·API 명세)
+#     https://github.com/int2nexus/cas-server/blob/main/charts/cas-server/docs/architecture.md
+#   사용법 (배포·키 관리·AWS CLI/boto3 예제)
+#     https://github.com/int2nexus/cas-server/blob/main/charts/cas-server/docs/usage.md
+#   차트 README
+#     https://github.com/int2nexus/cas-server/blob/main/charts/cas-server/README.md
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── 이미지 ────────────────────────────────────────────────────────────────────

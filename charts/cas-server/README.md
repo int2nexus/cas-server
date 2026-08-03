@@ -3,6 +3,13 @@
 BLAKE3 기반 CAS(Content-Addressable Storage) 서버. S3 호환 스토리지 또는 NFS를 백엔드로 사용하는
 HTTP API를 제공한다.
 
+## 문서
+
+- [아키텍처](https://github.com/int2nexus/cas-server/blob/main/charts/cas-server/docs/architecture.md)
+  — 스토리지 모델(CAS·dedup·GC), 백엔드 구성, S3 호환 API 명세, 에러 코드
+- [사용법](https://github.com/int2nexus/cas-server/blob/main/charts/cas-server/docs/usage.md)
+  — 배포 절차, 웹 UI 키 관리, AWS CLI/boto3 예제, 내부 API
+
 ## 레포 추가
 
 ```bash
