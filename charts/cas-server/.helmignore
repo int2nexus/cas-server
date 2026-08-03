@@ -2,3 +2,8 @@
 *.tgz
 .git
 .gitignore
+
+# 배포 산출물에 불필요 — GitHub에서 보는 상세 문서·예시
+# (docs/의 이미지가 패키지에 들어가면 Helm 릴리즈 Secret 1MB 한도를 넘김)
+docs/
+examples/
