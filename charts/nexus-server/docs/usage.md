@@ -61,12 +61,12 @@ kubectl apply -f sealed-nexus-server.yaml -n <namespace>
 
 ```bash
 helm install nexus-server int2nexus/nexus-server -n <namespace> \
-  --set cas.baseUrl=<CAS 주소>      # http://cas-server:8080 
+  --set cas.baseUrl=<CAS 주소>      # http://cas-server:80 
 
 # 업데이트
 helm repo update
-helm upgrade nexus-server int2cas/nexus-server -n <namespace> \
-  --set cas.baseUrl=<CAS 주소>      # http://<host>:8080
+helm upgrade nexus-server int2nexus/nexus-server -n <namespace> \
+  --set cas.baseUrl=<CAS 주소>      # http://cas-server:80 
 ```
 
 #### Python SDK 설치
@@ -92,6 +92,32 @@ resp = requests.post(f"{NEXUS_URL}/api/v1/auth/register", json={
 print(resp.status_code, "(409 = 이미 존재, 무시 가능)")
 ```
 
+설정 값의 우선순위는 **인자 > 환경변수 > 설정 파일**이다. 코드에 명시한 값이 항상 이기고, CI는 환경변수로 로컬 설정 파일을 덮을 수 있다.
+
+**(1) 설정 파일 — 권장** (SDK 0.1.1+)
+
+`~/.int2nexus/settings.json`파일로 저장. `nx.connect()` 로 바로 연결. 스크립트에 자격증명이 남지 않는다.
+
+```json
+{
+  "nexus_url": "http://<host>:8090",
+  "email": "...",
+  "password": "...",
+  "cas_url": "http://<host>:8080",
+  "cas_key_id": "...",
+  "cas_secret": "...",
+  "verify": true
+}
+```
+
+```python
+import nexus as nx
+
+nx.connect()
+```
+
+**(2) 인자로 직접 넘기기**
+
 ```python
 import nexus as nx
 
@@ -102,7 +128,10 @@ nx.connect(
     cas_key_id="...", cas_secret="...",
 )
 ```
-환경변수(`NEXUS_URL`/`NEXUS_EMAIL`/`NEXUS_PASSWORD`, `CAS_URL`/`CAS_KEY_ID`/`CAS_SECRET`)가 모두 있으면 `nx.connect()`만 호출하거나 첫 API 호출 시 자동 연결된다.  
+
+**(3) 환경변수**
+
+환경변수가 모두 있으면 `nx.connect()`만 호출하거나 첫 API 호출 시 자동 연결된다.
 
 ```python
 import os
@@ -116,7 +145,24 @@ os.environ["CAS_SECRET"] = "..."
 
 nx.connect()
 ```
+
 `cas_key_id`/`cas_secret`(또는 `CAS_KEY_ID`/`CAS_SECRET`)는 CAS 업로드 서명용 키. CAS가 인정하는(해당 버킷에 write 권한 있는) 키면 동작하며, nexus 서비스 키를 공유하거나 내부 정책에 따라 개인별로 발급받은 키 사용.
+
+#### 사내 프록시로 SSL 인증서 에러가 날 때 (SDK 0.1.1+)
+
+사내 보안 장비가 TLS를 검사하면 `nx.connect()`가 인증서 에러로 죽는다. 아래 중 하나를 사용한다.
+
+```bash
+export REQUESTS_CA_BUNDLE=/path/to/사내-루트-CA.pem
+```
+
+```python
+nx.connect(verify="/path/to/사내-루트-CA.pem")   # 검증을 유지한 채 해결 (권장)
+nx.connect(verify=False)                          # 최후의 수단
+```
+
+- 설정 파일의 `"verify"` 키에 적어두면 매번 넘기지 않아도 된다. 값은 `true`/`false` 또는 **CA 번들 경로**.
+- `verify=False`는 그 연결의 **중간자 공격 탐지를 포기**하는 것이다. 접속 시 한 번 경고가 뜬다.
 
 ## 3. 핵심 흐름
 ### 3.1 Dataset 생성
