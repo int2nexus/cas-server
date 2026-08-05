@@ -3,7 +3,7 @@
 [![cas-server](https://img.shields.io/github/v/release/int2nexus/cas-server?filter=cas-server-*&label=cas-server)](https://github.com/int2nexus/cas-server/releases)
 [![nexus-server](https://img.shields.io/github/v/release/int2nexus/cas-server?filter=nexus-server-*&label=nexus-server)](https://github.com/int2nexus/cas-server/releases)
 [![nexus-client](https://img.shields.io/github/v/release/int2nexus/cas-server?filter=nexus-client-*&label=nexus-client)](https://github.com/int2nexus/cas-server/releases)
-[![python-sdk](https://img.shields.io/badge/python--sdk-0.1.0-blue)](https://int2nexus.github.io/cas-server/sdk/simple/int2nexus-sdk/)
+[![python-sdk](https://img.shields.io/badge/python--sdk-0.1.1-blue)](https://int2nexus.github.io/cas-server/sdk/simple/int2nexus-sdk/)
 
 BLAKE3 기반 CAS(Content-Addressable Storage) 서버와 이를 사용하는 nexus 데이터 카탈로그 스택을
 Kubernetes에 배포하기 위한 Helm chart 레포입니다. Python SDK도 이 레포(GitHub Pages)를 통해
