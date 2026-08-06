@@ -202,6 +202,25 @@ Path("upload_refs.json").write_text(json.dumps(records, indent=2, ensure_ascii=F
 
 `nx.upload`는 로컬 파일을 CAS에 올릴 때 쓰는 편의 도구일 뿐이다. 다만, `nx.upload` 과정에서 UI 로딩 최적화용 썸네일(WebP 256px,thumb/<key>)을 함께 생성한다. 업로드를 건너뛰고 CAS URL로 바로 등록하면 썸네일이 없어 UI가 원본으로 폴백한다(동작은 정상, 로딩만 무거움). 필요시 `nx.upload`를 다시 돌려 없는 썸네일만 백필할 수 있다.
 
+#### boto3 · `aws s3` 등으로 직접 올린 경우 — 썸네일 백필
+
+`nx.upload`를 거치지 않고 CAS에 직접 올렸다면 썸네일 생성 단계가 없다. 이미 올라간 데이터에 대해서는 아래 스크립트를 한 번 돌리면 된다. **원본 로컬 파일이 없어도 된다** — CAS에서 받아 생성한다.
+
+```bash
+pip install boto3 pillow
+curl -O https://raw.githubusercontent.com/int2nexus/cas-server/main/scripts/backfill_thumbnails.py
+
+export CAS_URL=http://<CAS 주소>:8080
+export CAS_KEY_ID=... CAS_SECRET=...
+
+python backfill_thumbnails.py --bucket <버킷> --dry-run   # 읽기 전용, 대상만 확인
+python backfill_thumbnails.py --bucket <버킷>              # 실행
+```
+
+멱등이라 중단 후 다시 돌려도 안전하다(이미 있는 썸네일은 건너뛴다). `--prefix images/`로 범위를 좁히고, 사내 TLS 검사 환경이면 `--ca-bundle /path/corp-ca.pem`을 붙인다.
+
+> 직접 업로드를 상시 경로로 쓴다면 **적재 후 이 스크립트를 돌리는 것을 절차에 포함**해야 한다. 빠뜨리면 UI에서 원본이 그대로 로드되어 그리드가 무거워진다.
+
 ### 3.3 샘플 생성 & 등록
 
 받은 ref로 `nx.Sample`을 만들어 dataset/version에 등록한다.  
