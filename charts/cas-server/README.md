@@ -81,7 +81,16 @@ storage:
 | `auth.secretMasterKey` | (없음) | 설정 시 SigV4 인증 활성화, 비우면 NoAuth |
 | `ingress.enabled` | `false` | Ingress 활성화 |
 | `config.maxUploadSizeBytes` | `10737418240` | 최대 업로드 크기 (10 GiB) |
+| `config.maxUploadBytesInFlight` | `3221225472` | 동시 업로드 바디의 총 상주 바이트 상한 (3 GiB). 초과분은 `503 SlowDown`. **`0` = 무제한.** `resources.limits.memory` × 0.5 를 기준으로 함께 조정할 것 |
+| `config.maxConcurrentUploads` | `96` | 동시 업로드 건수 상한. 위 바이트 예산의 보조 장치 |
+| `resources.limits.memory` | `6Gi` | 2026-08-05 OOM 대응으로 올린 값. 실환경 검증 후 `6Gi → 3Gi → 2Gi` 로 단계적으로 내릴 것 |
 | `gc.enabled` | `true` | GC CronJob 활성화 |
+
+`maxUploadBytesInFlight` / `maxConcurrentUploads` 는 **cas-server 이미지 `0.1.16` 이상**에서만
+동작합니다(`image.tag` 확인). 그 이하 이미지에서는 값을 설정해도 서버가 무시하므로, 상한이
+걸린다고 믿는 상태로 방어 없이 운영하게 됩니다.
+`limits.memory` 를 변경할 때 바이트 예산을 함께 조정하지 않으면, 상한이 걸리기 전에
+OOMKilled 되거나(예산 > 한도) 방어선이 실효 없이 낮게 남습니다(예산 << 한도).
 
 전체 설정값은 [values.yaml](values.yaml)을 참고하세요.
 
