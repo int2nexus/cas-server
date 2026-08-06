@@ -3,4 +3,4 @@ name: nexus-client
 description: Nexus 웹 UI
 type: application
 version: 0.1.4
-appVersion: "0.1.4"
+appVersion: "0.1.6"
