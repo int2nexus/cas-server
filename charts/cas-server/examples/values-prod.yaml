@@ -11,6 +11,10 @@ config:
   # DB 커넥션 풀: replicaCount × dbMaxConnections < PostgreSQL max_connections
   dbMaxConnections: 20
 
+  # 업로드 상한(maxUploadBytesInFlight 3 GiB / maxConcurrentUploads 96)은
+  # 차트 기본값에 이미 들어 있으므로 여기서 다시 쓸 필요가 없다.
+  # 값을 바꿀 때는 values.yaml 의 주석(resources.limits.memory 와 0.5배로 연동)을 볼 것.
+
 # ── S3 스토리지 ───────────────────────────────────────────────────────────────
 storage:
   mode: "s3"
@@ -31,6 +35,16 @@ externalDatabase:
 # ── 자격증명 ─────────────────────────────────────────────────────────────────
 # 7개 시크릿은 sealed-secret.yaml로 관리합니다. 이 파일에 포함하지 마세요.
 # 적용 방법: kubectl apply -f sealed-secret.yaml (Helm 배포 전에 실행)
+
+# ── 리소스 ────────────────────────────────────────────────────────────────────
+# 차트 기본값이 requests 2Gi / limits 6Gi 다. 그대로 쓰면 되므로 여기서 오버라이드하지 않는다.
+#
+# 6Gi 는 2026-08-05 OOM 대응으로 올린 값이다. 이미지 0.1.16 배포 후 실환경에서
+# 부하 1사이클을 돌려 유휴 구간 바닥값이 하락하는 것을 확인한 뒤
+# 6Gi -> 3Gi -> 2Gi 로 단계적으로 내릴 것. config.maxUploadBytesInFlight 도 함께 내린다.
+#
+# 판정 쿼리:
+#   min_over_time(container_memory_working_set_bytes{pod=~"cas-server.*"}[30m])
 
 
 # ── GC CronJob ────────────────────────────────────────────────────────────────

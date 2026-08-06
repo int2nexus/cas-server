@@ -9,7 +9,7 @@ cas-server 는 helm 차트를 통해 k8s 환경에 배포할 수 있습니다.
 cas-server 레포지토리를 등록하고 업데이트합니다.
 
 ```bash
-helm repo add int2cas https://int2nexus.github.io/cas-server
+helm repo add int2nexus https://int2nexus.github.io/cas-server
 helm repo update
 ```
 
@@ -54,7 +54,7 @@ auth:
 작성한 values-prod.yaml 파일을 적용하여 지정한 네임스페이스에 서버를 배포합니다.
 ```bash
 # 네임스페이스가 없는 경우 생성: kubectl create namespace <namespace>
-helm install cas-server int2cas/cas-server -n <namespace> -f values-prod.yaml
+helm install cas-server int2nexus/cas-server -n <namespace> -f values-prod.yaml
 ```
 
 ### 4. 차트 업그레이드
@@ -62,7 +62,7 @@ helm install cas-server int2cas/cas-server -n <namespace> -f values-prod.yaml
 
 ```bash
 helm repo update
-helm upgrade cas-server int2cas/cas-server -n <namespace> -f values-prod.yaml
+helm upgrade cas-server int2nexus/cas-server -n <namespace> -f values-prod.yaml
 ```
 
 ### 5. 리소스 제거
