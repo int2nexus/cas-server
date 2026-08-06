@@ -7,3 +7,7 @@
 # (docs/의 이미지가 패키지에 들어가면 Helm 릴리즈 Secret 1MB 한도를 넘김)
 docs/
 examples/
+
+# CHANGELOG.md / RELEASE_NOTES.md 는 여기에 넣지 말 것.
+# chart-releaser 는 RELEASE_NOTES.md 를 패키징된 tgz 안에서 찾아 릴리스 본문으로 쓴다.
+# 제외하면 실패하지 않고 경고 한 줄만 남긴 뒤 Chart.yaml 의 description 으로 조용히 회귀한다.

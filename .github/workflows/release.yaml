@@ -22,9 +22,14 @@ jobs:
           git config user.name "$GITHUB_ACTOR"
           git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
 
+      # cr 은 release-notes-file 을 패키징된 tgz 안에서 찾으므로 패키징 전에 만들어야 한다.
+      - name: Extract release notes from CHANGELOG
+        run: bash scripts/extract-release-notes.sh
+
       - name: Run chart-releaser
         uses: helm/chart-releaser-action@v1.6.0
         with:
           skip_existing: true
+          config: .cr.yaml
         env:
           CR_TOKEN: "${{ secrets.GITHUB_TOKEN }}"

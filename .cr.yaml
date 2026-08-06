@@ -1,0 +1,6 @@
+# chart-releaser 설정. .github/workflows/release.yaml 의 `config` 입력으로 넘긴다.
+#
+# 이 값이 없으면 GitHub Release 본문이 Chart.yaml 의 description 한 줄로 채워진다.
+# 파일은 패키징된 tgz 안에서 찾으므로 .helmignore 로 제외하면 안 되고,
+# scripts/extract-release-notes.sh 가 cr 실행 전에 CHANGELOG.md 에서 생성한다.
+release-notes-file: RELEASE_NOTES.md

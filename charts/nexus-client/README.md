@@ -2,6 +2,9 @@
 
 nexus-server용 웹 UI. Caddy가 정적 파일을 서빙하고 `/api`를 nexus-server로 프록시한다.
 
+버전별 동작 변경·마이그레이션·설정 키는 [변경 이력](CHANGELOG.md)에 있다. 각 항목은 해당
+GitHub Release 본문과 동일하다.
+
 ## 레포 추가
 
 ```bash
