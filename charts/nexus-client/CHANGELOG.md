@@ -20,6 +20,17 @@ image: `jiwonkim97/nexus-client:<tag>` (변경 없음이면 그렇게 적기)
 **설정 키** — 없음
 ```
 
+### 마이그레이션 항목 쓰는 법
+
+nexus-client 는 정적 파일을 서빙하는 Caddy 뿐이고 DB 가 없으므로 이 항목은 `없음` 입니다.
+롤백은 `helm rollback <release> <revision>` 으로 항상 안전합니다.
+
+단 백엔드 계약(`/api`·`/cas` 프록시 경로, `backendUrl`·`casUrl` 해석)이 바뀌면 그건
+**동작 변경** 항목에 적습니다 — nexus-server 버전과 맞물리는 변경이면 필요한 최소
+nexus-server 버전을 함께 씁니다.
+
+<!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
+
 ## 0.1.5
 
 image: `jiwonkim97/nexus-client:0.1.6`
