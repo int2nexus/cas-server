@@ -18,6 +18,9 @@ spec:
         # Secret은 SealedSecret으로 관리되므로 체크섬 불필요
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
     spec:
+      # graceful shutdown 여유. 값을 렌더링하지 않아 쿠버네티스 기본값 30초가
+      # 적용되고 있었다 — values.yaml 설정이 조용히 무시되던 자리다.
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -154,20 +157,34 @@ spec:
             {{- end }}
 
           # ── 헬스체크 ────────────────────────────────────────────────────
-          # GET /_internal/health → DB ping + 백엔드 가용성 검사
+          # 프로브별 역할과 엔드포인트 선택 이유는 values.yaml 주석 참고.
+          {{- if .Values.startupProbe.enabled }}
+          # 기동(DB 마이그레이션 포함)이 끝날 때까지 liveness/readiness를 유예한다.
+          startupProbe:
+            httpGet:
+              path: {{ .Values.startupProbe.httpGet.path }}
+              port: {{ .Values.startupProbe.httpGet.port }}
+            periodSeconds: {{ .Values.startupProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.startupProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.startupProbe.failureThreshold }}
+          {{- end }}
+          # GET /_internal/live → 의존성을 보지 않는 프로세스 응답성 확인
           livenessProbe:
             httpGet:
               path: {{ .Values.livenessProbe.httpGet.path }}
               port: {{ .Values.livenessProbe.httpGet.port }}
             initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
             periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds }}
             failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
+          # GET /_internal/health → DB ping + 백엔드 가용성 검사
           readinessProbe:
             httpGet:
               path: {{ .Values.readinessProbe.httpGet.path }}
               port: {{ .Values.readinessProbe.httpGet.port }}
             initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
             periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.readinessProbe.timeoutSeconds }}
             failureThreshold: {{ .Values.readinessProbe.failureThreshold }}
 
           {{- with .Values.resources }}

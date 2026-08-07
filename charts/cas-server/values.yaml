@@ -16,11 +16,27 @@
 # ── 이미지 ────────────────────────────────────────────────────────────────────
 image:
   repository: int2jieun/cas-server # Docker Hub에 미리 빌드된 이미지 사용
-  tag: "0.1.16"
+  # 0.1.17 미만으로 내리려면 livenessProbe/startupProbe의 path를
+  # /_internal/health로 함께 되돌릴 것 — 아래 프로브 섹션 주석 참고.
+  tag: "0.1.17"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
 
+# 1을 유지할 것. 늘리면 데이터 유실 가능성이 생긴다.
+#
+# GC의 blob 물리 삭제와 진행 중인 PUT 사이의 durability 보호가 **프로세스 내부**
+# per-hash 뮤텍스에 의존한다(cas-server `object_store.rs`의 `BlobWriteLocks`).
+# 파드가 둘 이상이면 이 락이 공유되지 않아 다음이 가능해진다.
+#
+#   pod B (PUT): blob 기록 완료, 메타데이터 커밋 직전
+#   pod A (GC):  참조가 없다고 판단해 blob 파일을 물리 삭제
+#   pod B (PUT): 커밋 → 존재하지 않는 파일을 가리키는 object_versions 행
+#
+# GC CronJob은 Service로 요청을 보내므로 어느 한 파드에서 실행된다. 레플리카가 1개면
+# GC와 모든 PUT이 같은 프로세스라 뮤텍스가 걸려 안전하다.
+#
+# 처리량이 부족하면 레플리카 대신 파드 리소스를 키울 것.
 replicaCount: 1
 
 # ── 앱 설정 (ConfigMap → /app/config/default.toml) ───────────────────────────
@@ -120,16 +136,60 @@ resources:
 terminationGracePeriodSeconds: 60
 
 # ── 헬스체크 프로브 ───────────────────────────────────────────────────────────
-# GET /_internal/health → DB ping + 백엔드 가용성 검사 (503 if degraded)
+#
+# 세 프로브는 서로 다른 질문에 답한다. 같은 엔드포인트를 돌려쓰면 안 된다.
+#
+#   startupProbe   기동이 끝났는가.        GET /_internal/live
+#                  성공할 때까지 liveness/readiness는 평가되지 않는다.
+#   livenessProbe  프로세스가 먹통인가.     GET /_internal/live  (의존성을 보지 않음)
+#   readinessProbe 지금 서빙 가능한가.      GET /_internal/health (DB ping + 백엔드 가용성)
+#
+# livenessProbe를 /_internal/health로 두면 안 된다. DB failover(보통 30~120초)나 NAS
+# 순간 장애에 파드가 kill되는데, 재시작으로는 외부 의존성이 복구되지 않는다. 오히려
+# 재기동 중 initContainer가 DB를 기다리고 CrashLoopBackOff 백오프(최대 5분)가 붙어
+# 중단이 원래 장애보다 길어진다. replicaCount가 1이면 그 시간이 곧 전면 중단이다.
+#
+# /_internal/live 는 appVersion 0.1.17 이상에서만 제공된다.
+# 이미지를 0.1.16 이하로 고정해 쓰는 경우 아래 두 path를 /_internal/health로 되돌릴 것
+# (그러지 않으면 404가 프로브 실패로 계산되어 파드가 계속 재시작한다).
+
+# 기동이 끝날 때까지 liveness/readiness를 유예한다.
+#
+# 없으면 "기동 소요 > liveness 예산"인 순간 구조적으로 죽는다. DB 마이그레이션은 HTTP
+# 리스너가 열리기 전에 수행되므로 그동안 liveness는 반드시 실패하기 때문이다.
+# 실제 사례: object_versions 인덱스를 만드는 마이그레이션이 114초 걸려 liveness
+# 예산 120초를 채우기 전에 실패 판정이 확정되었고 파드가 kill되었다(0.1.16 최초 배포).
+#
+# 예산 = periodSeconds × failureThreshold = 600초.
+# 대용량 테이블에 인덱스를 추가하는 마이그레이션이 포함된 릴리스에서는 배포 전에
+# `SELECT count(*) FROM object_versions;` 로 소요를 가늠하고 필요하면 늘릴 것.
+# 이 예산마저 넘으면 kill → 재시도 → kill 이 반복되어 빠져나오지 못한다.
+startupProbe:
+  enabled: true
+  httpGet:
+    path: /_internal/live
+    port: 8080
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 60
+
+# initialDelaySeconds는 startupProbe가 켜져 있으면 사실상 의미가 없다(컨테이너 시작
+# 시점부터 재는데, startupProbe 성공 시점에는 이미 경과해 있다). startupProbe를 끄는
+# 경우를 대비해 남겨 둔다.
 livenessProbe:
   httpGet:
-    path: /_internal/health
+    path: /_internal/live
     port: 8080
   initialDelaySeconds: 30
   periodSeconds: 30
   timeoutSeconds: 5
   failureThreshold: 3
 
+# readiness는 의존성을 본다. DB나 백엔드가 죽으면 Service 엔드포인트에서 빠지는 것이
+# 맞는 동작이다 — 파드를 죽이지는 않으므로 의존성이 돌아오면 그대로 복귀한다.
+# 주의: DB가 응답하지 않으면 이 엔드포인트는 config.dbAcquireTimeoutSecs 만큼 붙들려
+# 있다가 503을 낸다. timeoutSeconds가 그보다 짧으면 503 대신 타임아웃으로 실패한다
+# (프로브 판정 결과는 같다).
 readinessProbe:
   httpGet:
     path: /_internal/health

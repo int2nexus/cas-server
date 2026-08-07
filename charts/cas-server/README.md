@@ -87,6 +87,8 @@ storage:
 | `config.maxConcurrentUploads` | `96` | 동시 업로드 건수 상한. 위 바이트 예산의 보조 장치 |
 | `resources.limits.memory` | `6Gi` | 2026-08-05 OOM 대응으로 올린 값. 실환경 검증 후 `6Gi → 3Gi → 2Gi` 로 단계적으로 내릴 것 |
 | `gc.enabled` | `true` | GC CronJob 활성화 |
+| `replicaCount` | `1` | **1을 유지할 것.** 늘리면 GC와 PUT 사이 durability 보호가 깨진다 (아래 참고) |
+| `startupProbe.failureThreshold` | `60` | 기동 허용 시간 = `periodSeconds`(10초) × 이 값 = 600초 |
 
 `maxUploadBytesInFlight` / `maxConcurrentUploads` 는 **cas-server 이미지 `0.1.16` 이상**에서만
 동작합니다(`image.tag` 확인). 그 이하 이미지에서는 값을 설정해도 서버가 무시하므로, 상한이
@@ -96,9 +98,49 @@ OOMKilled 되거나(예산 > 한도) 방어선이 실효 없이 낮게 남습니
 
 전체 설정값은 [values.yaml](values.yaml)을 참고하세요.
 
+## 레플리카 수
+
+**`replicaCount` 는 1을 유지하세요.** 처리량이 부족하면 레플리카 대신 파드 리소스를 키웁니다.
+
+GC의 blob 물리 삭제와 진행 중인 PUT 사이의 durability 보호가 cas-server **프로세스 내부**
+per-hash 뮤텍스에 의존합니다. 파드가 둘 이상이면 이 락이 공유되지 않아, 한 파드의 GC가
+다른 파드에서 커밋 직전인 blob을 참조 없음으로 오판해 물리 삭제할 수 있습니다. 그 결과
+메타데이터만 남고 실체 파일이 사라진 객체가 생깁니다. GC CronJob은 Service로 요청을
+보내므로 어느 한 파드에서 실행되고, 레플리카가 1개일 때만 GC와 PUT이 같은 프로세스에서
+같은 뮤텍스를 잡습니다.
+
 ## 헬스체크
 
-`GET /_internal/health` — DB ping + 스토리지 백엔드 가용성을 확인한다. 비정상이면 503 반환.
+세 프로브가 각각 다른 질문에 답합니다. **같은 엔드포인트를 돌려쓰지 마세요.**
+
+| 프로브 | 엔드포인트 | 확인 대상 |
+|--------|-----------|----------|
+| `startupProbe` | `GET /_internal/live` | 기동(DB 마이그레이션 포함) 완료 여부. 성공 전까지 나머지 둘은 평가되지 않음 |
+| `livenessProbe` | `GET /_internal/live` | 프로세스 응답성만. **의존성을 보지 않음** |
+| `readinessProbe` | `GET /_internal/health` | DB ping + 백엔드 가용성. 비정상이면 503 |
+
+`livenessProbe` 를 `/_internal/health` 로 두면 안 됩니다. DB failover(보통 30~120초)나 NAS
+순간 장애에 쿠버네티스가 파드를 죽이는데, 재시작으로는 외부 의존성이 복구되지 않습니다.
+오히려 재기동 시 initContainer가 DB를 기다리고 CrashLoopBackOff 백오프(최대 5분)가 붙어
+중단이 원래 장애보다 길어집니다. `replicaCount` 가 1이므로 그 시간이 곧 전면 중단입니다.
+의존성 상태는 readiness가 판단해 Service 엔드포인트에서 빼는 것이 맞는 처리이고,
+의존성이 돌아오면 파드는 그대로 복귀합니다.
+
+`/_internal/live` 는 **cas-server 이미지 `0.1.17` 이상**에서만 제공됩니다. 이미지를 그 이하로
+고정해 쓰는 경우 `livenessProbe.httpGet.path` 와 `startupProbe.httpGet.path` 를
+`/_internal/health` 로 되돌리세요. 그러지 않으면 404가 프로브 실패로 계산되어 파드가
+계속 재시작합니다.
+
+### startupProbe 예산
+
+DB 마이그레이션은 HTTP 리스너가 열리기 전에 수행되므로, 그동안 프로브는 반드시 실패합니다.
+`startupProbe` 가 없으면 "기동 소요 > liveness 예산"인 순간 파드가 구조적으로 죽습니다
+(이미지 0.1.16 최초 배포에서 `object_versions` 인덱스 생성이 114초 걸려 실제로 발생).
+
+기본 예산은 600초입니다. 대용량 테이블에 인덱스를 추가하는 마이그레이션이 포함된
+릴리스에서는 배포 전 `SELECT count(*) FROM object_versions;` 로 소요를 가늠하고 필요하면
+`startupProbe.failureThreshold` 를 늘리세요. 이 예산마저 넘으면 kill → 재시도 → kill 이
+반복되어 빠져나오지 못합니다.
 
 ## 업그레이드
 

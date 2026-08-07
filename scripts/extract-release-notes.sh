@@ -36,13 +36,20 @@ for chart_dir in charts/*/; do
 
   # "## <version>" 헤딩부터 다음 "## " 헤딩 전까지. 버전에 점이 있으므로 정규식 대신
   # 문자열 비교로 매칭한다. 헤딩 뒤에 날짜 등이 붙어도(`## 0.1.23 (2026-08-07)`) 잡힌다.
+  # 코드펜스 안의 "## " 는 헤딩이 아니므로 섹션을 끊지 않는다 — 로그·설정 예시를 붙인
+  # 노트에서 본문이 조용히 잘려나가는 것을 막는다.
   # 마지막 `NF {p=1} p` 는 선행 빈 줄만 걷어낸다.
   awk -v h="## $version" '
-    index($0, h) == 1 && (length($0) == length(h) || substr($0, length(h) + 1, 1) == " ") {
+    /^[[:space:]]*(```|~~~)/ {
+      fence = !fence
+      if (found) print
+      next
+    }
+    !fence && index($0, h) == 1 && (length($0) == length(h) || substr($0, length(h) + 1, 1) == " ") {
       found = 1
       next
     }
-    found && /^## / { exit }
+    !fence && found && /^## / { exit }
     found { print }
   ' "$changelog" | awk 'NF { p = 1 } p' > "$notes"
 
