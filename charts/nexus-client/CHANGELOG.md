@@ -44,6 +44,16 @@ nexus-server 버전을 함께 씁니다.
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.1.6
+
+image: `jiwonkim97/nexus-client:0.1.7`
+
+**동작 변경** — 세션 수명주기 자동 관리 도입: 토큰 만료 12시간 전부터 `POST /api/v1/auth/refresh` 로 선제 갱신(탭당 최대 분당 1회), 데이터 API 401 수신 시 전역 로그아웃 후 로그인 화면 이동.
+**동작 변경** — CVAT 편집 세션 연동 활성화: 데이터셋 편집이 `/api` 하위 annotation-sessions 엔드포인트를 사용. `/api`·`/cas` 프록시 경로와 `backendUrl`·`casUrl` 해석 계약은 그대로.
+**마이그레이션** — 없음
+**설정 키** — 없음
+**호환성** — nexus-server 가 `POST /api/v1/auth/refresh`, 계정 관리(`POST /api/v1/auth/password`, `DELETE /api/v1/auth/account`), annotation-sessions API 를 제공해야 함(2026-08-10 이후 운영 배포 버전이면 충족). 미제공 시 세션 자동 갱신은 로그아웃 없이 재시도만 하고, 계정 설정·CVAT 편집은 화면 에러로 표시됨.
+
 ## 0.1.5
 
 image: `jiwonkim97/nexus-client:0.1.6`
