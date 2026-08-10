@@ -51,8 +51,9 @@ GitHub Releases와 `index.yaml`을 업데이트합니다. 새 버전을 릴리�
 `<차트명>-<version>` 형식으로 생성되므로 위 cas-server/nexus-server/nexus-client 배지는 자동으로
 최신 버전을 반영합니다.
 
-python-sdk는 GitHub Releases 태그가 없는 별도 배포 경로(`sdk/simple/` PEP 503 인덱스)라 배지가
-자동 갱신되지 않습니다 — 새 SDK 버전을 게시하면 위 배지의 버전 숫자를 수동으로 맞춰주세요.
+python-sdk는 GitHub Releases 태그가 없는 별도 배포 경로(`sdk/simple/` PEP 503 인덱스)라 위 셋과
+방식이 다릅니다. `scripts/publish_sdk.py`가 인덱스를 만들면서 `sdk/badge.json`도 함께 쓰고, 배지는
+그 파일을 읽습니다(shields.io endpoint) — **발행하면 배지가 따라오므로 손댈 것이 없습니다.**
 
 ## 주의사항
 
