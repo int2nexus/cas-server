@@ -243,6 +243,16 @@ entries:
     version: 0.1.0
   nexus-client:
   - apiVersion: v2
+    appVersion: 0.1.7
+    created: "2026-08-10T03:46:00.24426641Z"
+    description: Nexus 웹 UI
+    digest: 045137c5eac2c526daf801694c29c22f72cf171c6eba43d5390e4c788e18d7e7
+    name: nexus-client
+    type: application
+    urls:
+    - https://github.com/int2nexus/cas-server/releases/download/nexus-client-0.1.6/nexus-client-0.1.6.tgz
+    version: 0.1.6
+  - apiVersion: v2
     appVersion: 0.1.6
     created: "2026-08-06T01:51:47.261938373Z"
     description: Nexus 웹 UI
@@ -393,4 +403,4 @@ entries:
     urls:
     - https://github.com/int2nexus/cas-server/releases/download/nexus-server-0.0.1/nexus-server-0.0.1.tgz
     version: 0.0.1
-generated: "2026-08-07T06:22:48.245067462Z"
+generated: "2026-08-10T03:46:00.244318552Z"
