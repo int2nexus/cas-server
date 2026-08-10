@@ -16,8 +16,12 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
 - **외부 PostgreSQL** — 접속 정보(비번 포함 DSN)는 시크릿으로 주입. 차트가 DB를 띄우지 않는다.
 - **클러스터 내 cas-server** — CAS(파일) 백엔드.
 - **시크릿 4키** (sealed-secret으로 주입): `NEXUS__DATABASE__URL`, `NEXUS__CAS__KEY_ID`, `NEXUS__CAS__SECRET`, `NEXUS__JWT__SECRET`.
+  CVAT annotation 편집 세션을 쓰면 `NEXUS__CVAT__PASSWORD`가 **5번째 키**로 추가된다(선택).
+- **CVAT은 선택** — 설정하지 않아도 서버는 정상 동작한다. 세션 생성·결과 회수만 503이 되고 카탈로그·업로드·seal·조회는 영향이 없다.
 
 DB 마이그레이션은 바이너리에 임베드되어 **기동 시 자동 적용**된다(별도 Job 불필요). 서버는 stateless(파일=CAS, 메타=Postgres)라 PVC가 없다.
+
+> **appVersion 0.1.1은 파괴적 변경을 포함한다** — 조회를 포함한 **모든 API가 인증을 요구**하고, dataset을 바꾸는 요청은 **소유자만** 통과한다. 업그레이드 전에 [CHANGELOG](CHANGELOG.md)의 0.2.0 항목을 반드시 읽을 것.
 
 ## 설치
 
@@ -28,7 +32,7 @@ helm repo update
 
 ### 1) 시크릿 주입 (sealed-secret)
 
-차트는 Secret을 만들지 않고 외부 Secret을 `envFrom`으로 참조한다. 아래 4키를 가진 Secret을 **먼저** 주입한다:
+차트는 Secret을 만들지 않고 외부 Secret을 `envFrom`으로 참조한다. 아래 키를 가진 Secret을 **먼저** 주입한다(마지막 CVAT 줄은 연동을 쓸 때만):
 
 ```bash
 kubectl create secret generic nexus-server -n <namespace> --dry-run=client -o yaml \
@@ -36,6 +40,7 @@ kubectl create secret generic nexus-server -n <namespace> --dry-run=client -o ya
   --from-literal=NEXUS__CAS__KEY_ID='...' \
   --from-literal=NEXUS__CAS__SECRET='...' \
   --from-literal=NEXUS__JWT__SECRET='...' \
+  --from-literal=NEXUS__CVAT__PASSWORD='...' \
   | kubeseal --format yaml > sealed-nexus-server.yaml
 kubectl apply -f sealed-nexus-server.yaml -n <namespace>
 ```
@@ -56,15 +61,23 @@ helm install nexus-server int2nexus/nexus-server -n <namespace> \
 
 | 키 | 기본값 | 설명 |
 |---|---|---|
-| `server.port` | `8090` | 컨테이너 포트 |
+| `server.port` | `8090` | 컨테이너 포트. **바꿀 때 프로브·`service.targetPort`도 함께 바꿀 것**(아래 참조) |
 | `cas.baseUrl` | `http://cas-server:80` | CAS(cas-server) 주소 |
-| `cas.region` / `cas.defaultBucket` | `cas-default` / `data` | CAS region·기본 버킷 |
+| `cas.region` / `cas.defaultBucket` | `cas-default` / `data` | CAS region·기본 버킷. **버킷 이름은 S3 규칙**(소문자·숫자·`-`·`.`, 3~63자)을 따라야 한다 |
+| `database.maxConnections` | `16` | 커넥션 풀 상한. `ingest.batchItemConcurrency`와의 불변식은 [`values.yaml`](values.yaml) 주석 참조 |
 | `secret.existingSecret` | `""` | 비밀 Secret 이름(비우면 fullname) |
 | `service.type` / `service.nodePort` | `NodePort` / `30090` | 서비스 노출 |
 | `ingress.enabled` | `false` | Ingress 사용 여부 |
 | `resources` | 250m/256Mi ~ 1000m/1Gi | 요청/제한 |
+| `cvat.baseUrl` | `""` | **비우면 CVAT 연동 꺼짐**(`NEXUS__CVAT__*` env 자체가 렌더되지 않는다) |
+| `cvat.user` / `cvat.organization` | `""` / `""` | CVAT 서비스 계정, organization slug(선택) |
+| `cvat.projectNamePrefix` | `nexus` | 생성되는 CVAT project 이름 접두사 |
+| `cvat.segmentSize` / `cvat.maxSessionSamples` | `""` / `""` | 비우면 서버 기본값(각각 0=CVAT 기본, 2000) |
+| `cvat.staleCreatingSecs` | `""` | 비우면 서버 기본값 1800초. 이 시간을 넘긴 `creating` 세션을 기동 시 `failed`로 정리 |
 
 전체 키는 [`values.yaml`](values.yaml) 참조.
+
+CVAT 연동은 `cvat.baseUrl`·`cvat.user`·시크릿의 `NEXUS__CVAT__PASSWORD` **셋이 다 있어야** 켜진다. 하나라도 비면 서버는 정상 기동하고 무엇이 빠졌는지 기동 로그에 남는다.
 
 ## 헬스 체크
 
@@ -74,6 +87,20 @@ helm install nexus-server int2nexus/nexus-server -n <namespace> \
 kubectl port-forward svc/nexus-server 8090:80 -n <namespace>
 curl localhost:8090/_internal/health      # {"status":"ok"}
 ```
+
+이 경로만 인증이 면제된다(프로브가 자격증명 없이 호출해야 하므로). 나머지 API는 조회를 포함해 전부 토큰이 필요하다.
+
+### `server.port`를 바꿀 때
+
+`server.port` **하나만** 바꾸면 된다.
+
+```bash
+helm upgrade ... --set server.port=9000
+```
+
+컨테이너 포트, 앱이 듣는 포트(`NEXUS__SERVER__PORT`), Service의 `targetPort`, 두 프로브가 모두 이 값을 따라간다. 뒤의 셋은 숫자가 아니라 **컨테이너 포트 이름 `http`**를 가리키기 때문이다.
+
+`values-xxx.yaml`에서 프로브나 `service.targetPort`를 직접 override할 때 숫자를 박지 말 것 — `server.port`와 어긋나면 앱은 새 포트에서 도는데 kubelet은 옛 포트를 찔러 **Pod가 영영 Ready가 되지 않는다.** 컨테이너 로그에는 아무 이상이 없어 원인을 찾기 어렵다.
 
 ## 삭제
 

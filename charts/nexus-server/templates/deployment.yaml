@@ -52,6 +52,34 @@ spec:
             - name: NEXUS__INGEST__BATCH_ITEM_CONCURRENCY
               value: {{ .Values.ingest.batchItemConcurrency | quote }}
             {{- end }}
+            {{- if .Values.cvat.baseUrl }}
+            {{- /* baseUrl이 있을 때만 주입한다. 빈 값이라도 넣으면 cvat 섹션이 생겨,
+                   CvatConfig에 serde default가 없는 구 이미지(≤ 0.1.0)가 기동에 실패한다. */}}
+            - name: NEXUS__CVAT__BASE_URL
+              value: {{ .Values.cvat.baseUrl | quote }}
+            - name: NEXUS__CVAT__USER
+              value: {{ .Values.cvat.user | quote }}
+            {{- if .Values.cvat.organization }}
+            - name: NEXUS__CVAT__ORGANIZATION
+              value: {{ .Values.cvat.organization | quote }}
+            {{- end }}
+            {{- if .Values.cvat.projectNamePrefix }}
+            - name: NEXUS__CVAT__PROJECT_NAME_PREFIX
+              value: {{ .Values.cvat.projectNamePrefix | quote }}
+            {{- end }}
+            {{- if .Values.cvat.segmentSize }}
+            - name: NEXUS__CVAT__SEGMENT_SIZE
+              value: {{ .Values.cvat.segmentSize | quote }}
+            {{- end }}
+            {{- if .Values.cvat.maxSessionSamples }}
+            - name: NEXUS__CVAT__MAX_SESSION_SAMPLES
+              value: {{ .Values.cvat.maxSessionSamples | quote }}
+            {{- end }}
+            {{- if .Values.cvat.staleCreatingSecs }}
+            - name: NEXUS__CVAT__STALE_CREATING_SECS
+              value: {{ .Values.cvat.staleCreatingSecs | quote }}
+            {{- end }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

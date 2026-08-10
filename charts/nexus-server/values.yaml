@@ -13,7 +13,7 @@
 
 image:
   repository: int2jieun/nexus-server
-  tag: "0.1.0"
+  tag: "0.1.1"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -46,9 +46,33 @@ ingest:
   # 새 이미지로 image.tag를 올린 뒤 3 등으로 설정할 것.
   batchItemConcurrency: "3"
 
+# ── CVAT 연동 (선택) ─────────────────────────────────────────────────
+# annotation 편집 세션에 쓰는 외부 편집기. **설정하지 않으면 연동만 꺼지고 서버는 정상
+# 동작한다** — annotation session 엔드포인트만 503을 반환하고 나머지 API는 영향이 없다.
+#
+# 켜려면 baseUrl과 user를 여기에, 비밀번호는 Secret에 NEXUS__CVAT__PASSWORD로 넣는다.
+# 셋 중 하나라도 비면 서버가 미구성으로 판단하고(기동 로그에 무엇이 빠졌는지 남는다)
+# 연동을 켜지 않는다.
+#
+# 호환성: CVAT 연동에는 appVersion 0.1.1 이상이 필요하다(그 이전 이미지는 cvat 설정을
+#   모른다). 구 이미지에 NEXUS__CVAT__* env를 줘도 기동이 깨지지는 않는다 — 모르는 설정
+#   섹션은 무시된다(실측 확인). 차트를 먼저 올리고 이미지를 나중에 올려도 안전하다.
+#
+# CVAT 쪽 준비(운영자 작업): 서비스 계정 생성, CVAT 워커에서 CAS 주소로 도달 가능,
+#   smokescreen 사설대역 허용(SMOKESCREEN_OPTS=--allow-range=...). 자세한 내용은 usage.md.
+cvat:
+  baseUrl: ""                  # 예: "http://cvat.example.com:8080" — 비우면 연동 꺼짐
+  user: ""                     # CVAT 서비스 계정(Django superuser)
+  organization: ""             # CVAT organization slug (선택)
+  projectNamePrefix: "nexus"   # CVAT project 이름 접두사 — 다른 프로젝트와 구분용
+  segmentSize: ""              # job 분할 크기. 비우면 CVAT 기본 동작
+  maxSessionSamples: ""        # 세션당 샘플 상한(서버 기본 2000)
+  staleCreatingSecs: ""        # 준비 중 방치된 세션을 정리하는 기준(초, 서버 기본 1800)
+
 # ── 비밀 Secret 참조 ─────────────────────────────────────────────────
 # 이 Secret(아래 4키 보유)을 sealed-secret으로 미리 주입해야 한다:
 #   NEXUS__DATABASE__URL, NEXUS__CAS__KEY_ID, NEXUS__CAS__SECRET, NEXUS__JWT__SECRET
+# CVAT 연동을 쓰면 여기에 NEXUS__CVAT__PASSWORD도 함께 넣는다.
 # existingSecret 비우면 기본 이름(<fullname>) 사용.
 secret:
   existingSecret: ""
@@ -56,7 +80,9 @@ secret:
 service:
   type: NodePort
   port: 80
-  targetPort: 8090
+  # 컨테이너 포트 이름(deployment의 `name: http`)을 가리킨다 — 숫자가 아니라 이름이라
+  # server.port를 바꾸면 자동으로 따라간다. 숫자로 바꾸면 server.port와 어긋날 수 있다.
+  targetPort: http
   nodePort: 30090
 
 ingress:
@@ -76,10 +102,14 @@ resources:
 
 terminationGracePeriodSeconds: 30
 
+# 프로브의 port는 **컨테이너 포트 이름**(`http`)이다. 숫자를 박으면 server.port를 바꿨을 때
+# 따라오지 않아, 앱은 새 포트에서 도는데 kubelet은 옛 포트를 찔러 Pod가 영영 Ready가 되지
+# 않는다 — 컨테이너 로그에는 아무 이상이 없어 원인을 찾기 어렵다.
+# /_internal/health는 인증이 면제된 유일한 조회 경로라 프로브가 자격증명 없이 호출한다.
 livenessProbe:
   httpGet:
     path: /_internal/health
-    port: 8090
+    port: http
   initialDelaySeconds: 20
   periodSeconds: 30
   timeoutSeconds: 5
@@ -88,7 +118,7 @@ livenessProbe:
 readinessProbe:
   httpGet:
     path: /_internal/health
-    port: 8090
+    port: http
   initialDelaySeconds: 5
   periodSeconds: 10
   timeoutSeconds: 5

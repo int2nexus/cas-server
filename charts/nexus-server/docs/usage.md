@@ -16,6 +16,8 @@ Nexus는 다음과 같은 특징을 가진다.
 동일한 Sample이라도 DatasetVersion마다 서로 다른 Annotation을 가질 수 있으며, 한 버전에서의 수정은 다른 버전에 영향을 주지 않는다.
 - Seal을 통해 Immutable 버전을 생성한다.  
 DatasetVersion은 Seal하여 변경이 불가능한 스냅샷으로 고정할 수 있다. Seal된 버전은 학습 및 평가에 사용되는 기준 데이터셋으로 활용되며, 동일한 데이터를 언제든지 재현할 수 있다.
+- Annotation은 CVAT에서 편집할 수 있다.  
+Draft 버전의 Sample을 CVAT으로 내보내 사람이 편집하고, 그 결과를 다시 Draft로 반영할 수 있다. 이미지는 Nexus를 거치지 않고 CVAT이 CAS에서 직접 받는다. 서버에 CVAT 연동이 구성된 경우에만 사용할 수 있다.
 
 ### 1.3 전체 워크플로우
 ![기본적인 데이터 흐름](workflow.png)
@@ -40,7 +42,7 @@ nexus-server는 cas-server와 동일한 Helm repo를 사용한다.
 
 #### 시크릿 주입 (sealed-secret)
 
-차트는 Secret을 만들지 않고 외부 Secret을 envFrom으로 참조한다. 아래 4개의 키를 가진 Secret을 먼저 클러스터에 주입한다(kubeseal로 봉인):
+차트는 Secret을 만들지 않고 외부 Secret을 envFrom으로 참조한다. 아래 4개의 키를 가진 Secret을 먼저 클러스터에 주입한다(kubeseal로 봉인). CVAT 연동을 쓰면 `NEXUS__CVAT__PASSWORD`가 5번째 키로 추가된다 — [2.2](#22-cvat-연동-선택-차트-020) 참조:
 
 ```bash
 kubectl create secret generic nexus-server -n <namespace> --dry-run=client -o yaml \
@@ -163,6 +165,143 @@ nx.connect(verify=False)                          # 최후의 수단
 
 - 설정 파일의 `"verify"` 키에 적어두면 매번 넘기지 않아도 된다. 값은 `true`/`false` 또는 **CA 번들 경로**.
 - `verify=False`는 그 연결의 **중간자 공격 탐지를 포기**하는 것이다. 접속 시 한 번 경고가 뜬다.
+
+#### 계정 관리 (SDK 0.1.2+)
+
+`nx.connect()`가 돌려주는 클라이언트로 본인 계정을 관리한다. 되돌릴 수 없는 작업이라 `nx.` 최상위 함수로는 노출하지 않는다.
+
+```python
+client = nx.connect()
+client.change_password("현재비번", "새비번123")      # 현재 비밀번호를 재확인한다
+result = client.delete_account("새비번123")          # 완전 삭제 — 되돌릴 수 없다
+```
+
+- **비밀번호 변경은 새 로그인부터 적용된다.** 이미 발급된 토큰은 만료(최대 24시간)까지 그대로 유효하다. 이 클라이언트 인스턴스는 계속 써도 된다.
+- 설정 파일(`~/.int2nexus/settings.json`)에 비밀번호를 적어두었다면 **그 파일도 함께 고쳐야 한다** — 안 그러면 다음 `nx.connect()`가 실패한다.
+- **`delete_account`는 비활성화가 아니라 삭제다.** 이메일이 풀려 같은 주소로 다시 가입할 수 있다.
+- 삭제 응답의 **`released_datasets`가 0이 아니면**, 그 dataset들은 주인이 없어져 **인증된 누구나 수정·삭제할 수 있게 된다.** 팀이 쓰던 데이터라면 삭제 전에 소유자를 옮겨야 하는데, 옮기는 API가 아직 없어 서버 운영자가 DB에서 처리해야 한다.
+- 비밀번호를 잊어 로그인할 수 없는 계정은 본인이 처리할 수 없다 — 서버 운영자가 DB에서 재설정해야 한다.
+
+### 2.2 CVAT 연동 (선택, 차트 0.2.0+)
+
+annotation을 CVAT에서 편집하려는 경우에만 설정한다. **설정하지 않아도 nexus는 정상 동작한다** — 세션 **생성**과 **결과 회수(import)**만 503을 반환하고, 카탈로그·업로드·seal·조회는 영향을 받지 않는다.
+
+#### CVAT 쪽 준비 (운영자 작업)
+
+nexus가 통제하지 않는 부분이라 CVAT 관리자와 함께 준비해야 한다.
+
+| 항목 | 내용 |
+|---|---|
+| 서비스 계정 | nexus가 사용할 CVAT 계정 1개. `docker exec -it cvat_server python manage.py createsuperuser` 로 생성한다. 모든 CVAT project를 이 계정이 소유하므로 일반 작업자 계정과 분리한다 |
+| 네트워크 도달 | **CVAT 워커 컨테이너**에서 CAS 주소로 HTTP 요청이 가능해야 한다. 이미지는 nexus를 거치지 않고 CVAT이 CAS에서 직접 받는다 |
+| smokescreen 허용 | CVAT은 원격 URL 다운로드에 SSRF 가드(smokescreen)를 거친다. CAS가 사설 IP면 기본 설정에서 차단되므로 허용 대역을 지정해야 한다 |
+
+smokescreen은 CVAT 컨테이너 안에서 로컬 프록시로 동작하며, compose의 `SMOKESCREEN_OPTS` 환경변수로 허용 대상을 지정한다.
+
+```bash
+# CVAT의 .env 등에 지정한 뒤 서버·워커를 재생성한다
+SMOKESCREEN_OPTS=--allow-range=10.0.0.0/8        # 또는 --allow-address=<CAS IP>
+
+docker compose up -d --force-recreate cvat_server cvat_worker_import cvat_worker_chunks
+```
+
+**확인 방법.** 워커 안에서 프록시를 경유해 CAS 오브젝트를 실제로 받아본다. 워커에서 `curl`이 직접 성공하더라도 프록시를 거치지 않으면 의미가 없으므로, `-x`로 프록시를 명시해서 확인한다.
+
+```bash
+# 프록시 경유로 200이 나와야 한다. 407이면 smokescreen이 막고 있는 것이다.
+docker exec cvat_worker_import curl -s -o /dev/null -w '%{http_code}
+'   -x http://127.0.0.1:4750 http://<CAS>/<bucket>/<object-key>
+```
+
+#### nexus 설정 (Helm)
+
+비밀번호는 기존 Secret에 키를 하나 추가하고, 나머지는 values로 준다.
+
+```bash
+kubectl create secret generic nexus-server -n <namespace> --dry-run=client -o yaml \
+  --from-literal=NEXUS__DATABASE__URL='...' \
+  --from-literal=NEXUS__CAS__KEY_ID='...' \
+  --from-literal=NEXUS__CAS__SECRET='...' \
+  --from-literal=NEXUS__JWT__SECRET='...' \
+  --from-literal=NEXUS__CVAT__PASSWORD='<CVAT 서비스 계정 비밀번호>' \
+  | kubeseal --format yaml > sealed-nexus-server.yaml
+```
+
+```bash
+helm upgrade --install nexus-server int2nexus/nexus-server -n <namespace> \
+  --set cas.baseUrl=<CAS 주소> \
+  --set cvat.baseUrl=http://cvat.example.com:8080 \
+  --set cvat.user=nexus-svc
+```
+
+| values 키 | 기본값 | 설명 |
+|---|---|---|
+| `cvat.baseUrl` | `""` | CVAT 주소. **비우면 연동이 꺼진다** |
+| `cvat.user` | `""` | CVAT 서비스 계정 |
+| `cvat.organization` | `""` | CVAT organization slug (선택) |
+| `cvat.projectNamePrefix` | `nexus` | 생성되는 CVAT project 이름 접두사 |
+| `cvat.segmentSize` | `""` | job 분할 크기. 비우면 CVAT 기본 동작 |
+| `cvat.maxSessionSamples` | `""` | 세션당 샘플 상한(서버 기본 2000) |
+| `cvat.staleCreatingSecs` | `""` | 준비 중 방치된 세션 정리 기준(초, 서버 기본 1800) |
+
+비밀번호는 values에 두지 않는다. Secret의 `NEXUS__CVAT__PASSWORD`로 주입한다.
+
+> **호환성** — CVAT 연동에는 **appVersion 0.1.1 이상**의 이미지가 필요하다. 그 이전 이미지는 `cvat` 설정 자체를 모른다. 다만 `NEXUS__CVAT__*` 환경변수를 줘도 **기동이 깨지지는 않는다** — 모르는 설정 섹션은 무시되고 CVAT 기능만 없는 상태로 정상 기동한다(실측 확인). 차트를 먼저 올리고 이미지를 나중에 올려도 안전하다.
+
+#### 연결 확인
+
+기동 로그에 다음 중 하나가 남는다.
+
+```
+INFO  CVAT 연동 활성화 base_url=http://cvat.example.com:8080
+WARN  [cvat] 설정이 불완전해 CVAT 연동을 켜지 않는다 ... missing=user, password
+INFO  [cvat] 설정 없음 — annotation session 엔드포인트는 503을 반환한다
+```
+
+`baseUrl`/`user`/`password` 셋 중 하나라도 비면 연동을 켜지 않으며, **무엇이 빠졌는지 로그에 남는다.**
+
+연동이 켜진 뒤 실제 동작은 세션을 하나 만들어 확인한다. 준비에 실패하면 세션 상태가 `failed`가 되고 사유가 세션의 `error`에 기록된다.
+
+| 세션 `error` | 원인 |
+|---|---|
+| `CVAT login 요청 실패: ...` | CVAT이 떠 있지 않거나 주소가 틀렸다 |
+| `CVAT login 실패: 401 ...` | 서비스 계정 아이디·비밀번호가 틀렸다 |
+| `CVAT login 실패: 404 ...` | 그 주소에 CVAT API가 없다. **CVAT 앞단 프록시의 Host 기반 라우팅**인 경우가 많다 — 아래 참조 |
+| `... likely attempt to access internal host` | smokescreen이 CAS 주소를 막고 있다 |
+| `CVAT 데이터 첨부가 제한 시간 안에 ...` | 이미지 다운로드가 30분을 넘겼다. 샘플 수를 줄이거나 네트워크를 확인한다 |
+
+`401`과 `404`를 구분해서 본다. **401은 계정 문제, 404는 주소 문제**다.
+
+> **404가 나면서 루트(`/`)까지 404라면** CVAT 앞단 traefik이 Host 기반으로 라우팅하는데 그 규칙에
+> 걸리지 않는 주소로 접근한 것이다. CVAT compose는 `CVAT_HOST` 값으로 traefik 라우터 규칙을
+> 만들기 때문에, 그 값이 `localhost`인 상태에서 IP로 접근하면 traefik이 자기 기본 404
+> (`404 page not found`, Go 서버 응답)를 돌려준다.
+>
+> ```bash
+> # 확인 — Host 헤더를 바꿨을 때만 200이면 이 경우다
+> curl -o /dev/null -w '%{http_code}
+'                      http://<CVAT-IP>:8080/api/server/about   # 404
+> curl -o /dev/null -w '%{http_code}
+' -H 'Host: localhost' http://<CVAT-IP>:8080/api/server/about   # 200
+> ```
+>
+> 해결은 CVAT 쪽에서 `CVAT_HOST`를 **실제 접속 주소(IP 또는 DNS 이름)로 바꾸고** traefik·서버·UI를
+> 재생성하는 것이다. nexus의 `cvat.baseUrl`만 `localhost`로 되돌려 우회하면, nexus와 CVAT이 같은
+> 호스트일 때만 동작하고 세션의 `cvat_url`이 `http://localhost:8080/tasks/N`으로 만들어져
+> **다른 PC의 작업자가 열 수 없다.**
+
+#### 연결되지 않았을 때의 동작
+
+| CVAT 상태 | 서버 기동 | 카탈로그 API | 세션 생성·회수 | 세션 목록·조회·close·delete |
+|---|---|---|---|---|
+| 설정 없음 | 정상 | 정상 | 503 | 정상 |
+| 설정 불완전 | 정상(경고 로그) | 정상 | 503 | 정상 |
+| 설정됨, CVAT 다운 | 정상 | 정상 | 세션이 `failed`가 된다 | 정상 |
+| 정상 연결 | 정상 | 정상 | 정상 | 정상 |
+
+**목록·조회·`close`·`delete`는 CVAT 없이도 동작한다.** CVAT을 호출하지 않거나(목록·조회), 호출에 실패해도 진행하기 때문이다(`delete`는 CVAT project 삭제를 건너뛰고 세션 행만 지운다). 이미 만들어진 세션을 CVAT이 죽은 뒤에도 정리할 수 있어야 하기 때문이다 — 그러지 않으면 샘플이 영구히 잠긴다.
+
+nexus는 기동 시점에 CVAT을 호출하지 않는다. 따라서 운영 중 CVAT이 내려가도 영향은 세션 생성·회수에만 국한된다.
 
 ## 3. 핵심 흐름
 ### 3.1 Dataset 생성
@@ -418,6 +557,13 @@ ds.update(name="new-name", description="새 설명")
 Dataset 삭제는 버전 단위로 수행한다. `ds.delete()`로 버전을 삭제하고, 남은 버전이 하나도 없으면 Dataset도 자동으로 삭제된다. 이때 Dataset에 속한 잔여 Sample도 모두 정리되며 필요 시 CAS로 Asset 삭제 요청을 보내 CAS에서 Asset이 정리될 수 있도록 한다. 
 Dataset의 소유자(생성자)만 삭제 가능하며, sealed 버전은 삭제할 수 없다.
 
+**`delete_cas`는 기본적으로 꺼져 있다.** 지정하지 않으면 카탈로그(메타데이터)만 지워지고 **CAS 원본은 그대로 남는다.** CAS 용량을 회수하려면 명시해야 한다.
+
+```python
+ds.delete(confirm="my-dataset")                   # 카탈로그만 삭제, CAS 원본 유지
+ds.delete(confirm="my-dataset", delete_cas=True)  # CAS로 삭제 요청까지 보냄
+```
+
 ## 5. 데이터셋 버전 관리
 ### 5.1 Draft 버전
 처음 버전 생성 시 Draft 상태이며 자유롭게 수정 가능한 작업 중 상태이다. 
@@ -472,7 +618,179 @@ new_ds = ds.clone("my-dataset-copy", "v0")
 - 복사 후 Draft로 시작한다 - 복제 직후 바로 이어서 patch/추가 작업이 가능하다.
 - 내부적으로 import_samples를 반복 호출하는 방식이라 멱등하지 않다 - 같은 대상에 두 번 부르면 샘플이 중복 복사된다.
 
-## 6. 에러 처리
+## 6. CVAT으로 annotation 편집 (sdk 0.1.2+)
+
+Draft 버전의 샘플을 **CVAT으로 보내 사람이 편집**하고, 그 결과를 다시 Draft에 반영한다.
+이미지는 Nexus를 거치지 않는다 - CVAT이 CAS에서 직접 받는다.
+
+서버에 CVAT 연동이 구성되어 있어야 한다. 구성되지 않은 서버에서는 `NexusError(status_code=503)`이 발생한다.
+
+### 6.1 시작 전 확인
+
+| 항목 | 확인하지 않으면 |
+|---|---|
+| 대상 버전이 **draft** | sealed면 `NexusError(409)` |
+| 내가 그 dataset의 **소유자** | `NexusError(403)` - 세션 생성은 소유자만 가능하다 |
+| 서버에 CVAT 연동 구성 | `NexusError(503)` |
+| CVAT이 CAS 이미지를 받을 수 있는 네트워크 | 세션이 `failed`가 되고 사유가 예외에 실린다 |
+| 그 샘플을 잡고 있는 다른 세션 없음 | `NexusError(409)` - 어느 세션이 잡고 있는지 메시지에 담긴다 |
+
+**세션 관련 작업은 모두 dataset 소유자만 할 수 있다.** 세션 생성 자체가 소유자 전용이라, 실질적으로 세션을 만든 사람과 소유자는 같은 계정이다.
+
+`close`와 `pull`은 예외적으로 "세션을 만든 사람"에게도 열려 있는데, 이건 **소유자가 없던 시절에 만들어진 세션**이 나중에 소유자를 갖게 된 경우를 위한 안전장치다. 그런 세션을 만든 사람이 스스로 닫을 수 있게 하려는 것이고, 정상적으로 만든 세션에서는 차이가 없다.
+
+### 6.2 세션 생성
+
+```python
+ds = nx.Dataset.load_or_create("my-dataset", version="v0")     # draft여야 한다
+ids = [r["sample_id"] for r in ds.list_samples(max_samples=50)]
+
+ses = ds.create_annotation_session(ids)     # open 될 때까지 기다렸다가 반환
+print(ses.url)                              # 작업자에게 넘길 CVAT 주소
+print(ses.session_id)                       # 나중에 이어받을 때 필요
+```
+
+**생성은 비동기다.** CVAT이 이미지를 모두 내려받아야 열리므로 수백 장이면 몇 분 걸린다.
+바로 받아두고 나중에 기다릴 수도 있다.
+
+```python
+ses = ds.create_annotation_session(ids, wait=False)   # status == "creating"
+ses.wait_open(timeout=1800)                           # 큰 세션은 넉넉히
+```
+
+데이터에 아직 없는 라벨로 새로 그리게 하려면 함께 만들어 준다.
+
+```python
+ds.create_annotation_session(ids, extra_labels=[
+    {"group": "det", "label": "Face", "components": ["bounding_box"]}])
+```
+
+### 6.3 고칠 대상만 골라서 세션 만들기
+
+세션은 `sample_ids` 목록을 받으므로 어떤 조건으로 고르든 그 결과를 그대로 넘기면 된다. 가장 흔한 것은 "특정 그룹의 특정 라벨이 붙은 샘플만 다시 손보기"다.
+
+```python
+# 'road_obj_ma' 그룹에 label이 'sedan'인 인스턴스가 있는 샘플
+rows = ds.samples(group_key="road_obj_ma", label="sedan")
+ids = [r["sample_id"] for r in rows]
+
+ses = ds.create_annotation_session(ids)
+print(len(ids), "개 대상 →", ses.url)
+```
+
+`group_key`/`label`/`confidence_min`/`confidence_max`/`track_id`는 **같은 인스턴스 하나**가 모두 만족해야 하는 조건이다.
+
+```python
+ds.samples(group_key="road_obj_ma", label="sedan", confidence_max=0.5)   # 신뢰도 낮은 것만
+ds.samples(group_key="road_obj_ma", track_id=102)                        # 특정 track만
+```
+
+`split`/`tags`/`meta`는 인스턴스가 아니라 **샘플 자체의 속성**으로 따로 걸린다.
+
+```python
+ds.samples(group_key="road_obj_ma", label="sedan", split="train", tags=["night"])
+```
+
+세션 상한(기본 2000)을 넘으면 나눠서 만든다.
+
+```python
+for i in range(0, len(ids), 500):
+    ses = ds.create_annotation_session(ids[i:i + 500], wait=False)   # 기다리지 않고 연달아
+```
+
+> 대상을 좁히면 CVAT에 보내는 이미지가 줄어 준비도 빨라진다. 다만 **한 샘플의 편집형 컴포넌트는 전부 나간다** — `label="sedan"`으로 골라도 그 샘플의 다른 인스턴스와 차선 등이 함께 보인다(그리는 화면에서 맥락이 필요하기 때문). 특정 그룹만 보이게 하려면 `groups=["road_obj_ma"]`를 함께 준다.
+
+### 6.4 편집 결과 반영
+
+작업자가 CVAT에서 편집한 뒤 결과를 Draft로 당겨온다.
+
+```python
+summary = ses.pull()
+print(summary)
+```
+
+| 키 | 뜻 |
+|---|---|
+| `updated_samples` | annotation이 실제로 바뀐 샘플 수 |
+| `created_instances` | CVAT에서 새로 그려 생긴 인스턴스 |
+| `removed_instances` | CVAT에서 지워져 사라진 인스턴스 |
+| `updated_components` | 좌표 등이 바뀐 컴포넌트 |
+| `deleted_components` | 지워진 컴포넌트 |
+| `warnings` | 반영되지 않은 것들의 사유 |
+
+> **CVAT에서 반드시 `Save`(Ctrl+S)를 눌러야 한다.** 편집만 하고 저장하지 않으면 서버에 올라가지 않아 `pull()`이 전부 0을 돌려준다.
+
+- `pull()`은 **여러 번 호출해도 안전하다.** 작업 도중에 중간중간 불러도 되고, 편집이 없으면 전부 0이다.
+- `warnings`를 버리지 말 것 - "CVAT에서 지웠는데 annotation에 남아 있다"의 이유가 대개 여기 있다. 일부 샘플 반영 실패도 예외가 아니라 이 목록으로 온다.
+
+### 6.5 종료 - `close`와 `delete`는 다르다
+
+```python
+ses.close()                 # 샘플 잠금만 풀고 CVAT project는 남긴다
+ses.close(force=True)       # 미반영 편집을 버리고 닫는다 (그냥 close()는 409)
+ses.delete()                # CVAT project까지 완전 삭제 - 되돌릴 수 없다
+```
+
+| | close | delete |
+|---|---|---|
+| 샘플 잠금 | 해제 | 해제 |
+| CVAT project | **보존** | **삭제**(이미지 사본·미반영 편집까지) |
+| 권한 | dataset 소유자 (+ 그 세션을 만든 사람) | **dataset 소유자만** |
+| CVAT 연결 | 없어도 동작 | 없어도 동작(project 삭제만 건너뜀) |
+
+`close()`는 아직 당겨오지 않은 편집이 있으면 `NexusError(409)`로 막는다. 먼저 `pull()`을 부르거나, 그 작업을 버릴 생각이면 `force=True`를 준다. CVAT을 조회할 수 없으면 "미반영 여부를 모름"으로 보고 막지 않는다 — CVAT이 죽었을 때 세션을 못 닫으면 샘플이 영구히 잠기기 때문이다.
+
+### 6.6 진행 중인 세션 찾기 / 이어받기
+
+세션은 파이썬 프로세스와 무관하게 서버에 남아 있다. 스크립트를 껐다 켜도 이어받을 수 있다.
+
+```python
+for s in nx.annotation_sessions():                  # 전역, 기본은 진행 중인 것만
+    print(s.session_id, s.status, s.dataset_name, s.version, s.url)
+
+ses = nx.annotation_session("019fd94f-...")         # id로 다시 잡기
+nx.annotation_sessions(status="all", mine=True)     # 이력 포함 / 내가 만든 것만
+ds.annotation_sessions()                            # 이 dataset·version의 것만
+```
+
+목록으로 만든 객체는 `has_unimported_changes`가 항상 `None`이다(세션마다 CVAT 조회가 필요해서). 필요하면 `s.refresh()` 후 읽는다.
+**`None`은 '없음'이 아니라 '모름'이다.**
+
+### 6.7 알아둘 것
+
+- CVAT으로 나가는 컴포넌트는 `bounding_box`/`polygon`/`polyline`/`keypoint_2d` **4종뿐**이다. 3D(`cuboid_3d` 등)·classification·scalar는 편집 대상이 아니며 **그대로 보존**된다.
+- 하나의 샘플은 동시에 하나의 세션에만 속할 수 있다. 겹치면 세션 생성이 거부되고, 해당 세션을 `close()`하면 풀린다.
+- sealed 버전에는 세션을 만들 수 없다.
+- 세션 삭제는 CVAT project를 통째로 지우므로 **회수하지 않은 편집도 함께 사라진다.**
+
+### 6.8 전체 예제
+
+```python
+import nexus as nx
+nx.connect()
+
+ds = nx.Dataset.load_or_create("my-dataset", version="v0")
+ids = [r["sample_id"] for r in ds.list_samples(max_samples=20)]
+
+# 편집 전 annotation을 남겨둔다 - 나중에 무엇이 바뀌었는지 대조할 근거
+before = {sid: ds.get_sample(sid) for sid in ids}
+
+ses = ds.create_annotation_session(ids)
+print("CVAT에서 편집하세요:", ses.url)
+
+# --- 작업자가 CVAT UI에서 편집하고 반드시 [Save] ---
+
+summary = ses.pull()
+print(summary)
+
+for sid in ids:
+    if ds.get_sample(sid) != before[sid]:
+        print("변경됨:", sid)
+
+ses.close()
+```
+
+## 7. 에러 처리
 
 모든 SDK 예외는 `NexusError`(및 하위 클래스 `NexusAuthError`/`NexusCasError`/`NexusIngestError`/`NexusBatchError`)를 상속한다.
 
@@ -493,8 +811,21 @@ except NexusError as e:
 - `e.status_code`(`int | None`)와 `e.server_message`(`str | None`)로 서버가 보낸 실제 에러 사유를 프로그램적으로 분기할 수 있다. `str(e)`에도 같은 내용이 포함되지만(사람이 읽는 용도), 상태코드로 분기하려면 이 두 속성을 쓴다.
 - `flush`/`patch_annotations`의 배치 호출은 건당 결과를 `IngestResult(ok, sample, sample_id, error)`로 모아서 반환한다 — `strict=True`면 실패가 하나라도 있을 때 `NexusBatchError(failures=[...])`를 던진다.
 
+#### 401과 403을 구분한다
 
-## 7. 전체 API 레퍼런스
+| 코드 | 뜻 | 대응 |
+|---|---|---|
+| `401` | 토큰이 없거나 만료됐다 | **SDK 0.1.2+는 자동으로 다시 로그인하고 재시도한다** — 보통 이 예외를 볼 일이 없다. 그래도 401이 올라오면 자격증명 자체가 안 맞는 것이다(비밀번호가 바뀌었거나 서버 JWT 시크릿이 교체됨) |
+| `403` | 로그인은 됐지만 **그 dataset의 소유자가 아니다** | 소유자에게 요청하거나, `clone()`으로 내 dataset을 만들어 작업한다 |
+
+**조회를 포함한 모든 요청에 토큰이 필요하다.** 그리고 dataset을 바꾸는 작업 — 적재(`flush`), annotation 수정, 샘플 추가·삭제, seal, 이름 변경, 삭제 — 은 **소유자만** 할 수 있다. 소유자는 dataset을 만든 계정으로 고정되며 옮기는 기능은 아직 없다. 조회는 소유자가 아니어도 된다.
+
+예외가 하나 있다. **소유자가 지정되지 않은 dataset은 누구나 바꿀 수 있다.** 소유권 도입 이전에 만들어졌거나 소유자 계정이 삭제된 경우이며, 이때는 403이 나지 않는다. 남의 dataset인 줄 알았는데 쓰기가 되면 이 경우다.
+
+`flush`는 권한 때문에 거부된 건이 있으면 조용히 넘기지 않고 예외를 던진다. 남의 dataset에 적재를 시도하다 일부만 들어가는 상황을 막기 위해서다.
+
+
+## 8. 전체 API 레퍼런스
 ### 최상위 함수
 |||
 |---|---|
@@ -503,6 +834,8 @@ except NexusError as e:
 |`nx.upload(paths, bucket, prefix="", workers=8)` → {경로: CasRef}|파일 업로드|
 |`nx.Sample(image=, annotation=, assets=, split=, tags=)`|샘플 정의|
 |`nx.CasRef(bucket, key, hash_hex=, size=, content_type=)`|파일 참조|
+|`nx.annotation_sessions(status=, dataset_id=, mine=, limit=)`|CVAT 편집 세션 목록(전역, 기본 진행 중인 것만)|
+|`nx.annotation_session(session_id)`|세션 id로 다시 잡기|
 
 ### Dataset
 |||
@@ -519,12 +852,29 @@ except NexusError as e:
 |`.update(name=, description=)`|	이름/설명 수정|
 |`.seal()`|	버전 확정|
 |`.to_df(groups=, path=, format=, chunksize=)`|	DataFrame 변환|
-|`.delete(confirm=, delete_cas=)`|	버전 삭제|
+|`.delete(confirm=, delete_cas=)`|	버전 삭제. `delete_cas` 미지정 시 CAS 원본은 유지된다([4.3](#43-데이터셋-삭제-정책))|
 |`.favorite()` / `.unfavorite()`|	즐겨찾기|
+|`.create_annotation_session(sample_ids, groups=, extra_labels=, wait=True, timeout=600)`|	CVAT 편집 세션 생성|
+|`.annotation_sessions(status=)`|	이 dataset·version의 세션 목록|
+
+### AnnotationSession
+|||
+|---|---|
+|`.status` / `.url` / `.session_id`|	상태 · CVAT 주소 · 식별자|
+|`.dataset_name` / `.version` / `.sample_count`|	목록에서도 채워지는 표시용 값|
+|`.warnings` / `.error`|	준비 중 스킵 사유 / `failed` 사유|
+|`.has_unimported_changes`|	미반영 편집 여부(**`None` = 모름**)|
+|`.wait_open(timeout=600, interval=3)`|	`open`이 될 때까지 대기|
+|`.refresh()`|	서버에서 다시 읽어 상태 갱신|
+|`.pull()`|	CVAT 결과를 draft에 반영(멱등) → 요약 dict|
+|`.close(force=False)`|	작업 종료(CVAT project 보존)|
+|`.delete()`|	세션 + CVAT project 완전 삭제(소유자만)|
 
 ### 그 외
 |||
 |---|---|
 |`client.add_tags_bulk(sample_ids, tags)` / `.remove_tags_bulk(...)`|태그 일괄 처리|
+|`client.change_password(current, new)`|본인 비밀번호 변경(현재 비밀번호 재확인)|
+|`client.delete_account(password)` → dict|본인 계정 **완전 삭제** — 되돌릴 수 없다|
 |`NexusError`, `NexusAuthError`, `NexusCasError`, `NexusIngestError`, `NexusBatchError`|	예외 타입(`.status_code`, `.server_message`)|
 |`IngestResult(ok, sample, sample_id, error)`|	배치 처리 건별 결과|
