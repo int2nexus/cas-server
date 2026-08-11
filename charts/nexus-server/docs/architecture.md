@@ -607,6 +607,10 @@ DatasetVersion의 변경 가능 여부는 권한과 별개로 Version 상태에 
 Draft 상태에서는 Sample과 Annotation을 수정할 수 있지만, Seal 이후에는 모든 변경이 차단된다.  
 즉, Dataset 소유권은 누가 변경할 수 있는지를 결정하고, Version 상태는 변경이 가능한지를 결정한다. 두 정책은 서로 독립적으로 동작한다.
 
+**Seal이 고정하는 것은 Version의 구성과 Annotation이다.** Sample의 `meta`는 그 대상이 아니다 — Seal은 Instance를 NDJSON 스냅샷으로 CAS에 박제하고 해시로 고정하지만 `samples.meta`는 스냅샷에 포함되지 않으며, Sealed Version의 `meta` 조회는 언제나 살아 있는 행을 읽는다. `meta`가 Sample 단위로 하나뿐이고 Version별로 분기되지 않기 때문이다(Annotation만 CoW로 격리된다).
+
+이 성질을 이용하는 경로가 하나 있다. **이미지 크기 보정(`PATCH /api/v1/samples/dimensions`)은 Sealed Version에 속한 Sample에도 적용된다.** 다만 이 경로는 **빈칸을 채우는 것만 가능하다** — 축별로 값이 없거나 `null`이거나 0 이하일 때만 쓰고, 이미 기록된 값은 거부한다. 숫자가 아닌 값이 들어 있으면 정체를 알 수 없는 값으로 보아 건드리지 않는다. 정보를 지우는 경로가 없으므로 재현성이 깨지지 않고, 그래서 Seal 여부를 검사하지 않는다. 보정 대상인 `0`은 측정된 값이 아니라 구 SDK가 크기를 모를 때 자리를 채우려고 넣은 값이며, 그것을 얼려두는 것은 재현성을 지키는 일이 아니라 결함을 보존하는 일이다.
+
 Annotation 편집 세션에도 같은 정책이 적용된다. Sealed Version은 편집 세션의 대상이 될 수 없으며, 세션이 열려 있는 동안 대상 Version이 Seal되면 이후 결과 회수가 차단된다.
 
 **편집 세션의 모든 작업은 Dataset 소유자에게 열려 있다.** 세션 생성 자체가 소유자 전용이므로, 정상적으로 만들어진 세션에서는 세션 생성자와 Dataset 소유자가 동일한 계정이다.

@@ -318,7 +318,7 @@ ds = nx.Dataset.load_or_create("my-dataset", "v0")
 
 로컬 이미지를 CAS에 직접 올리고 각 파일을 가리키는 참조 `{CasRef}`를 받는다. 이후 이 참조로 샘플을 등록한다.
 - 같은 파일을 다시 올려도 내용이 같으면 건너뛴다(멱등). 실패한 파일만 골라 재시도할 수 있다(같은 목록으로 재호출).  
-- 이미 CAS에 올라가 있는 파일이면 이 단계를 건너뛰고, 그 파일의 CAS URL을 바로 다음 단계(nx.Sample(image=...))에 명시하여 사용할 수 있다.
+- 이미 CAS에 올라가 있는 파일이면 이 단계를 건너뛰고, 그 파일의 CAS URL을 바로 다음 단계(nx.Sample(image=...))에 명시하여 사용할 수 있다. 다만 그렇게 하면 이미지 크기를 알 수 없어 `meta.width`/`meta.height`가 비게 된다 — 아래 [`nx.probe`](#nxprobe--업로드-없이-이미지-크기만-채우기-sdk-013)로 채운다.
 
 ```python
 import json
@@ -359,6 +359,53 @@ python backfill_thumbnails.py --bucket <버킷>              # 실행
 멱등이라 중단 후 다시 돌려도 안전하다(이미 있는 썸네일은 건너뛴다). `--prefix images/`로 범위를 좁히고, 사내 TLS 검사 환경이면 `--ca-bundle /path/corp-ca.pem`을 붙인다.
 
 > 직접 업로드를 상시 경로로 쓴다면 **적재 후 이 스크립트를 돌리는 것을 절차에 포함**해야 한다. 빠뜨리면 UI에서 원본이 그대로 로드되어 그리드가 무거워진다.
+
+#### `nx.probe` — 업로드 없이 이미지 크기만 채우기 (sdk 0.1.3+)
+
+업로드를 건너뛰고 CAS URL로 바로 등록하면 썸네일뿐 아니라 **이미지 크기도 빠진다.** CAS가 객체의 픽셀 크기를 알려주지 않기 때문이다(`HEAD`로 얻는 것은 hash·size·content_type뿐이다). `nx.probe`가 각 객체의 **앞부분 64KB만** 받아 이미지 헤더를 파싱해 크기를 채운다.
+
+```python
+from nexus.sample import CasRef
+
+refs = [CasRef(bucket="my-bucket", key=f"images/{name}") for name in names]
+refs = nx.probe(refs, workers=8)          # 앞부분만 range GET
+
+ds.add([nx.Sample(r) for r in refs])
+ds.flush()
+```
+
+입력은 `CasRef` 또는 `s3://`·`http(s)://` URL 문자열이다(`nx.Sample(image=)`와 같은 규칙). 반환은 **입력 순서를 보존한 리스트**이고 길이가 줄지 않는다 — 실패한 객체도 자리를 지키며 크기만 비어 있으므로, 호출부가 자기 파일명 목록과 zip해도 어긋나지 않는다. 이미 크기가 있는 ref는 네트워크를 타지 않아 같은 목록으로 재호출하면 실패분만 재시도된다. CAS가 Range 요청을 지원하지 않아도 동작한다(앞부분만 읽고 연결을 끊는다).
+
+로컬 파일이 손에 있다면 네트워크를 탈 이유가 없다. 같은 파서를 직접 부르면 된다.
+
+```python
+info = nx.image_info(path.read_bytes())   # width/height/mime/channels, 헤더만 읽음
+ref = CasRef(bucket="my-bucket", key=key, width=info.width, height=info.height)
+```
+
+> 크기를 못 구하면 `meta`에 `width`/`height` 키를 **넣지 않는다**. `0`을 적으면 크기 facet의 range가 `min:0`으로 오염되고, CVAT이 그 값으로 정규화 좌표를 계산해 좌표가 망가진다. 키가 없으면 집계에서 조용히 빠지고, **CVAT 편집 세션 생성은 명확한 에러로 거부된다**([6.1](#61-시작-전-확인)).
+
+#### 이미 등록된 샘플의 크기 백필 — `ds.backfill_dims` (sdk 0.1.3+)
+
+`nx.probe`가 생기기 전에 등록된 샘플은 `meta.width`/`meta.height`가 `0`으로 들어가 있다. 그 `0`은 측정값이 아니라 SDK가 자리를 채우려고 넣은 값이고, **CVAT에서는 세션 생성은 통과한 뒤 export 단계에서 해당 인스턴스가 조용히 빠진다.** 썸네일 백필과 같은 성격의 일회성 정비다.
+
+```python
+ds = nx.load_or_create("<dataset>", version="<version>")
+
+report = ds.backfill_dims(dry_run=True)   # 대상 규모와 실제 측정 가능 건수만 확인
+report = ds.backfill_dims(workers=8)      # 적용
+print(report)
+# {'scanned': 12000, 'targeted': 840, 'measured': 838, 'applied': 838, 'rejected': [...]}
+```
+
+버전의 샘플을 훑어 대상을 고르고, `nx.probe`로 크기를 재고, 서버에 청크로 적용한다.
+
+- 대상은 `meta.width`/`height`가 **없거나, `null`이거나, 0 이하**인 샘플이다. 이미 값이 있으면 건드리지 않는다.
+- `dry_run=True`도 **실제로 측정까지 한다.** 쓰기만 건너뛴다 — "몇 건을 정말 잴 수 있는가"가 적용 전에 알고 싶은 전부이기 때문이다.
+- image asset이 없거나 헤더를 읽지 못한 샘플은 건너뛰고 `measured`에서 빠진다.
+- 서버는 **빈칸만 채우고 기록된 값은 축 단위로 거부한다.** 이미 크기가 있는 샘플을 보내면 `rejected`에 사유와 함께 돌아온다. `applied + len(rejected)`가 `measured`와 맞으므로 스크립트가 종료 코드를 정할 수 있다.
+- 멱등이라 중단 후 다시 돌려도 안전하다(이미 채워진 것은 서버가 거부한다).
+- sealed 버전의 샘플도 보정된다 — `samples.meta`는 seal이 얼리는 대상이 아니고([architecture.md 10.3](architecture.md#103-version-불변성)), 애초에 그 `0`은 측정된 값이 아니었다.
 
 ### 3.3 샘플 생성 & 등록
 
@@ -832,6 +879,8 @@ except NexusError as e:
 |`nx.connect(nexus_url=, email=, password=, cas_url=, cas_key_id=, cas_secret=)`|서버 연결|
 |`nx.list_datasets(q=, name=, description=, tags=, sort=, order=, favorite=)`|dataset 목록 검색|
 |`nx.upload(paths, bucket, prefix="", workers=8)` → {경로: CasRef}|파일 업로드|
+|`nx.probe(refs, workers=8, strict=False, max_header_bytes=65536)` → [CasRef]|업로드 없이 CAS 객체의 이미지 크기만 채움(앞부분만 읽음, 순서 보존)|
+|`nx.image_info(data)` → ImageInfo(width, height, mime, channels)|로컬 bytes에서 헤더만 읽어 크기 판독|
 |`nx.Sample(image=, annotation=, assets=, split=, tags=)`|샘플 정의|
 |`nx.CasRef(bucket, key, hash_hex=, size=, content_type=)`|파일 참조|
 |`nx.annotation_sessions(status=, dataset_id=, mine=, limit=)`|CVAT 편집 세션 목록(전역, 기본 진행 중인 것만)|
@@ -845,6 +894,7 @@ except NexusError as e:
 |`.list_samples()` / `.get_sample(id)`|	조회|
 |`.samples(sample_ids=, group_key=, label=, confidence_min=, confidence_max=, track_id=, split=, tags=, meta=, limit=, after=)`|	조건 조회(기본 전체, limit=주면 한 페이지)|
 |`.patch_annotations(sample_id, data)`|	annotation 수정|
+|`.backfill_dims(workers=8, chunk_size=500, dry_run=False)` → dict|	`meta.width/height`가 빈 샘플을 실측값으로 보정(빈칸만 채움)|
 |`.sample_history(sample_id)` / `.diff(against=)`|	이력 / 비교|
 |`.link_samples(ids)` / `.unlink_samples(ids)` / `.import_samples(src_dataset, src_version, ids)`|	샘플 재사용|
 |`.fork(new_version, sample_ids=, group_key=, label=, ...)`|	필터링된 fork(같은 dataset)|
