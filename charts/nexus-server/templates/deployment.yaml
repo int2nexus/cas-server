@@ -80,6 +80,13 @@ spec:
               value: {{ .Values.cvat.staleCreatingSecs | quote }}
             {{- end }}
             {{- end }}
+            {{- if .Values.auth.superuserEmail }}
+            {{- /* 이메일이 있을 때만 주입한다. 비밀번호는 Secret에서 envFrom으로 들어오므로
+                   여기서는 보이지 않고, 따라서 **차트는 짝이 맞는지 검사할 수 없다** —
+                   한쪽만 있으면 서버가 기동에 실패하고 Pod가 CrashLoop로 드러난다. */}}
+            - name: NEXUS__AUTH__SUPERUSER_EMAIL
+              value: {{ .Values.auth.superuserEmail | quote }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

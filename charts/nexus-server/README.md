@@ -17,7 +17,9 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
 - **클러스터 내 cas-server** — CAS(파일) 백엔드.
 - **시크릿 4키** (sealed-secret으로 주입): `NEXUS__DATABASE__URL`, `NEXUS__CAS__KEY_ID`, `NEXUS__CAS__SECRET`, `NEXUS__JWT__SECRET`.
   CVAT annotation 편집 세션을 쓰면 `NEXUS__CVAT__PASSWORD`가 **5번째 키**로 추가된다(선택).
+  superuser를 쓰면 `NEXUS__AUTH__SUPERUSER_PASSWORD`가 **6번째 키**로 추가된다(선택).
 - **CVAT은 선택** — 설정하지 않아도 서버는 정상 동작한다. 세션 생성·결과 회수만 503이 되고 카탈로그·업로드·seal·조회는 영향이 없다.
+- **superuser도 선택** — 설정하지 않으면 `/api/v1/admin/*`가 누구에게나 403일 뿐 나머지는 영향이 없다. 다만 **CVAT과 달리 반쪽 설정은 조용히 꺼지지 않고 기동을 실패시킨다**(아래 참조).
 
 DB 마이그레이션은 바이너리에 임베드되어 **기동 시 자동 적용**된다(별도 Job 불필요). 서버는 stateless(파일=CAS, 메타=Postgres)라 PVC가 없다.
 
@@ -41,6 +43,7 @@ kubectl create secret generic nexus-server -n <namespace> --dry-run=client -o ya
   --from-literal=NEXUS__CAS__SECRET='...' \
   --from-literal=NEXUS__JWT__SECRET='...' \
   --from-literal=NEXUS__CVAT__PASSWORD='...' \
+  --from-literal=NEXUS__AUTH__SUPERUSER_PASSWORD='...' \
   | kubeseal --format yaml > sealed-nexus-server.yaml
 kubectl apply -f sealed-nexus-server.yaml -n <namespace>
 ```
@@ -74,10 +77,23 @@ helm install nexus-server int2nexus/nexus-server -n <namespace> \
 | `cvat.projectNamePrefix` | `nexus` | 생성되는 CVAT project 이름 접두사 |
 | `cvat.segmentSize` / `cvat.maxSessionSamples` | `""` / `""` | 비우면 서버 기본값(각각 0=CVAT 기본, 2000) |
 | `cvat.staleCreatingSecs` | `""` | 비우면 서버 기본값 1800초. 이 시간을 넘긴 `creating` 세션을 기동 시 `failed`로 정리 |
+| `auth.superuserEmail` | `""` | **비우면 superuser 기능 꺼짐.** 채우면 시크릿의 `NEXUS__AUTH__SUPERUSER_PASSWORD`도 **반드시 함께** 있어야 한다 |
 
 전체 키는 [`values.yaml`](values.yaml) 참조.
 
 CVAT 연동은 `cvat.baseUrl`·`cvat.user`·시크릿의 `NEXUS__CVAT__PASSWORD` **셋이 다 있어야** 켜진다. 하나라도 비면 서버는 정상 기동하고 무엇이 빠졌는지 기동 로그에 남는다.
+
+### superuser
+
+비밀번호를 잊어 로그인할 수 없는 계정을 풀어주고, dataset 소유자를 지정하는 단일 관리 계정이다. 이메일은 `auth.superuserEmail`, 비밀번호는 시크릿의 `NEXUS__AUTH__SUPERUSER_PASSWORD`(8자 이상)에 넣는다.
+
+**CVAT과 달리 반쪽 설정은 조용히 꺼지지 않는다 — 서버가 기동에 실패한다.** 일부러 그렇게 만들었다: 운영자가 켰다고 믿는데 실제로는 꺼져 있는 상태가 가장 나쁘고, 그 사실이 정작 필요한 순간(누군가 잠겼을 때)에야 드러나기 때문이다. **차트는 이 짝을 검사할 수 없다** — 비밀번호는 Secret에서 `envFrom`으로 들어와 템플릿에 보이지 않는다. 그래서 `helm upgrade`는 조용히 성공하고 Pod가 CrashLoop로 드러나며, 어느 쪽이 빠졌는지는 `kubectl logs`에 적힌다.
+
+**끌 때도 두 곳을 함께 비운다.** `auth.superuserEmail`만 지우고 Secret에 비밀번호를 남겨두면 "비밀번호만 있는" 상태가 되어 역시 기동에 실패한다.
+
+**여기 적은 비밀번호는 최초 계정 생성 때만 쓰인다.** 서버가 기동 시 그 계정이 없으면 만들고(그래야 그 주소를 아무도 선점할 수 없다), 이미 있으면 **비밀번호를 덮지 않는다** — 운영자가 API로 바꾼 값이 파드 재시작마다 되돌아가면 안 되기 때문이다. 나중에 이 env를 바꿔도 로그인 비밀번호는 바뀌지 않는다(자주 나오는 오해다). 잊었다면 Secret을 고치는 게 아니라 그 계정을 지우고 다시 기동해야 한다.
+
+권한은 토큰이 아니라 **이 설정값**으로 판정하므로, 이메일을 바꿔 재배포하면 즉시 회수된다 — 토큰을 무효화할 수 없는 이 서버에서 유일한 예외다. 능력은 비밀번호 재설정(`POST /api/v1/admin/users/password-reset`)과 dataset 소유자 지정(`PUT /api/v1/admin/datasets/{id}/owner`) 둘뿐이고, 사용자 목록·계정 비활성화·감사 로그는 없다.
 
 ## 헬스 체크
 

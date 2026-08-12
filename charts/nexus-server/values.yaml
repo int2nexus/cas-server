@@ -1,5 +1,6 @@
 # nexus-server Helm Chart — values.yaml
-# 비밀(NEXUS__DATABASE__URL, NEXUS__CAS__KEY_ID/SECRET, NEXUS__JWT__SECRET)은
+# 비밀(NEXUS__DATABASE__URL, NEXUS__CAS__KEY_ID/SECRET, NEXUS__JWT__SECRET,
+#      NEXUS__CVAT__PASSWORD, NEXUS__AUTH__SUPERUSER_PASSWORD)은
 # 여기에 두지 않는다 — sealed-secret으로 클러스터에 주입하고 envFrom으로 받는다.
 #
 # ── 문서 ─────────────────────────────────────────────────────────────────────
@@ -13,7 +14,7 @@
 
 image:
   repository: int2jieun/nexus-server
-  tag: "0.1.2"
+  tag: "0.1.3"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -69,10 +70,39 @@ cvat:
   maxSessionSamples: ""        # 세션당 샘플 상한(서버 기본 2000)
   staleCreatingSecs: ""        # 준비 중 방치된 세션을 정리하는 기준(초, 서버 기본 1800)
 
+# ── superuser (선택) ─────────────────────────────────────────────────
+# 비밀번호를 잊어 로그인할 수 없는 계정을 풀어주고, dataset 소유자를 지정하는 단일 관리
+# 계정이다. **비우면 기능이 꺼지고** `/api/v1/admin/*` 는 누구에게나 403이다.
+#
+# 켜려면 **두 곳을 함께** 채워야 한다 — 이메일은 여기, 비밀번호는 Secret의
+# NEXUS__AUTH__SUPERUSER_PASSWORD. **한쪽만 있으면 서버가 기동에 실패한다.** 일부러
+# 그렇게 만들었다: 운영자가 켰다고 믿는데 실제로는 꺼져 있는 상태가 가장 나쁘고, 그 사실이
+# 정작 필요한 순간(누군가 잠겼을 때)에야 드러나기 때문이다.
+#
+# **차트는 이 짝을 검사할 수 없다.** 비밀번호는 Secret에서 envFrom으로 들어오므로 템플릿에
+# 보이지 않는다. 그래서 `helm upgrade` 는 조용히 성공하고 **Pod가 CrashLoop로 드러난다** —
+# 로그에 어느 쪽이 빠졌는지 적힌다(`kubectl logs`).
+#
+# **끌 때도 두 곳을 함께 비운다.** 여기만 지우고 Secret에 비밀번호를 남겨두면 "비밀번호만
+# 있는" 상태가 되어 역시 기동에 실패한다. 권한 회수가 목적이라면 이메일을 지우고 Secret
+# 키도 함께 제거한 뒤 배포할 것.
+#
+# 계정은 기동 시 서버가 만든다(그래야 그 주소를 아무도 선점할 수 없다). **이미 있으면
+# 비밀번호를 덮지 않는다** — 운영자가 API로 바꾼 값이 파드 재시작마다 되돌아가면 안 되기
+# 때문이다. 즉 여기 적은 비밀번호는 **최초 생성 때만** 쓰인다. 나중에 이 값을 바꿔도
+# 로그인 비밀번호는 바뀌지 않는다(자주 나오는 오해다).
+#
+# 호환성: appVersion 0.1.3 이상이 필요하다. 그 이전 이미지는 이 env를 무시하므로 기동이
+#   깨지지는 않지만 기능도 켜지지 않는다 — 비워두면 어떤 이미지에서도 안전하다.
+auth:
+  superuserEmail: ""           # 예: "nexus-admin@int2.us" — 비우면 기능 꺼짐
+                               # 비밀번호는 Secret의 NEXUS__AUTH__SUPERUSER_PASSWORD (8자 이상)
+
 # ── 비밀 Secret 참조 ─────────────────────────────────────────────────
 # 이 Secret(아래 4키 보유)을 sealed-secret으로 미리 주입해야 한다:
 #   NEXUS__DATABASE__URL, NEXUS__CAS__KEY_ID, NEXUS__CAS__SECRET, NEXUS__JWT__SECRET
 # CVAT 연동을 쓰면 여기에 NEXUS__CVAT__PASSWORD도 함께 넣는다.
+# superuser를 쓰면 NEXUS__AUTH__SUPERUSER_PASSWORD도 함께 넣는다(위 auth 참조).
 # existingSecret 비우면 기본 이름(<fullname>) 사용.
 secret:
   existingSecret: ""
