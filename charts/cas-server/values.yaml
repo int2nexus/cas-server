@@ -18,7 +18,12 @@ image:
   repository: int2jieun/cas-server # Docker Hub에 미리 빌드된 이미지 사용
   # 0.1.17 미만으로 내리려면 livenessProbe/startupProbe의 path를
   # /_internal/health로 함께 되돌릴 것 — 아래 프로브 섹션 주석 참고.
-  tag: "0.1.17"
+  #
+  # 0.1.18 미만으로 내리면 두 가지가 사라진다:
+  #  - 해시별 쓰기 락 테이블의 즉시 회수. GC 실행 시에만 회수되므로,
+  #    gc.enabled: false 배포에서는 유휴 바닥값이 상승한다 (gc 섹션 주석 참고)
+  #  - auth.metricsToken. 그 토큰으로 스크레이프하면 401 이 된다
+  tag: "0.1.18"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -38,6 +43,23 @@ imagePullSecrets: []
 #
 # 처리량이 부족하면 레플리카 대신 파드 리소스를 키울 것.
 replicaCount: 1
+
+# ── 롤아웃 전략 ───────────────────────────────────────────────────────────────
+# Recreate 를 쓴다. 기본값(RollingUpdate)은 replicas=1 에서
+# maxSurge=ceil(0.25)=1, maxUnavailable=floor(0.25)=0 이 되어, **모든 업그레이드와
+# rollout restart 에서 구·신 파드가 동시에 Ready 상태로 겹친다.**
+#
+# 그 겹침 창에서 두 프로세스가 서로 다른 per-hash 뮤텍스 맵을 잡는다. 위에서
+# replicaCount 를 1로 강제하는 근거가 바로 그 맵의 공유인데, 롤아웃마다 그 근거가
+# 깨지는 셈이다. GC 가 다른 파드에서 커밋 직전인 blob 을 참조 없음으로 오판해
+# 물리 삭제할 수 있다.
+#
+# 대가는 롤아웃 중 짧은 중단이다. replicaCount 가 1 이라 노드 재기동만으로도
+# 어차피 생기는 중단이고, durability 를 그 대가로 사는 편이 맞다고 봤다.
+# 무중단이 더 중요하고 위 위험을 감수하기로 했다면 아래를 RollingUpdate 로 바꾸되,
+# **그 결정을 기록으로 남길 것.**
+updateStrategy:
+  type: Recreate
 
 # ── 앱 설정 (ConfigMap → /app/config/default.toml) ───────────────────────────
 config:
@@ -84,6 +106,9 @@ externalDatabase:
 #   db-password, s3-access-key-id, s3-secret-access-key
 #   auth-secret-master-key, auth-admin-token
 #   auth-root-access-key-id, auth-root-secret-key
+#
+# 선택 항목 1개(있으면 쓰고, 없어도 파드는 정상 기동):
+#   auth-metrics-token — 메트릭 읽기 전용 토큰. auth.metricsToken 주석 참고
 # kubeseal 로 생성된 Secret 이 클러스터에 이미 존재하므로
 # helm 은 Secret 생성을 건너뜁니다.
 secrets:
@@ -93,6 +118,25 @@ secrets:
 auth:
   anonymousGet: true   # true이면 GET/HEAD /{bucket}/{key} 를 인증 없이 허용 (이미지 서버, FiftyOne 등)
   adminToken: true
+
+  # GET /_internal/metrics 전용 읽기 토큰 (cas-server 이미지 0.1.18 이상).
+  #
+  # 모니터링 스택에는 admin 토큰이 아니라 이것을 쓸 것. admin 토큰은
+  # POST /_internal/gc(blob 물리 삭제)와 /_admin/*(액세스 키 관리)까지 여는
+  # 자격증명이라, 스크레이프 용도로 배포하면 삭제 권한을 함께 넘기게 된다.
+  # 이 토큰은 metrics 엔드포인트에서만 통하고 다른 경로는 열지 않는다.
+  #
+  # 비워 두면 서버가 admin 토큰으로 폴백한다(기존 배포 동작 유지).
+  #
+  # 주의: 이 값만 채우고 **admin 토큰을 비우면 서버가 기동을 거부한다.**
+  # 그 조합에서는 metrics 만 잠기고 POST /_internal/gc(blob 물리 삭제)가 무인증으로
+  # 열려, 401 을 보고 보호된다고 오해하게 되기 때문이다. replicaCount 가 1 이라
+  # 기동 실패는 곧 전면 중단이므로, 둘을 함께 설정하거나 이 값을 비워 둘 것.
+  #
+  # secrets.useExternalSecret: true(기본값)면 이 값은 쓰이지 않는다 —
+  # sealed-secret 의 `auth-metrics-token` 키에 넣을 것. 그 키가 없어도
+  # 파드는 정상 기동한다(deployment 에서 optional 로 참조한다).
+  metricsToken: ""
 
 # ── 서비스 ────────────────────────────────────────────────────────────────────
 service:
@@ -119,12 +163,30 @@ ingress:
 # 한도만 올리고 예산을 그대로 두면 방어선이 실효 없이 낮게 남고, 한도만 내리면
 # 예산이 한도를 넘어 상한이 걸리기 전에 OOMKilled 된다.
 
-# 6Gi 는 2026-08-05 OOM 대응으로 올린 값이다. 이미지 0.1.16 배포 후 실환경에서
-# 부하 1사이클을 돌려 유휴 구간 바닥값이 하락하는 것을 확인한 뒤
-# 6Gi -> 3Gi -> 2Gi 로 단계적으로 내릴 것. config.maxUploadBytesInFlight 도 함께 내린다.
+# 6Gi 는 2026-08-05 OOM 대응으로 올린 값이다. **당분간 6Gi 를 유지할 것.**
+#
+# 2026-08-11 실환경 관측 결과, 이미지 0.1.16 에서도 유휴 구간 바닥값이 하루
+# 330~430 MiB 씩 단조 상승한다(4.9일, 두 세대 컨테이너). 봉우리는 무너지므로
+# jemalloc decay 자체는 동작하며, OOMKilled 는 그 기간 0회였다. 즉 0.1.16 은
+# "버스트를 반환하는 능력"은 얻었지만 "장기 바닥값 상승"은 남아 있다.
+#
+# 따라서 아래 단계 하향은 **바닥값 상승이 멈춘 것을 확인한 뒤에만** 한다.
+#   6Gi -> 3Gi -> 2Gi, config.maxUploadBytesInFlight 도 한도의 0.5배로 함께 내린다.
+#
+# 하향 전제 (셋 다 만족해야 함, 최소 7일 연속 관측):
+#   1) 유휴 바닥값의 일간 기울기가 0 에 수렴 (아래 판정 쿼리)
+#   2) cas_blob_lock_map_entries 가 유휴 구간에 0 으로 떨어질 것.
+#      이미지 0.1.18 이상에서 이 값은 "진행 중인 쓰기 건수"이므로 유휴 시 0 이다.
+#      0.1.17 이하에서는 "누적 고유 해시 수"이고 GC 실행 시에만 회수된다
+#      (gc.enabled 주석 참고)
+#   3) container_oom_events_total 이 0 유지
 #
 # 판정 쿼리:
 #   min_over_time(container_memory_working_set_bytes{pod=~"cas-server.*"}[30m])
+#   deriv(min_over_time(container_memory_rss{pod=~"cas-server.*"}[6h])[24h:1h])
+#
+# 바닥값이 계속 오르는 동안에는 한도를 내리는 것이 아니라, 상승률로 한도 도달
+# 시점을 계산해 그보다 짧은 주기의 정기 재시작을 두는 것이 맞는 대응이다.
 resources:
   requests:
     cpu: "500m"
@@ -223,6 +285,39 @@ serviceAccount:
 # ── GC CronJob ────────────────────────────────────────────────────────────────
 # Pod 자체 GC(gcIntervalSecs=0)를 끄고 CronJob 한 대만 GC를 트리거.
 # concurrencyPolicy: Forbid 로 GC Job이 겹쳐서 실행되지 않도록 보장.
+#
+# enabled: false 로 두면 CronJob 오브젝트 자체가 생성되지 않는다.
+# 초기 마이그레이션 중에는 그렇게 두는 것을 권장한다 — GC의 orphan 전수 스캔과
+# advisory lock이 적재 경로와 경합한다.
+#
+# 주의: cas-server 이미지 0.1.17 **이하**에서는 이 회수 주기가 곧 프로세스 내부
+# 해시별 쓰기 락 테이블의 회수 주기다. 항목은 고유 해시마다 하나씩 생기고
+# 항목당 약 180~240바이트다.
+#
+#   enabled: false  → 회수 경로가 아예 없다. 파드 수명 동안 단조 증가
+#   enabled: true   → 위 schedule 만큼 쌓였다 비워진다. 주 1회면 최대 일주일치
+#
+# 즉 **GC 를 켜 뒀다고 해당 없는 항목이 아니다.** 2026-08 운영 건에서 유휴 바닥값이
+# 하루 330~430 MiB 상승했고, 주 1회 주기면 그 사이 최대 2.3~3.0 GiB 가 쌓인다.
+# 해당 이미지를 쓴다면 적재 기간에 아래를 주기 실행해 완화할 것 —
+# blob 물리 삭제도 advisory lock도 없이 그 테이블을 회수한다(admin 토큰 필요):
+#
+#   POST /_internal/gc?dry_run=true
+#
+# 함께 도는 것은 읽기 전용 쿼리 둘(orphan 후보 COUNT, 만료 멀티파트 목록)이다.
+# 회수는 샤드를 하나씩 잠그고 지나가므로 쓰기 경로 전체를 멈추지는 않는다.
+# 주기를 정하기 전에 한 번 수동으로 돌려 소요 시간을 잴 것.
+#
+# kubectl exec 로는 칠 수 없다 — 런타임 이미지에 curl 도 wget 도 없다.
+# 클러스터 안에서 주기 실행하려면 curl 이 있는 이미지의 CronJob 이 필요하고,
+# 일회성 확인은 port-forward 후 로컬 curl 로 한다.
+#
+# 다만 주기 실행이 항상 최선은 아니다. 이 테이블은 프로세스 메모리라 파드 재시작이면
+# 통째로 사라지고 단편화까지 함께 회수된다 — 0.1.18 까지의 간격이 짧으면 재시작이 낫다.
+# 세 선택지(업그레이드 / 재시작 / 주기 실행)의 판단 기준은
+# README 의 "GC와 메모리 회수" 절 참고.
+#
+# 이미지 0.1.18 이상은 요청이 끝날 때 즉시 회수하므로 이 완화가 필요 없다.
 gc:
   enabled: true
   # cron 표현식 — 매주 일요일 새벽 2시 : 0 2 * * 0 — 분 시 일 월 요일(0=일요일).

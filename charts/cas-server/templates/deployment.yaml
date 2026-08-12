@@ -6,6 +6,8 @@ metadata:
     {{- include "cas-server.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  strategy:
+    {{- toYaml .Values.updateStrategy | nindent 4 }}
   selector:
     matchLabels:
       {{- include "cas-server.selectorLabels" . | nindent 6 }}
@@ -15,8 +17,17 @@ spec:
         {{- include "cas-server.selectorLabels" . | nindent 8 }}
       annotations:
         # ConfigMap 변경 시 Pod 자동 재시작을 위한 체크섬
-        # Secret은 SealedSecret으로 관리되므로 체크섬 불필요
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if not .Values.secrets.useExternalSecret }}
+        # 차트가 Secret을 만드는 경우에만 유효하다. useExternalSecret: true(기본값)면
+        # secret.yaml 이 렌더링되지 않아 이 값이 상수가 되므로 아예 달지 않는다 —
+        # 상수 체크섬은 "변경을 감지한다"는 착각만 준다.
+        #
+        # 외부 Secret(sealed-secret)을 갱신했을 때는 Helm 이 그 내용을 볼 수 없으므로
+        # 파드가 자동 재시작되지 않는다. `kubectl rollout restart deploy/<name>` 이
+        # 필요하다 — README 의 "메트릭 스크레이프" 절에 적어 두었다.
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
     spec:
       # graceful shutdown 여유. 값을 렌더링하지 않아 쿠버네티스 기본값 30초가
       # 적용되고 있었다 — values.yaml 설정이 조용히 무시되던 자리다.
@@ -125,6 +136,20 @@ spec:
                 secretKeyRef:
                   name: {{ include "cas-server.fullname" . }}
                   key: auth-admin-token
+            # GET /_internal/metrics 전용 읽기 토큰 (cas-server 이미지 0.1.18 이상).
+            # 이것을 모니터링 스택에 쓰면 admin 토큰을 배포하지 않아도 스크레이프가 된다 —
+            # admin 토큰은 POST /_internal/gc(blob 물리 삭제)까지 여는 자격증명이다.
+            #
+            # optional: true 가 필수다. 기존 배포의 sealed-secret 은 7개 키만 갖고 있고,
+            # 필수로 두면 그 Secret 을 갱신하기 전에는 파드가 CreateContainerConfigError 로
+            # 뜨지 못한다 — 업그레이드가 곧 전면 중단이 된다(replicaCount=1).
+            # 키가 없으면 환경변수가 설정되지 않고, 서버는 admin 토큰으로 폴백한다.
+            - name: CAS__AUTH__METRICS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cas-server.fullname" . }}
+                  key: auth-metrics-token
+                  optional: true
             - name: CAS__AUTH__ROOT_ACCESS_KEY_ID
               valueFrom:
                 secretKeyRef:

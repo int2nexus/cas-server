@@ -538,8 +538,16 @@ curl -s http://localhost:8080/_api/gc/orphan-count \
 
 ```bash
 curl -s http://localhost:8080/_internal/metrics \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
+  -H "Authorization: Bearer $METRICS_TOKEN"
 ```
+
+**모니터링 스택에는 `auth.metricsToken`을 쓰세요** (cas-server 이미지 `0.1.18` 이상).
+`ADMIN_TOKEN`도 이 엔드포인트를 열지만, 그 토큰은 `POST /_internal/gc`(blob 물리 삭제)와
+`/_admin/*`(액세스 키 관리)까지 여는 자격증명입니다 — 스크레이프 용도로 배포하면
+삭제 권한을 함께 넘기게 됩니다. `metricsToken`은 이 엔드포인트에서만 통합니다.
+
+`metricsToken`을 설정하지 않으면 서버가 `ADMIN_TOKEN`으로 폴백하므로, 위 명령을
+`$ADMIN_TOKEN`으로 바꿔도 동작합니다(기존 배포 동작 유지).
 
 ### 블롭 dedup 사전 확인
 
