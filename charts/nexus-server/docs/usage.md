@@ -176,7 +176,7 @@ client.change_password("현재비번", "새비번123")      # 현재 비밀번�
 result = client.delete_account("새비번123")          # 완전 삭제 — 되돌릴 수 없다
 ```
 
-- **비밀번호 변경은 새 로그인부터 적용된다.** 이미 발급된 토큰은 만료(최대 24시간)까지 그대로 유효하다. 이 클라이언트 인스턴스는 계속 써도 된다.
+- **비밀번호 변경은 새 로그인부터 적용된다.** 이미 발급된 토큰은 만료까지(기본 24시간, 배포마다 `jwt.ttlHours`로 다를 수 있다 — 아래 참조) 그대로 유효하다. 이 클라이언트 인스턴스는 계속 써도 된다.
 - 설정 파일(`~/.int2nexus/settings.json`)에 비밀번호를 적어두었다면 **그 파일도 함께 고쳐야 한다** — 안 그러면 다음 `nx.connect()`가 실패한다.
 - **`delete_account`는 비활성화가 아니라 삭제다.** 이메일이 풀려 같은 주소로 다시 가입할 수 있다.
 - 삭제 응답의 **`released_datasets`가 0이 아니면**, 그 dataset들은 주인이 없어져 **인증된 누구나 수정·삭제할 수 있게 된다.** 팀이 쓰던 데이터라면 삭제 전에 소유자를 옮기는 편이 낫다 — 차트 0.3.0부터 superuser가 `PUT /api/v1/admin/datasets/{id}/owner`로 지정할 수 있다(아래 참조).
@@ -201,9 +201,27 @@ requests.put(f"{base}/api/v1/admin/datasets/{dataset_id}/owner",
 ```
 
 - **임시 비밀번호는 응답에 한 번만 실려 온다.** 서버 어디에도 저장되지 않으니 그 자리에서 전달하고, 받은 사람은 곧바로 `client.change_password(...)`로 바꾼다.
-- **재설정해도 그 사람의 기존 토큰은 만료까지(최대 24시간) 유효하다.** "잊어버림"을 푸는 도구지 "탈취 즉시 차단"이 아니다.
+- **재설정해도 그 사람의 기존 토큰은 만료까지(기본 24시간, 배포마다 `jwt.ttlHours`로 다를 수 있다 — 아래 참조) 유효하다.** "잊어버림"을 푸는 도구지 "탈취 즉시 차단"이 아니다.
 - **소유권 이전은 즉시 적용된다.** 소유자 검사는 요청마다 DB를 보므로 이전 소유자는 그 다음 요청부터 403이다.
 - 주인 없는 dataset은 `GET /datasets`의 `owner_user_id`가 null인 것들이다. 방치해도 잠기지는 않지만 **인증된 누구나 쓸 수 있는** 상태로 남는다.
+
+#### 인증 관련 설정 (차트 0.3.0+)
+
+superuser 외에도 차트 0.3.0부터 인증 관련 설정 세 가지를 helm 값으로 조정할 수 있다.
+
+| values 키 | 기본값 | 설명 |
+|---|---|---|
+| `jwt.ttlHours` | 빈 값 (서버 기본 **24**) | 발급 토큰의 수명(시간). 허용 범위 **1~8760**. 이 서버는 토큰을 무효화할 수 없으므로(위 계정 관리·superuser 항목 참조) 이 값이 곧 탈취·비밀번호변경·계정삭제 이후에도 토큰이 살아있는 최대 시간이다. **범위를 벗어난 값(`0` 포함)을 주면 서버가 기동에 실패한다** — DB 연결보다 먼저 검사하므로 "0을 줬는데 조용히 24시간으로 되돌아갔다"처럼 잘못 설정한 채 넘어가는 일이 없다. 줄이면 노출 시간은 줄지만 `POST /api/v1/auth/refresh` 호출이 그만큼 잦아진다. |
+| `auth.registrationEnabled` | `true` | `false`로 하면 `POST /api/v1/auth/register`만 403이 되고, 로그인·토큰 갱신·기존 계정은 영향을 받지 않는다. **끄기 전에 필요한 계정을 모두 만들어 둘 것** — 끈 뒤에는 계정을 새로 만들 방법이 없다(계정 생성 API가 register 하나뿐이라 superuser도 새 계정을 만들 수 없다). |
+| `auth.docsEnabled` | `true` | `false`로 하면 `/api-docs/openapi.json`, `/swagger-ui`, `/swagger-ui/` 세 경로가 **404**가 된다(라우트 자체가 등록되지 않아서다 — 403이 아니다). 스펙은 이미 전 경로가 인증 뒤에 있으므로, 이걸로 감추는 것은 API 경로 목록뿐이다. |
+
+```bash
+helm upgrade --install nexus-server int2nexus/nexus-server -n <namespace> \
+  --set cas.baseUrl=<CAS 주소> \
+  --set jwt.ttlHours=8 \
+  --set auth.registrationEnabled=false \
+  --set auth.docsEnabled=false
+```
 
 ### 2.2 CVAT 연동 (선택, 차트 0.2.0+)
 
