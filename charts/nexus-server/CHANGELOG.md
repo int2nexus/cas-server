@@ -57,9 +57,9 @@ nexus-server 는 마이그레이션이 바이너리에 임베드되어 **기동 
 
 image: `int2jieun/nexus-server:0.1.3`
 
-설정 키가 늘어 minor 를 올렸습니다(0.2.1 → 0.3.0). 기존 배포는 **아무것도 하지 않으면 동작이 그대로입니다** — 새 키를 비워두면 기능이 켜지지 않습니다.
+설정 키가 늘어 minor 를 올렸습니다(0.2.1 → 0.3.0). **아무것도 하지 않으면 동작이 그대로입니다** — 새 키를 비워두면 기능이 켜지지 않습니다.
 
-**동작 변경** — **superuser 계정이 생겼습니다**(선택). 비밀번호를 잊어 로그인할 수 없는 계정을 풀어주고, dataset 소유자를 지정하는 단일 관리 계정입니다. 지금까지 이 셋은 DB 를 손으로 고쳐야 했습니다. 능력은 둘뿐입니다 — `POST /api/v1/admin/users/password-reset`(임시 비밀번호를 생성해 **응답에 한 번만** 돌려줍니다. 어디에도 저장하지 않습니다)과 `PUT /api/v1/admin/datasets/{id}/owner`(양도와 인수가 같은 연산입니다). 사용자 목록·계정 비활성화·감사 로그는 없습니다.
+**동작 변경** — **superuser 계정 추가**(선택). 비밀번호를 잊어 로그인할 수 없는 계정을 풀어주고, dataset 소유자를 지정하는 단일 관리 계정입니다. 지금까지 이 셋은 DB 를 손으로 고쳐야 했습니다. 능력은 둘뿐입니다 — `POST /api/v1/admin/users/password-reset`(임시 비밀번호를 생성해 **응답에 한 번만** 돌려줍니다. 어디에도 저장하지 않습니다)과 `PUT /api/v1/admin/datasets/{id}/owner`(양도와 인수가 같은 연산입니다). 사용자 목록·계정 비활성화·감사 로그는 없습니다.
 
 권한은 DB 컬럼이 아니라 **설정값 비교**입니다(`is_superuser` 컬럼이 없습니다). 그래서 권한이 토큰에 박히지 않고, **이메일을 바꿔 재배포하면 즉시 회수됩니다** — 토큰을 무효화할 수 없는 이 서버에서 유일한 예외입니다. 반대로 **비밀번호를 재설정해도 그 사용자의 기존 토큰은 만료까지(최대 24시간) 유효합니다.** "잊어버림"을 푸는 도구지 "탈취 즉시 차단"이 아닙니다.
 
@@ -67,7 +67,7 @@ image: `int2jieun/nexus-server:0.1.3`
 
 **설정 키** — **`auth.superuserEmail`**(values, 기본 `""`)과 **`NEXUS__AUTH__SUPERUSER_PASSWORD`**(시크릿, 8자 이상). 둘 다 비우면 기능이 꺼지고 `/api/v1/admin/*` 는 누구에게나 403 입니다.
 
-**주의** — **한쪽만 채우면 서버가 기동에 실패합니다.** 조용히 꺼지지 않습니다(CVAT 과 다른 점입니다). 운영자가 켰다고 믿는데 실제로는 꺼져 있는 상태가 가장 나쁘고, 그 사실이 정작 필요한 순간에야 드러나기 때문에 일부러 이렇게 했습니다. **차트는 이 짝을 검사할 수 없습니다** — 비밀번호는 Secret 에서 `envFrom` 으로 들어와 템플릿에 보이지 않습니다. `helm upgrade` 는 조용히 성공하고 **Pod 가 CrashLoop 로 드러나며**, 어느 쪽이 빠졌는지는 `kubectl logs` 에 적힙니다. **끌 때도 두 곳을 함께 비우세요** — values 만 지우고 Secret 에 비밀번호를 남기면 역시 기동에 실패합니다.
+**주의** — **한쪽만 채우면 서버가 기동에 실패합니다.** 조용히 꺼지지 않습니다(CVAT 과 다른 점입니다). 운영자가 켰다고 믿는데 실제로는 꺼져 있는 상태가 가장 나쁘고, 그 사실이 정작 필요한 순간에야 드러나기 때문에 의도한 동작입니다. **차트는 이 짝을 검사할 수 없습니다** — 비밀번호는 Secret 에서 `envFrom` 으로 들어와 템플릿에 보이지 않습니다. `helm upgrade` 는 조용히 성공하고 **Pod 가 CrashLoop 로 드러나며**, 어느 쪽이 빠졌는지는 `kubectl logs` 에 적힙니다. **끌 때도 두 곳을 함께 비우세요** — values 만 지우고 Secret 에 비밀번호를 남기면 역시 기동에 실패합니다.
 
 **주의** — **시크릿의 비밀번호는 최초 계정 생성 때만 쓰입니다.** 서버가 기동 시 그 계정이 없으면 만들고(그래야 그 주소를 아무도 선점할 수 없습니다), 이미 있으면 **비밀번호를 덮지 않습니다** — 운영자가 API 로 바꾼 값이 파드 재시작마다 되돌아가면 안 되기 때문입니다. 나중에 이 env 를 바꿔도 로그인 비밀번호는 바뀌지 않습니다. 잊었다면 그 계정을 지우고 다시 기동해야 합니다.
 
@@ -77,17 +77,11 @@ image: `int2jieun/nexus-server:0.1.3`
 
 **호환성** — **appVersion 0.1.3 이상이 필요합니다.** 그 이전 이미지는 `NEXUS__AUTH__*` 를 무시하므로 기동이 깨지지는 않지만 기능도 켜지지 않고, `/api/v1/admin/*` 는 404 입니다. `auth.superuserEmail` 을 비워두면 env 자체가 렌더되지 않아 어떤 이미지에서도 안전합니다.
 
-**운영 조치** — **주인 없는 dataset 을 정리하려면 이 버전이 필요합니다.** `owner_user_id` 가 NULL 인 dataset 은 잠긴 것이 아니라 **인증된 누구나 쓸 수 있는** 상태입니다(소유자 게이트가 NULL 을 통과시킵니다). 계정을 하드 삭제하면 그 사람이 만든 dataset 이 전부 이 상태가 됩니다 — `GET /datasets` 의 `owner_user_id` 로 찾아 `PUT /api/v1/admin/datasets/{id}/owner` 로 지정하세요.
+**운영 조치** — **주인 없는 dataset 을 정리하려면 이 버전이 필요합니다.** `owner_user_id` 가 NULL 인 dataset 은 잠긴 것이 아니라 **인증된 누구나 쓸 수 있는** 상태입니다(소유자 게이트가 NULL 을 통과시킵니다). 계정을 하드 삭제하면 그 사람이 만든 dataset 이 전부 이 상태가 됩니다 — 필요 시 `GET /datasets` 의 `owner_user_id` 로 찾아 `PUT /api/v1/admin/datasets/{id}/owner` 로 다른 주인을 지정하세요.
 
 **동작 변경** — **SDK `nx.upload` 에 `overwrite` 옵션이 생겼습니다**(서버·차트는 영향 없음, SDK 전용). 같은 CAS key 에 다른 내용이 이미 있으면 기본은 여전히 충돌 에러이고, `overwrite=True` 를 주면 대신 덮어씁니다 — 이때 썸네일도 새 내용으로 함께 다시 만듭니다(안 그러면 옛 썸네일이 새 이미지에 남습니다). 같은 내용이면 옵션과 무관하게 그대로 건너뜁니다.
 
 **호환성** — **SDK 0.1.4 이상이 필요합니다.** 그 이전 SDK 로 `overwrite=True` 를 주면 `TypeError` 로 즉시 실패합니다(서버는 관여하지 않습니다). 옵션을 안 쓰면 구 SDK 로도 그대로 동작합니다.
-
-**호환성 — 이 차트는 이미지 `0.1.3` 이상이 필요합니다.** 프로브 경로가 바뀝니다.
-`/_internal/live` 는 0.1.3 에서 신설된 경로라, 이미지를 `0.1.2` 이하로 고정해 쓰시면
-startupProbe·livenessProbe 가 **404 를 받아 파드가 무한 재시작합니다.** 이미지를 함께
-올리지 않으시려면 `startupProbe.enabled: false` 와
-`livenessProbe.httpGet.path: /_internal/health` 로 되돌려 주십시오.
 
 **동작 변경** — **프로브가 셋으로 갈립니다.** 지금까지는 liveness·readiness 가 둘 다
 `/_internal/health` 를 봤고, 그 핸들러는 **의존성을 조회하지 않고 무조건 200 을
@@ -95,6 +89,8 @@ startupProbe·livenessProbe 가 **404 를 받아 파드가 무한 재시작합�
 `/_internal/live`(조회 없음)가 startup·liveness 를, `/_internal/health`(DB ping)가
 readiness 를 맡습니다. liveness 가 DB 를 보면 DB failover(보통 30~120초)에 파드가
 kill 되는데 재시작으로는 의존성이 복구되지 않아, 중단이 원래 장애보다 길어집니다.
+
+**호환성** — 프로브 경로도 **appVersion 0.1.3 이상**을 요구합니다. `Chart.yaml` 의 appVersion 과 `values.yaml` 의 `image.tag` 를 모두 `0.1.3` 으로 맞춰 두었으므로 평소대로 올리시면 따로 하실 일은 없습니다. `--set image.tag` 로 **의도적으로 `0.1.2` 이하를 쓰시는 경우에만** 주의가 필요합니다 — startupProbe·livenessProbe 가 보는 `/_internal/live` 가 그 이미지에는 없어 404 가 프로브 실패로 계산되고, 파드가 Ready 에 이르지 못한 채 재시작을 반복합니다. 그때는 `startupProbe.enabled: false` 와 `livenessProbe.httpGet.path: /_internal/health` 를 함께 지정해 이전 동작으로 되돌리십시오.
 
 **동작 변경** — **startupProbe 가 생겼습니다**(`periodSeconds 10 × failureThreshold 60`
 = 기동 예산 600초). 서버는 마이그레이션·superuser 부트스트랩·CVAT 정리를 **전부 끝낸 뒤에**
@@ -118,8 +114,8 @@ kill 되는데 재시작으로는 의존성이 복구되지 않아, 중단이 �
 
 **설정 키** — **`auth.registrationEnabled`**(기본 `true`). `false` 로 하면
 `POST /api/v1/auth/register` 만 403 이 되고 로그인·갱신·기존 계정 동작은 그대로입니다.
-**끄기 전에 필요한 계정을 먼저 만들어 두십시오** — 끈 뒤에는 superuser 도 새 계정을
-만들 수 없습니다(계정 생성 경로가 register 하나뿐입니다).
+다만 **끄기 전에 필요한 계정을 먼저 만들어 두십시오** — 끈 뒤에는 superuser 도
+새 계정을 만들 수 없습니다(계정 생성 경로가 register 하나뿐입니다).
 
 **설정 키** — **`auth.docsEnabled`**(기본 `true`). `false` 로 하면
 `/api-docs/openapi.json`·`/swagger-ui`·`/swagger-ui/` 세 경로가 **404** 가 됩니다
