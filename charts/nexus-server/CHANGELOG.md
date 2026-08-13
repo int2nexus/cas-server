@@ -83,6 +83,52 @@ image: `int2jieun/nexus-server:0.1.3`
 
 **호환성** — **SDK 0.1.4 이상이 필요합니다.** 그 이전 SDK 로 `overwrite=True` 를 주면 `TypeError` 로 즉시 실패합니다(서버는 관여하지 않습니다). 옵션을 안 쓰면 구 SDK 로도 그대로 동작합니다.
 
+**🔴 호환성 — 이 차트는 이미지 `0.1.3` 이상이 필요합니다.** 프로브 경로가 바뀝니다.
+`/_internal/live` 는 0.1.3 에서 신설된 경로라, 이미지를 `0.1.2` 이하로 고정해 쓰시면
+startupProbe·livenessProbe 가 **404 를 받아 파드가 무한 재시작합니다.** 이미지를 함께
+올리지 않으시려면 `startupProbe.enabled: false` 와
+`livenessProbe.httpGet.path: /_internal/health` 로 되돌려 주십시오.
+
+**동작 변경** — **프로브가 셋으로 갈립니다.** 지금까지는 liveness·readiness 가 둘 다
+`/_internal/health` 를 봤고, 그 핸들러는 **의존성을 조회하지 않고 무조건 200 을
+돌려줬습니다** — readiness 가 아무것도 판정하지 않는 상태였습니다. 0.3.0 부터
+`/_internal/live`(조회 없음)가 startup·liveness 를, `/_internal/health`(DB ping)가
+readiness 를 맡습니다. liveness 가 DB 를 보면 DB failover(보통 30~120초)에 파드가
+kill 되는데 재시작으로는 의존성이 복구되지 않아, 중단이 원래 장애보다 길어집니다.
+
+**동작 변경** — **startupProbe 가 생겼습니다**(`periodSeconds 10 × failureThreshold 60`
+= 기동 예산 600초). 서버는 마이그레이션·superuser 부트스트랩·CVAT 정리를 **전부 끝낸 뒤에**
+포트를 엽니다. 그 구간의 프로브는 "200 이 아닌 응답"이 아니라 **connection refused** 를
+받으므로, 예산이 없으면 스키마를 바꾸는 릴리스에서 kill → 재기동 → 마이그레이션 재시작이
+반복됩니다. 실제 마이그레이션 소요는 기동 로그의 `마이그레이션 완료 elapsed_ms=…` 줄로
+확인하실 수 있습니다(0.1.3 에서 함께 추가).
+
+**수정** — **`serviceAccount` 가 실제로 배선됩니다.** 지금까지 `values.yaml` 에 블록은
+있었지만 템플릿이 그 값을 참조하지 않아, 설정하셔도 **조용히 아무 일도 일어나지
+않았습니다.** PodSecurity/NetworkPolicy 를 ServiceAccount 기준으로 거는 경우 통제를
+걸었다고 믿는데 실제로는 안 걸린 상태였습니다. `create: true` 면 차트가 만들고,
+`false` 면 기존 것을 씁니다(`name` 이 비면 `default`). 토큰은 기본으로 마운트하지
+않습니다(`automountToken: false`) — 파드가 쿠버네티스 API 를 부르지 않기 때문입니다.
+
+**설정 키** — **`jwt.ttlHours`**(비우면 서버 기본 24시간, 범위 1~8760).
+이 서버는 **토큰을 무효화할 수 없으므로** 이 값이 곧 탈취·계정삭제·비밀번호변경의
+노출 상한입니다. 범위를 벗어난 값을 주면 **기동에 실패합니다**(DB 연결보다 먼저 검사).
+
+**설정 키** — **`auth.registrationEnabled`**(기본 `true`). `false` 로 하면
+`POST /api/v1/auth/register` 만 403 이 되고 로그인·갱신·기존 계정 동작은 그대로입니다.
+**끄기 전에 필요한 계정을 먼저 만들어 두십시오** — 끈 뒤에는 superuser 도 새 계정을
+만들 수 없습니다(계정 생성 경로가 register 하나뿐입니다).
+
+**설정 키** — **`auth.docsEnabled`**(기본 `true`). `false` 로 하면
+`/api-docs/openapi.json`·`/swagger-ui`·`/swagger-ui/` 세 경로가 **404** 가 됩니다
+(403 이 아닙니다 — "있지만 막혔다"보다 "없다"가 덜 알려줍니다).
+
+**설정 키** — **`waitForPostgres`**(기본 **꺼짐**). DB 가 뜨기 전에 기동하면 커넥션 풀
+생성에서 즉시 실패해 CrashLoopBackOff 에 빠집니다. 기본을 끈 이유는 이 차트가 DB 주소를
+Secret 의 `NEXUS__DATABASE__URL` 로만 받기 때문입니다 — 여기 host/port 를 적으면 같은
+정보가 두 곳에 생겨 어긋날 수 있어, 켜는 쪽이 그 중복을 감수하겠다고 선택하는 구조로
+두었습니다. startupProbe 600초만으로도 대부분의 경우 충분합니다.
+
 ## 0.2.1
 
 image: `int2jieun/nexus-server:0.1.2`

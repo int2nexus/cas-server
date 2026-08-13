@@ -14,6 +14,29 @@ spec:
       labels:
         {{- include "nexus-server.selectorLabels" . | nindent 8 }}
     spec:
+      # values.yaml에 serviceAccount 블록이 있는데 템플릿이 참조하지 않아, 설정해도
+      # 조용히 아무 일도 일어나지 않던 자리다(고객 리포트 N11). PodSecurity/NetworkPolicy를
+      # ServiceAccount 기준으로 거는 배포에서는 "통제를 걸었다고 믿는데 안 걸린" 상태가 된다.
+      serviceAccountName: {{ include "nexus-server.serviceAccountName" . }}
+      {{- if .Values.waitForPostgres.enabled }}
+      initContainers:
+        # DB가 뜨기 전에 기동하면 커넥션 풀 생성에서 즉시 실패해 CrashLoopBackOff에 빠진다
+        # (백오프가 최대 5분까지 늘어난다). 기본값은 **꺼짐** — 이 차트는 DB 주소를
+        # Secret의 NEXUS__DATABASE__URL로만 받으므로, 여기 host/port를 적으면 같은 정보가
+        # 두 곳에 생겨 어긋날 수 있다. 켜는 쪽이 그 중복을 감수하겠다고 선택하는 구조다.
+        - name: wait-for-postgres
+          image: {{ .Values.waitForPostgres.image }}
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for PostgreSQL at {{ .Values.waitForPostgres.host }}:{{ .Values.waitForPostgres.port }}..."
+              until nc -z {{ .Values.waitForPostgres.host }} {{ .Values.waitForPostgres.port }}; do
+                echo "PostgreSQL not ready, retrying in 2s..."
+                sleep 2
+              done
+              echo "PostgreSQL is ready."
+      {{- end }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -48,6 +71,18 @@ spec:
               value: {{ .Values.cas.defaultBucket | quote }}
             - name: NEXUS__DATABASE__MAX_CONNECTIONS
               value: {{ .Values.database.maxConnections | quote }}
+            {{- if .Values.jwt.ttlHours }}
+            - name: NEXUS__JWT__TTL_HOURS
+              value: {{ .Values.jwt.ttlHours | quote }}
+            {{- end }}
+            {{- if not .Values.auth.registrationEnabled }}
+            - name: NEXUS__AUTH__REGISTRATION_ENABLED
+              value: "false"
+            {{- end }}
+            {{- if not .Values.auth.docsEnabled }}
+            - name: NEXUS__AUTH__DOCS_ENABLED
+              value: "false"
+            {{- end }}
             {{- if .Values.ingest.batchItemConcurrency }}
             - name: NEXUS__INGEST__BATCH_ITEM_CONCURRENCY
               value: {{ .Values.ingest.batchItemConcurrency | quote }}
@@ -93,8 +128,16 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ include "nexus-server.secretName" . }}
+          {{- if .Values.startupProbe.enabled }}
+          # 기동(마이그레이션·superuser 부트스트랩·CVAT 정리)이 끝날 때까지 liveness/readiness를
+          # 유예한다. 이 구간에는 포트 자체가 안 열려 있어 프로브는 connection refused를 받는다.
+          startupProbe:
+            {{- toYaml (omit .Values.startupProbe "enabled") | nindent 12 }}
+          {{- end }}
+          # /_internal/live → 의존성을 조회하지 않는 프로세스 응답성 확인
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
+          # /_internal/health → DB ping
           readinessProbe:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
           resources:
