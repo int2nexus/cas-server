@@ -1,4 +1,4 @@
-✅ cas-server 배포 완료!
+cas-server 배포 완료
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 접속 방법
@@ -23,7 +23,7 @@
   kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "cas-server.fullname" . }} -f
 
   # 기대 로그:
-  #   INFO cas_server: CAS server starting (multi-backend mode) backend_count=N
+  #   INFO cas_server: CAS server starting backend_count=N db_url=... port=...
   #   INFO cas_server: listening on 0.0.0.0:{{ .Values.config.port }}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

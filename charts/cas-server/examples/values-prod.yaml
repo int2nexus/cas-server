@@ -8,7 +8,10 @@
 
 # ── 앱 설정 ───────────────────────────────────────────────────────────────────
 config:
-  # DB 커넥션 풀: replicaCount × dbMaxConnections < PostgreSQL max_connections
+  # DB 커넥션 풀. 파드당 총 사용량은 dbMaxConnections + gcDbMaxConnections + 1(집계 전용).
+  # 지켜야 할 부등식:
+  #   replicaCount × (dbMaxConnections + gcDbMaxConnections + 1) < PostgreSQL max_connections
+  # 아래 기본값 기준 1 × (20 + 2 + 1) = 23. 집계 전용 1개는 차트 0.1.24 에서 늘어난 몫이다.
   dbMaxConnections: 20
 
   # 업로드 상한(maxUploadBytesInFlight 3 GiB / maxConcurrentUploads 96)은
@@ -60,13 +63,16 @@ externalDatabase:
 #
 # 주의 (cas-server 이미지 0.1.17 **이하**): GC를 끄면 서버 내부의 해시별 쓰기 락
 # 테이블 회수 경로도 함께 사라진다. 그 이미지에서 회수는 GC 실행 시에만 일어나므로,
-# 끈 채로 대량 적재하면 고유 해시당 약 180바이트가 파드 수명 내내 쌓인다
+# 끈 채로 대량 적재하면 고유 해시당 약 180~240바이트가 파드 수명 내내 쌓인다
 # (2026-08 운영 사례: 유휴 바닥값이 하루 330~430 MiB 상승).
 #
 # 켜 두더라도 아래 schedule 이 곧 회수 주기다 — 주 1회면 최대 일주일치가 쌓인다.
 # 대응 세 가지(이미지 0.1.18 이상으로 올리기 / 파드 재시작 / dry_run 주기 실행)의
 # 판단 기준은 차트 README 의 "GC와 메모리 회수" 절 참고.
 # 이미지 0.1.18 이상은 요청이 끝날 때 즉시 회수하므로 이 항목이 해당되지 않는다.
+# 이 예시는 대량 이관을 전제로 GC 를 꺼 둔다(차트 기본값은 true).
+# **이관이 끝나면 true 로 되돌릴 것** — 그 전까지 orphan blob 이 회수되지 않아
+# 오브젝트 스토리지 사용량이 조용히 누적된다.
 gc:
   enabled: false
   schedule: "0 2 * * 0"   # 활성화 시 실행 주기 (매주 일요일 02:00)

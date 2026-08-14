@@ -22,7 +22,7 @@ helm repo update
 ## 시크릿 (sealed-secret) 먼저 주입
 
 `secrets.useExternalSecret: true`(기본값)일 때 차트는 Secret을 만들지 않고, 이미 클러스터에 존재하는
-`cas-server` Secret(필수 7개 키 + 선택 1개)을 참조한다. kubeseal로 암호화해 미리 주입한다:
+`cas-server` Secret 을 참조한다. kubeseal로 암호화해 미리 주입한다:
 
 ```bash
 kubectl create secret generic cas-server \
@@ -42,10 +42,13 @@ rm /tmp/secret-plain.yaml
 kubectl apply -f sealed-secret.yaml -n <namespace>
 ```
 
-`auth-metrics-token`은 선택 항목이다. 없으면 파드는 정상 기동하고 서버가 `admin_token`으로
-폴백한다 — 기존 7개 키 Secret 그대로 업그레이드해도 된다. 용도는 [메트릭 스크레이프](#메트릭-스크레이프) 참고.
+위 8개 중 `s3-access-key-id` / `s3-secret-access-key` 는 **`storage.mode: "s3"` 에서만
+쓰인다** — `nfs` 모드에서는 어떤 템플릿도 참조하지 않으므로 넣지 않아도 된다(넣어도 무해).
 
-`auth.secretMasterKey`를 비우면 NoAuth 모드(인증 없음, 내부망 전용)로 동작한다. 상세 절차와 값 교체
+`auth-metrics-token`은 선택 항목이다. 없으면 파드는 정상 기동하고 서버가 `admin_token`으로
+폴백한다 — 그 키가 없는 기존 Secret 그대로 업그레이드해도 된다. 용도는 [메트릭 스크레이프](#메트릭-스크레이프) 참고.
+
+`secrets.secretMasterKey`를 비우면 NoAuth 모드(인증 없음, 내부망 전용)로 동작한다. 상세 절차와 값 교체
 방법은 [`examples/sealed-secret.yaml`](https://github.com/int2nexus/cas-server/blob/main/charts/cas-server/examples/sealed-secret.yaml) 참고.
 
 ## 설치
@@ -84,20 +87,20 @@ storage:
 | `externalDatabase.host` | `""` | PostgreSQL 서비스명 |
 | `externalDatabase.port` | `5432` | PostgreSQL 포트 |
 | `secrets.useExternalSecret` | `true` | sealed-secret으로 Secret을 미리 주입했는지 여부 |
-| `auth.secretMasterKey` | (없음) | 설정 시 SigV4 인증 활성화, 비우면 NoAuth |
-| `auth.metricsToken` | `""` | `GET /_internal/metrics` 전용 **읽기 전용** 토큰. 비우면 `admin_token`으로 폴백. 모니터링 스택에는 이것을 쓸 것 (아래 참고) |
+| `secrets.secretMasterKey` | (없음) | 설정 시 SigV4 인증 활성화, 비우면 NoAuth |
+| `auth.metricsToken` | `""` | `GET /_internal/metrics` 전용 **읽기 전용** 토큰. 비우면 `admin_token`으로 폴백. 모니터링 스택에는 이것을 쓸 것 (아래 참고). `useExternalSecret: true`(기본)이면 이 값 대신 Secret 의 `auth-metrics-token` 이 쓰입니다 |
 | `ingress.enabled` | `false` | Ingress 활성화 |
 | `config.maxUploadSizeBytes` | `10737418240` | 최대 업로드 크기 (10 GiB) |
 | `config.maxUploadBytesInFlight` | `3221225472` | 동시 업로드 바디의 총 상주 바이트 상한 (3 GiB). 초과분은 `503 SlowDown`. **`0` = 무제한.** `resources.limits.memory` × 0.5 를 기준으로 함께 조정할 것 |
 | `config.maxConcurrentUploads` | `96` | 동시 업로드 건수 상한. 위 바이트 예산의 보조 장치. `dbMaxConnections`보다 커도 모순이 아니다 — 커넥션은 요청당이 아니라 쿼리당 잡힌다 |
-| `config.requestTimeoutSecs` | `120` | 요청 처리 타임아웃. 느린 S3 백엔드까지 포함한 요청 경로의 유일한 wall-clock 상한. **0.1.23까지 이 문서가 이 키를 언급하면서 템플릿에는 없었다** — 설정해도 조용히 무시됐다 |
-| `config.statsStatementTimeoutSecs` | `30` | 집계 조회(`/_api/stats`, `/_api/buckets`, `/_api/backends`) 전용 풀의 쿼리 상한. 이 풀은 커넥션 1개로 요청 경로와 격리된다 (아래 참고) |
+| `config.requestTimeoutSecs` | `120` | 요청 처리 타임아웃. 느린 S3 백엔드까지 포함한 요청 경로의 유일한 wall-clock 상한 |
+| `config.statsStatementTimeoutSecs` | `30` | 집계 조회 전용 풀의 쿼리 상한. 이 풀은 커넥션 1개로 요청 경로와 격리된다 (대상 목록은 아래 참고) |
 | `config.statsWorkMemMb` | `0` | 집계 풀의 `work_mem` (MiB). `0` = 서버 값 사용. **PostgreSQL 쪽 메모리**를 쓰므로 PG 사이징 확인 후 조정할 것 |
 | `config.dbMinConnections` | `2` | 항상 유지할 유휴 커넥션. `0`이면 뜸한 뒤 첫 요청이 접속 핸드셰이크 비용을 문다(실측 68ms → 0.5ms) |
 | `config.gcDbMaxConnections` | `2` | GC 전용 풀 크기 |
-| `config.softDeleteRetentionSecs` | `604800` | soft-delete된 `object_versions` **행**의 보존 기간. **되돌림 창이 아니다** — blob 물리 삭제와 무관하다 (아래 참고) |
+| `config.softDeleteRetentionSecs` | `604800` | soft-delete된 `object_versions` **행** 중 GC 가 blob 과 함께 치우지 못한 것의 보존 기간. **되돌림 창이 아니다** (아래 참고) |
 | `auth.cacheTtlSecs` | `10` | 자격증명 캐시 TTL. 폐기된 키·좁힌 정책이 실제로 막히기까지의 지연. 유출 대응 시 `0` |
-| `serviceAccount.create` | `false` | `true` 면 차트가 ServiceAccount 를 만든다. **0.1.23까지 이 블록은 통째로 무시됐다** |
+| `serviceAccount.create` | `false` | `true` 면 차트가 ServiceAccount 를 만든다. `false` 면 기존 것을 쓴다 |
 | `serviceAccount.automountToken` | `false` | 토큰 자동 마운트. 이 서버는 쿠버네티스 API 를 부르지 않으므로 기본 `false`. IRSA/Workload Identity 를 쓸 때만 `true` |
 | `serviceAccount.annotations` | `{}` | `create: true` 일 때 SA 에 붙일 애노테이션. IRSA · Workload Identity 설정 자리 |
 | `resources.limits.memory` | `6Gi` | 2026-08-05 OOM 대응으로 올린 값. **당분간 유지할 것** — 하향 전제는 [values.yaml](values.yaml)의 `resources` 주석 참고 |
@@ -126,7 +129,9 @@ deployment가 `optional: true`로 참조하므로, 추가하지 않아도 파드
 (그 경우 서버가 `admin_token`으로 폴백합니다). **cas-server 이미지 `0.1.18` 이상**이
 필요하며, 그 이하 이미지는 이 토큰을 무시하므로 스크레이프가 401이 됩니다.
 
-**`metricsToken`만 채우고 `adminToken`을 비우지 마세요.** 그 조합에서는 서버가 기동을
+**`metricsToken`만 채우고 admin 토큰 문자열을 비우지 마세요**(sealed-secret 의
+`auth-admin-token`, 또는 `useExternalSecret: false` 에서는 `secrets.adminToken`.
+불리언 게이트인 `auth.adminToken` 이 아닙니다). 그 조합에서는 서버가 기동을
 거부합니다 — metrics만 잠기고 `POST /_internal/gc`(blob 물리 삭제)가 무인증으로 열려,
 401을 보고 보호된다고 오해하게 되기 때문입니다. `replicaCount: 1`이라 기동 실패는
 곧 전면 중단입니다.
@@ -138,7 +143,7 @@ deployment가 `optional: true`로 참조하므로, 추가하지 않아도 파드
 원인이 "토큰이 틀렸나"로 보입니다.
 
 ```bash
-kubectl rollout restart -n <namespace> deploy/cas-server
+kubectl rollout restart -n <namespace> deploy/<release>
 ```
 
 업그레이드와 함께 갱신한다면 **Secret을 먼저 적용**하고 `helm upgrade`하면 파드 교체와
@@ -146,12 +151,18 @@ kubectl rollout restart -n <namespace> deploy/cas-server
 
 차트는 `ServiceMonitor`를 포함하지 않습니다 — 모니터링 스택 구성은 배포 측 소관입니다.
 
+## 대량 적재 중에는 GC를 끄십시오 (모든 이미지 버전)
+
+대량 적재 중에는 `gc.enabled: false`를 권장합니다. GC는 orphan 후보마다 해시별 쓰기 락을
+물리 삭제와 DB 삭제 구간 내내 쥐므로 같은 내용을 올리는 PUT이 그동안 대기하고, blob 전수
+조인이 DB에 부하를 더하기 때문입니다.
+
+**적재가 끝나면 다시 켜십시오.** 꺼 둔 동안 orphan blob이 회수되지 않아 오브젝트
+스토리지 사용량이 조용히 누적됩니다.
+
 ## GC와 메모리 회수 (이미지 `0.1.17` 이하)
 
-대량 적재 중에는 `gc.enabled: false`를 권장합니다. GC의 orphan 전수 스캔과 advisory lock이
-적재 경로와 경합하기 때문입니다.
-
-**다만 이미지 `0.1.17` 이하에서는 GC 주기가 곧 서버 내부 해시별 쓰기 락 테이블의 회수
+**이미지 `0.1.17` 이하에서는 GC 주기가 곧 서버 내부 해시별 쓰기 락 테이블의 회수
 주기입니다.** 항목은 고유 해시마다 하나씩 생기고 항목당 약 180~240바이트입니다.
 
 | `gc.enabled` | 회수 | 쌓이는 양 |
@@ -160,7 +171,7 @@ kubectl rollout restart -n <namespace> deploy/cas-server
 | `true` | `gc.schedule` 주기 | 그 주기만큼. 기본 주 1회면 최대 일주일치 |
 
 **GC를 켜 뒀다고 해당 없는 항목이 아닙니다.** 2026-08 운영 사례에서 유휴 메모리 바닥값이
-4.9일간 하루 330~430 MiB씩 단조 상승했고, 주 1회 주기라면 그 사이 최대 2.3~3.0 GiB가
+4.9일간 하루 330~430 MiB씩 단조 상승했고, 주 1회 주기라면 그 사이 최대 2.3~2.9 GiB가
 쌓입니다. 대량 적재는 고유 해시율이 요청율과 거의 같은 구간이라 증가율이 최대가 됩니다.
 
 선택지는 셋이고, **위로 갈수록 낫습니다.**
@@ -171,8 +182,28 @@ kubectl rollout restart -n <namespace> deploy/cas-server
    그동안 중단됩니다. 상승률로 한도 도달 시점을 계산해 그보다 짧은 주기로 잡으세요.
 3. **중단이 곤란하면 `POST /_internal/gc?dry_run=true`를 주기 실행한다.** 이 요청은
    **blob 물리 삭제를 하지 않고 GC advisory lock도 잡지 않으면서** 그 테이블을
-   회수합니다. GC를 다시 켤 필요가 없습니다. 함께 도는 것은 읽기 전용 쿼리
-   두 개(orphan 후보 COUNT, 만료 멀티파트 목록)입니다.
+   회수합니다. GC를 다시 켤 필요가 없습니다.
+
+   **다만 이 요청에는 상한이 필요합니다.**
+   이 요청이 도는 읽기 전용 쿼리 둘 중 하나가 orphan 후보 COUNT인데, `blobs` ×
+   `object_versions` 안티조인 전수 집계라 데이터가 커지면 디스크로 스필합니다 —
+   2026-08 사고에서 임시 파일 352.8 GB를 만든 것과 같은 형태의 쿼리입니다.
+   `statsStatementTimeoutSecs`는 이 쿼리를 덮지 않습니다. 같은 SQL이지만 GC 풀에서
+   돌기 때문입니다.
+
+   **그런데 그 상한인 `config.gcStatementTimeoutSecs`는 이미지 `0.1.18` 이상에서만
+   동작합니다** — 이 절의 독자에게는 없는 설정이고, 넣어도 조용히 무시됩니다. 그래서
+   `0.1.17` 이하에서는 PostgreSQL 쪽에서 거는 수밖에 없습니다.
+
+   ```sql
+   ALTER ROLE <cas 사용자> SET statement_timeout = '300s';
+   ```
+
+   이 방법은 GC 뿐 아니라 그 롤의 **모든** 쿼리에 걸리므로, 대용량 업로드의 메타데이터
+   커밋까지 자를 수 있습니다. 그것이 곤란하면 이 선택지 대신 위 2번(재시작)을 쓰십시오.
+
+   또 이 요청은 advisory lock도 in-flight 플래그도 잡지 않으므로 **중복 호출이 쌓일 수
+   있습니다.** 이전 실행이 끝났는지 확인한 뒤 다음을 보내십시오.
 
    쓰기 경로와의 경합은 **"없음"이 아니라 "짧음"**입니다. 회수는 락 테이블을
    순회하는데 자료구조가 샤드로 나뉘어 있고 **한 번에 한 샤드씩** 잠급니다.
@@ -188,10 +219,13 @@ Secret에서 `auth-admin-token`을 주입하면 토큰이 클러스터 밖으로
 
 ```bash
 NS=<namespace>
-REL=cas-server     # helm 릴리스명. 서비스·시크릿 이름이 이것을 따릅니다
+REL=cas-server     # 리소스명. 릴리스명이 'cas-server'를 포함하면 릴리스명 그대로,
+                   # 아니면 '<릴리스명>-cas-server' 입니다
 
 # 로컬 18080은 비어 있는 아무 포트나 됩니다. 원격은 서비스의 named port 'http'라
-# config.port / service.port를 기본값과 다르게 두었어도 그대로 동작합니다.
+# service.port를 기본값과 다르게 두었어도 그대로 동작합니다.
+# (config.port는 별개입니다 — service.targetPort와 프로브 포트가 따라오지 않으므로
+#  바꾼다면 그 셋을 함께 맞춰야 합니다.)
 kubectl port-forward -n "$NS" "svc/$REL" 18080:http &
 TOKEN=$(kubectl get secret -n "$NS" "$REL" \
           -o jsonpath='{.data.auth-admin-token}' | base64 -d)
@@ -202,7 +236,7 @@ time curl -sS -X POST -H "Authorization: Bearer $TOKEN" \
 
 **주기를 정하기 전에 이 소요 시간을 재세요.** 두 가지가 합쳐진 값입니다 — 읽기 전용
 쿼리 두 개(그쪽 규모에서 얼마나 걸리는지는 재 봐야 압니다)와 락 테이블 순회입니다.
-무거우면 6시간 주기로도 하루 330 MiB 상승이 약 90 MiB 톱니로 줄어듭니다.
+무거우면 6시간 주기로도 하루 330 MiB 상승이 약 83 MiB 톱니로 줄어듭니다.
 
 회수 건수는 cas-server 파드 로그에 남습니다 —
 `GC: blob write lock 항목 회수  swept=<n> remaining=<n>` (0건이면 로그가 없습니다).
@@ -214,12 +248,13 @@ time curl -sS -X POST -H "Authorization: Bearer $TOKEN" \
 현재 이미지 태그 확인:
 
 ```bash
-kubectl get deploy cas-server -n <namespace> -o jsonpath='{..image}{"\n"}'
+kubectl get deploy "$REL" -n <namespace> \n  -o jsonpath='{.spec.template.spec.containers[?(@.name=="cas-server")].image}{"\n"}'
 ```
 
 ## 집계 조회 격리 (이미지 `0.1.18` 이상)
 
-`/_api/stats`, `/_api/buckets`, `/_api/backends`, orphan 카운트는 전 테이블 집계입니다.
+`/_api/stats`, `/_api/buckets`, `/_api/buckets/{bucket}/objects` 의 서브폴더 조회,
+`/_api/backends` 의 blob 집계, `/_api/gc/orphan-count` 는 전 테이블 집계입니다.
 데이터가 커지면 조인이 디스크로 스필하고, 2026-08 고객 환경에서 그 스필이 임시 파일
 **352.8 GB** 를 만들며 적재를 **2시간 55분** 막았습니다. 파드 재시작으로 끊을 수 없었습니다.
 
@@ -231,7 +266,12 @@ kubectl get deploy cas-server -n <namespace> -o jsonpath='{..image}{"\n"}'
 | `statsStatementTimeoutSecs` | `30` | PostgreSQL 이 실제로 문장을 취소하게 하는 유일한 수단 |
 | `max_parallel_workers_per_gather = 0` | 고정 | `work_mem` 은 워커마다 따로 쓴다 — 워커가 붙으면 스필이 배가된다 |
 | `statsWorkMemMb` | `0` | 올리면 해시 조인 배치 수가 줄어 스필이 준다. **PG 쪽 메모리**를 쓴다 |
-| 캐시 60초 + single-flight | 고정 | 동시 요청이 쿼리를 하나만 띄운다 |
+| 캐시 60초 + single-flight | `/_api/stats` 만 | 동시 요청이 쿼리를 하나만 띄운다 |
+
+**조회가 실패하면 `/_api/stats` 는 지난 값을 그대로 내보냅니다.** 나이 제한이 없으므로
+장애가 이어지는 동안 임의로 오래된 숫자가 보일 수 있고, 화면에 그 사실이 표시되지
+않습니다. 실패 직후 30초는 재질의하지 않으며(캐시된 값이 없으면 오류), 대시보드 숫자가
+멈춘 것처럼 보이면 DB 쪽을 먼저 보십시오.
 
 **왜 타임아웃만으로는 부족한가.** 취소된 쿼리의 커넥션은 sqlx 가 닫지 않고 유휴 풀로
 반납합니다. 다음 획득자가 그 커넥션을 뽑으면 버려진 문장이 끝날 때까지 막힙니다 —
@@ -239,32 +279,46 @@ kubectl get deploy cas-server -n <namespace> -o jsonpath='{..image}{"\n"}'
 요청 풀을 쓰기 때문에, 격리가 없으면 **인증 없는 GET 한 건이 파드를 Service 엔드포인트에서
 밀어낼 수 있습니다.**
 
-파드당 PostgreSQL 커넥션은 `dbMaxConnections + gcDbMaxConnections + 1` 입니다.
-기본값 기준 `20 + 2 + 1 = 23`. 지켜야 할 부등식:
+파드당 PostgreSQL 커넥션은 **최대** `dbMaxConnections + gcDbMaxConnections + 1` 입니다.
+기본값 기준 `20 + 2 + 1 = 23`. 상시 점유가 아니라 상한입니다 — 기동 직후 실제로 열리는
+것은 4개(요청 풀의 `dbMinConnections: 2` + 각 풀 1개)이고, 유휴가 이어지면 2개까지
+내려갑니다. PostgreSQL `max_connections` 사이징은 이 상한으로 잡으십시오.
+
+차트 기본값은 서버 기본값과 다릅니다 — `dbMaxConnections` 는 차트 20 / 서버 10,
+`dbAcquireTimeoutSecs` 는 차트 10 / 서버 30 입니다. 차트 밖에서 같은 부등식을 쓰면
+`10 + 2 + 1 = 13` 이 됩니다.
+
+지켜야 할 부등식:
 
 ```
 replicaCount × (dbMaxConnections + gcDbMaxConnections + 1) < PG max_connections
 ```
 
-## 삭제 되돌리기 — `softDeleteRetentionSecs` 는 되돌림 창이 아닙니다
+## 삭제와 되돌림 창
 
 `config.softDeleteRetentionSecs` (기본 7일)는 soft-delete 된 `object_versions` **행**의
-DB 보존 기간이고 **blob 물리 삭제와 무관합니다.** soft-delete 된 버전은 GC 의 orphan
-판정에서 "없음"으로 취급되므로, 삭제가 커밋되는 즉시 blob 은 orphan 후보가 되고
-**다음 GC 실행에서 물리 삭제됩니다.** 이 값을 올려도 파일은 돌아오지 않습니다.
+보존 기간입니다. GC 마지막 단계의 `DELETE ... WHERE deleted_at < NOW() - ...` 가 이 값을
+씁니다.
 
-이 값의 용도는 `object_versions` 테이블 팽창 관리입니다.
+**이 값은 되돌림 창이 아닙니다.** 그 문장은 행만 지우고 blob 파일은 건드리지 않습니다.
+blob 물리 삭제는 GC 의 orphan 정리가 따로 하며 이 값과 무관합니다 — DELETE 가 커밋되는
+순간 blob 은 orphan 후보가 되고, **다음 GC 실행에서 파일이 사라집니다.** 그때 그 해시의
+soft-delete 행도 같은 트랜잭션에서 함께 지워지므로, 이 값이 실제로 관장하는 것은 그때
+치우지 못한 행뿐입니다(delete marker, 그리고 다른 객체가 같은 blob 을 참조 중이라 blob 이
+살아 있는 행).
 
-실수 삭제로부터 보호가 필요하면 **버킷 버저닝**을 켜세요.
+**되돌림 창은 다음 GC 실행까지입니다.** 기본 스케줄이 주 1회(일요일 02:00)이므로 최대
+그만큼이지만, 보장이 아닙니다 — `POST /_internal/gc` 를 수동으로 치면 즉시 닫히고,
+비버저닝 버킷은 같은 키에 새 PUT 이 들어오면 그 시점에 닫힙니다. GC 가 지나간 뒤에는
+blob 과 행이 함께 사라져 백업 복원 외에 방법이 없습니다. 창 안이라면 되살릴 수 있지만
+DB 를 직접 고쳐야 하므로, 필요하면 GC 를 먼저 멈추고(`gc.enabled: false`) 지원팀에
+문의하십시오.
 
-| 모드 | DELETE 동작 | blob |
-|---|---|---|
-| 버저닝 켜짐 | delete marker 를 새 행으로 추가, 이전 버전 행은 유지 | **살아 있다. marker 를 지우면 복구된다** |
-| 버저닝 없음 (기본) | 단일 행을 soft-delete | 다음 GC 에서 물리 삭제 |
-
-기본값은 버저닝 없음입니다. 되돌릴 수 없는 데이터를 담는 버킷이라면 버저닝을 검토하세요.
-대가는 중복 제거 이득 감소와 `object_versions` 성장 가속이므로, 대량 이관이 끝난 뒤
-켜는 편이 계획을 세우기 쉽습니다.
+실수 삭제로부터 보호하는 표준 수단은 S3 와 마찬가지로 **버킷 버저닝**입니다. 다만 한 번
+켜면 끌 수 없고(`Suspended` 까지만 가능), nexus 와 연동하는 버킷이라면 이득이 크지
+않습니다 — nexus 는 버전을 데이터셋 단위로 관리하고 cas 객체를 참조할 때 `versionId` 를
+쓰지 않으므로(항상 최신을 읽습니다) 켜도 사용자에게 이전 버전이 보이지 않는 반면,
+`object_versions` 행 누적은 그대로 옵니다.
 
 ## 서비스 어카운트
 
@@ -355,7 +409,7 @@ per-hash 뮤텍스에 의존합니다. 파드가 둘 이상이면 이 락이 공
 |--------|-----------|----------|
 | `startupProbe` | `GET /_internal/live` | 기동(DB 마이그레이션 포함) 완료 여부. 성공 전까지 나머지 둘은 평가되지 않음 |
 | `livenessProbe` | `GET /_internal/live` | 프로세스 응답성만. **의존성을 보지 않음** |
-| `readinessProbe` | `GET /_internal/health` | **DB에 닿는지** + 백엔드 가용성. 닿지 못하면 503 |
+| `readinessProbe` | `GET /_internal/health` | **DB에 닿는지** + 백엔드 가용성. 닿지 못하면 503 (S3 모드에서 백엔드 검사는 항상 통과 — 아래 참고) |
 
 ### readinessProbe.timeoutSeconds 는 dbAcquireTimeoutSecs 보다 커야 합니다
 
@@ -364,15 +418,18 @@ per-hash 뮤텍스에 의존합니다. 파드가 둘 이상이면 이 락이 공
 끊깁니다.** 기본값은 `12 > 10` 으로 맞춰져 있습니다. `dbAcquireTimeoutSecs` 를 올리면
 이 값도 함께 올리세요.
 
-`0.1.23` 까지 이 차트는 `5 < 10` 이었고 주석은 "프로브 판정 결과는 같다"고 적었습니다.
-**그것이 틀렸습니다 — 판정은 같아도 원인이 다릅니다.**
 
-이미지 `0.1.18` 부터 서버는 두 경우를 구분합니다.
+DB 가 죽은 것과 바쁜 것은 대응이 다르고, 이미지 `0.1.18` 부터 서버가 그 둘을 구분합니다.
 
 | 상황 | 응답 | 이유 |
 |---|---|---|
 | DB 커넥션 풀 포화 (DB는 살아있음) | `200`, `status: "saturated"` | 프로세스는 정상 서빙 중이다 |
 | DB에 못 닿음 | `503`, `status: "degraded"` | 의존성이 죽었다 |
+
+**`storage.mode: "s3"` 에서는 백엔드 검사가 사실상 동작하지 않습니다.** S3 백엔드의
+가용성 판정은 항상 참을 돌려주므로(원격 스토리지에 대한 저렴한 존재 확인 수단이 없습니다),
+readiness 가 실질적으로 보는 것은 DB 뿐입니다. NFS 모드에서는 마운트 경로 존재를 실제로
+확인합니다. 백엔드가 오프라인이면 `degraded`(503)가 되는 것은 NFS 모드에 해당합니다.
 
 `replicaCount` 가 1로 고정되므로 **포화만으로 파드를 빼면 부하를 넘길 곳이 없어 열화가
 전면 장애로 승격됩니다.** 다중 레플리카라면 부하를 덜어내는 의미가 있지만 여기서는
@@ -387,7 +444,7 @@ per-hash 뮤텍스에 의존합니다. 파드가 둘 이상이면 이 락이 공
 의존성 상태는 readiness가 판단해 Service 엔드포인트에서 빼는 것이 맞는 처리이고,
 의존성이 돌아오면 파드는 그대로 복귀합니다.
 
-`/_internal/live` 는 **cas-server 이미지 `0.1.17` 이상**에서만 제공됩니다. 이미지를 그 이하로
+`/_internal/live` 는 **cas-server 이미지 `0.1.17` 이상**에서만 제공됩니다. 이미지를 `0.1.16` 이하로
 고정해 쓰는 경우 `livenessProbe.httpGet.path` 와 `startupProbe.httpGet.path` 를
 `/_internal/health` 로 되돌리세요. 그러지 않으면 404가 프로브 실패로 계산되어 파드가
 계속 재시작합니다.
@@ -414,6 +471,5 @@ helm upgrade cas-server int2nexus/cas-server -n <namespace> -f values-prod.yaml
 
 ```bash
 helm uninstall cas-server -n <namespace>
-helm uninstall postgresql -n <namespace>
 kubectl delete namespace <namespace>
 ```

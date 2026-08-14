@@ -79,19 +79,11 @@ config:
   inlineHashLimitBytes: 268435456   # 256 MiB
   gcIntervalSecs: 0                 # Pod 자체 GC 비활성화 — gc-cronjob이 단독으로 트리거
 
-  # soft-delete 된 object_version **행**의 DB 보존 기간 (초). 서버 기본값 604800(7일).
+  # soft-delete 된 object_versions **행**의 보존 기간 (초). 용도는 테이블 팽창 관리다.
   #
-  # 주의: 이것은 **실수 삭제의 되돌림 창이 아니다.** blob 물리 삭제와 무관하다 —
-  # soft-delete 된 버전은 GC 의 orphan 판정에서 "없음"으로 취급되므로, 삭제가 커밋되는
-  # 즉시 blob 은 orphan 후보가 되고 다음 GC 실행에서 물리 삭제된다. 이 값을 올려도
-  # 파일은 돌아오지 않는다.
-  #
-  # 이 값의 용도는 object_versions 테이블 팽창 관리다. 올리면 행이 오래 남아 DB 가 커지고,
-  # 내리면 빨리 정리되지만 삭제 이력을 조회할 수 있는 기간이 짧아진다.
-  #
-  # 실수 삭제로부터 보호가 필요하면 **버킷 버저닝**을 켤 것. 버저닝 버킷에서는 DELETE 가
-  # delete marker 를 새 행으로 추가하고 이전 버전 행을 그대로 두므로 blob 이 살아 있고,
-  # marker 를 지우면 복구된다. 기본값은 버저닝 없음이다.
+  # **실수 삭제의 되돌림 창이 아니다.** blob 물리 삭제는 GC 의 orphan 정리가 하고 이 값과
+  # 무관하므로, 올려도 파일은 돌아오지 않는다. 되돌림 창은 다음 GC 실행까지다 —
+  # README 의 "삭제와 되돌림 창" 참고.
   softDeleteRetentionSecs: 604800
   # DB 커넥션 풀. 파드당 총 사용량은 dbMaxConnections + gcDbMaxConnections + 1(집계 전용)이다.
   # 지켜야 할 부등식: replicaCount × (dbMaxConnections + gcDbMaxConnections + 1) < PG max_connections
@@ -124,23 +116,15 @@ config:
   gcStatementTimeoutSecs: 0
 
   # ── 집계 조회 전용 풀 (cas-server 이미지 0.1.18 이상 필요) ───────────────────
-  # /_api/stats, /_api/buckets, /_api/backends, orphan 카운트는 **커넥션 1개짜리
-  # 별도 풀**에서 돈다. 요청 경로와 격리되므로 여기에는 타임아웃을 걸어도 안전하다 —
-  # 대시보드 한 화면이 실패하는 것과 업로드가 실패하는 것은 무게가 다르다.
-  #
-  # 왜 격리가 필요한가. 취소된 쿼리의 커넥션은 sqlx 가 닫지 않고 유휴 풀로 반납한다.
-  # 다음 획득자가 그 커넥션을 뽑으면 버려진 문장이 끝날 때까지 막힌다. 즉 타임아웃된
-  # 집계 요청 하나가 풀 커넥션 하나를 오염시킨다. /_internal/health 가 요청 풀을
-  # 쓰기 때문에, 격리가 없으면 **무인증 GET 한 건이 파드를 Service 엔드포인트에서
-  # 밀어낼 수 있다**(replicaCount: 1 강제). statement_timeout 만으로는 닫히지 않는다.
-  #
-  # 2026-08 고객 환경에서 이 경로로 임시 파일 352.8 GB 가 생기며 적재가 2시간 55분
-  # 멈췄고, 파드 재시작으로 끊을 수 없었다.
+  # 집계 조회(/_api/stats, /_api/buckets, /_api/buckets/{bucket}/objects 의 서브폴더
+  # 조회, /_api/backends 의 blob 집계, orphan 카운트)의 쿼리 상한.
+  # 이 조회들은 커넥션 1개짜리 별도 풀에서 돌아 요청 경로와 격리되므로, 여기에 타임아웃을
+  # 걸어도 업로드는 영향받지 않는다. 0 = 걸지 않음(권장하지 않음).
+  # 격리가 필요한 이유는 README 의 "집계 조회 격리" 참고.
   statsStatementTimeoutSecs: 30
   # 집계 풀의 work_mem (MiB). 0 = 서버 값을 그대로 쓴다.
-  # work_mem 은 노드당·워커당 할당량이고 **PostgreSQL 쪽 메모리**를 쓴다 — 파드가 아니다.
-  # 이 풀은 커넥션 1개이고 병렬 워커를 끄므로, PG 에 여력이 있으면 올릴 값어치가 있다
-  # (해시 조인 배치 수가 줄어 스필이 크게 준다). PG 사이징을 확인한 뒤 조정할 것.
+  # **PostgreSQL 쪽 메모리**를 쓴다 — 파드가 아니다. 노드당·워커당 할당량이므로 PG
+  # 사이징을 확인한 뒤 조정할 것. 올리면 해시 조인 스필이 준다.
   statsWorkMemMb: 0
 
   # ── 업로드 상한 (cas-server 이미지 0.1.16 이상 필요. image.tag 확인할 것) ───────────────────────────────────────
@@ -167,7 +151,6 @@ config:
 # ── 스토리지 백엔드 ────────────────────────────────────────────────────────────
 storage:
   # "s3" 또는 "nfs". 대소문자를 구분한다 — 잘못된 값은 렌더 시점에 fail 로 막는다.
-  # (0.1.23 까지는 오타가 백엔드 0개로 조용히 렌더되어 파드만 기동 시 panic 했다.)
   mode: "s3"
 
   # NFS 모드: 백엔드를 최소 한 개 정의해야 한다. mode=nfs 인데 비어 있으면 렌더가 실패한다.
@@ -199,7 +182,7 @@ externalDatabase:
   # 비밀번호는 secrets.dbPassword 에서 가져옴
 
 # ── 자격증명 ─────────────────────────────────────────────────────────────────
-# 아래 7개 시크릿은 values.yaml에 포함되지 않습니다.
+# 아래 7개 시크릿은 useExternalSecret: true(기본값)이면 values.yaml 의 값을 쓰지 않고,
 # kubeseal로 암호화한 sealed-secret.yaml을 통해 클러스터에 주입합니다.
 #   db-password, s3-access-key-id, s3-secret-access-key
 #   auth-secret-master-key, auth-admin-token
@@ -231,20 +214,11 @@ secrets:
 auth:
   anonymousGet: true   # true이면 GET/HEAD /{bucket}/{key} 를 인증 없이 허용 (이미지 서버, FiftyOne 등)
 
-  # **불리언 게이트입니다. 토큰 값이 아닙니다.**
+  # **불리언 게이트다. 토큰 값이 아니다.** 실제 토큰 문자열은 sealed-secret(기본) 또는
+  # 위 secrets.adminToken(useExternalSecret: false)에 넣는다.
   #
-  # "서버에 admin 토큰이 설정돼 있는가"를 차트에 알려주는 스위치이고, 이 값이 참이면
-  # gc-cronjob 이 Secret 의 `auth-admin-token` 을 읽어 Authorization 헤더를 붙입니다.
-  # 실제 토큰 문자열은 sealed-secret(기본) 또는 위 `secrets.adminToken`
-  # (useExternalSecret: false)에 넣습니다.
-  #
-  # 0.1.23 까지 `secret.yaml` 이 이 불리언을 **자격증명 자체로** 렌더했습니다. 그래서
-  # useExternalSecret: false 로 배포하면 admin 토큰이 리터럴 문자열 `"true"` 가 되어,
-  # 그것만 알면 blob 물리 삭제(POST /_internal/gc)를 호출할 수 있었습니다.
-  # 0.1.24 부터 Secret 은 `secrets.adminToken` 을 씁니다.
-  #
-  # false 로 두면 gc-cronjob 이 헤더를 붙이지 않습니다 — 서버에 admin 토큰이 설정돼
-  # 있으면 GC 트리거가 401 이 되므로, 서버 설정과 반드시 일치시키십시오.
+  # 참이면 gc-cronjob 이 Secret 의 auth-admin-token 을 읽어 Authorization 헤더를 붙인다.
+  # 서버의 admin 토큰 설정 여부와 **반드시 일치**시킬 것 — 어긋나면 GC 트리거가 401 이다.
   adminToken: true
 
   # GET /_internal/metrics 전용 읽기 토큰 (cas-server 이미지 0.1.18 이상).
@@ -354,7 +328,8 @@ terminationGracePeriodSeconds: 60
 # 없으면 "기동 소요 > liveness 예산"인 순간 구조적으로 죽는다. DB 마이그레이션은 HTTP
 # 리스너가 열리기 전에 수행되므로 그동안 liveness는 반드시 실패하기 때문이다.
 # 실제 사례: object_versions 인덱스를 만드는 마이그레이션이 114초 걸려 liveness
-# 예산 120초를 채우기 전에 실패 판정이 확정되었고 파드가 kill되었다(0.1.16 최초 배포).
+# 예산 90초(= initialDelaySeconds 30 + periodSeconds 30 × (failureThreshold 3 − 1))를
+# 넘겨 실패 판정이 확정되었고 파드가 kill되었다(0.1.16 최초 배포).
 #
 # 예산 = periodSeconds × failureThreshold = 600초.
 # 대용량 테이블에 인덱스를 추가하는 마이그레이션이 포함된 릴리스에서는 배포 전에
@@ -384,21 +359,11 @@ livenessProbe:
 # readiness는 의존성을 본다. DB나 백엔드가 죽으면 Service 엔드포인트에서 빠지는 것이
 # 맞는 동작이다 — 파드를 죽이지는 않으므로 의존성이 돌아오면 그대로 복귀한다.
 #
-# 중요: timeoutSeconds 는 config.dbAcquireTimeoutSecs 보다 **커야** 한다.
-#
-# 이 엔드포인트는 DB 커넥션을 얻지 못하면 dbAcquireTimeoutSecs 만큼 붙들려 있는다.
-# timeoutSeconds 가 그보다 짧으면 서버가 판정을 내리기 전에 프로브가 먼저 끊긴다.
-# 0.1.23 까지 이 차트는 5 < 10 이었고 주석은 "판정 결과는 같다"고 적었다 —
-# 그것이 틀렸다. **판정은 같아도 원인이 다르다.**
-#
-# 이미지 0.1.18 부터 서버는 두 경우를 구분한다:
-#   - 풀 포화(DB 는 살아있음) → 200, status: "saturated"
-#   - DB 에 못 닿음            → 503, status: "degraded"
-# replicaCount: 1 이 강제되므로 포화만으로 파드를 빼면 부하를 넘길 곳이 없어
-# **열화가 전면 장애로 승격된다.** 그 구분을 프로브가 실제로 받으려면 서버가 응답할
-# 시간을 줘야 하고, 그것이 아래 12 > 10 이다.
-#
-# dbAcquireTimeoutSecs 를 올리면 이 값도 함께 올릴 것.
+# **timeoutSeconds 는 config.dbAcquireTimeoutSecs 보다 커야 한다** (기본 12 > 10).
+# 이 엔드포인트는 커넥션을 얻지 못하면 그 시간만큼 붙들려 있다가 판정을 내므로, 프로브가
+# 먼저 끊기면 이미지 0.1.18 의 포화/단절 구분을 받지 못한다. dbAcquireTimeoutSecs 를
+# 올리면 이 값도 함께 올릴 것 — 어긋나면 렌더 시점에 실패한다.
+# 배경은 README 의 "readinessProbe.timeoutSeconds 는 ..." 참고.
 readinessProbe:
   httpGet:
     path: /_internal/health
@@ -425,8 +390,7 @@ tolerations: []
 affinity: {}
 
 # ── 서비스 어카운트 ───────────────────────────────────────────────────────────
-# 0.1.23까지 이 블록은 어떤 템플릿도 참조하지 않아 **설정해도 아무 일도 일어나지
-# 않았습니다.** 0.1.24부터 실제로 배선됩니다(Deployment + GC CronJob 양쪽).
+# Deployment 와 GC CronJob 양쪽에 같은 신원이 적용된다.
 serviceAccount:
   # true 면 차트가 ServiceAccount 를 만든다. false 면 기존 것을 쓴다.
   create: false
@@ -460,8 +424,10 @@ serviceAccount:
 # concurrencyPolicy: Forbid 로 GC Job이 겹쳐서 실행되지 않도록 보장.
 #
 # enabled: false 로 두면 CronJob 오브젝트 자체가 생성되지 않는다.
-# 초기 마이그레이션 중에는 그렇게 두는 것을 권장한다 — GC의 orphan 전수 스캔과
-# advisory lock이 적재 경로와 경합한다.
+# 초기 마이그레이션 중에는 그렇게 두는 것을 권장한다 — GC 가 orphan 후보마다 해시별
+# 쓰기 락을 물리 삭제와 DB 삭제 구간 내내 쥐어 같은 내용을 올리는 PUT 이 대기하고,
+# blob 전수 조인이 DB 에 부하를 더한다.
+# **적재가 끝나면 다시 켤 것** — 꺼 둔 동안 orphan blob 이 회수되지 않는다.
 #
 # 주의: cas-server 이미지 0.1.17 **이하**에서는 이 회수 주기가 곧 프로세스 내부
 # 해시별 쓰기 락 테이블의 회수 주기다. 항목은 고유 해시마다 하나씩 생기고
@@ -471,7 +437,7 @@ serviceAccount:
 #   enabled: true   → 위 schedule 만큼 쌓였다 비워진다. 주 1회면 최대 일주일치
 #
 # 즉 **GC 를 켜 뒀다고 해당 없는 항목이 아니다.** 2026-08 운영 건에서 유휴 바닥값이
-# 하루 330~430 MiB 상승했고, 주 1회 주기면 그 사이 최대 2.3~3.0 GiB 가 쌓인다.
+# 하루 330~430 MiB 상승했고, 주 1회 주기면 그 사이 최대 2.3~2.9 GiB 가 쌓인다.
 # 해당 이미지를 쓴다면 적재 기간에 아래를 주기 실행해 완화할 것 —
 # blob 물리 삭제도 advisory lock도 없이 그 테이블을 회수한다(admin 토큰 필요):
 #

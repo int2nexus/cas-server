@@ -36,18 +36,26 @@ externalDatabase:
   username: "cas"
   database: "cas_metadata"
 
+# 자격증명. useExternalSecret: false 로 두면 차트가 Secret 을 직접 만든다.
+# 기본값은 true 이고, 그 경우 클러스터에 미리 만들어 둔 Secret(sealed-secret 등)을
+# 참조하며 아래 값들은 읽히지 않는다 — 그 방식은 README 의 "시크릿" 절을 따를 것.
 secrets:
+  useExternalSecret: false
+
   dbPassword: "DB_PASSWORD" # PostgreSQL 접근 비밀번호
   s3AccessKeyId: "ACCESS_KEY"  # 백엔드 오브젝트 스토리지의 Access Key
   s3SecretAccessKey: "SECRET_KEY" # 백엔드 오브젝트 스토리지의 Secret Key
 
-# CAS 서버 자체 인증 및 권한(SigV4) 설정
+  # DB 내부 시크릿 암호화용 마스터 키. 비우면 인증이 꺼진 NoAuth 모드로 뜬다.
+  secretMasterKey: "<openssl rand -hex 32 의 출력(64자 Hex)>"
+  adminToken: "<Admin API 인증용 Bearer 토큰>" # 비우면 Admin API 가 무인증으로 열린다
+  rootAccessKeyId: "int2cas-root"             # 최고 관리자(Superuser) Access Key ID
+  rootSecretKey: "<최고 관리자 Secret Key>"
+
+# CAS 서버 인증 동작 설정. auth.adminToken 은 **불리언 게이트이고 토큰 값이 아니다**
+# (기본 true) — 토큰 문자열은 위 secrets.adminToken 에 넣는다.
 auth:
-  # DB 내부 시크릿 암호화용 마스터 키 (터미널에서 `openssl rand -hex 32`로 64자 Hex 생성)
-  secretMasterKey: "b396646cf0890e7db6127732e0ac614f91e1e5b7441c336dabb65c711e3eb27f"   
-  adminToken: "int2cas-admin-token" # Admin API 인증용 Bearer 토큰
-  rootAccessKeyId: "int2cas-root" # 최고 관리자(Superuser) Access Key ID
-  rootSecretKey: "int2cas-root-secret" # 최고 관리자(Superuser) Secret Key
+  anonymousGet: true # GET/HEAD 를 인증 없이 허용. 신뢰 네트워크가 아니면 false
 ```
 
 ### 3. Helm 차트 설치
@@ -104,7 +112,7 @@ kubectl port-forward -n <namespace> svc/cas-server 8080:http
 
 ### 2. Admin token 입력
 
-상단 입력창에 `auth.adminToken` 값을 입력하고 확인하면 **GC 탭**과 **🔑 Keys 탭**이 활성화됩니다. Dashboard의 **Last GC** 섹션도 Admin Token이 있어야 표시됩니다.
+상단 입력창에 `secrets.adminToken` 값을 입력하고 확인하면 **GC 탭**과 **Keys 탭**이 활성화됩니다. Dashboard의 **Last GC** 섹션도 Admin Token이 있어야 표시됩니다.
 
 <!-- 이미지: admin token 입력창 및 확인 버튼 -->
 ![Admin token 입력](./images/ui-02-admin-token.png)
@@ -167,7 +175,7 @@ s3 = boto3.client(
 웹 UI 대신 curl로 직접 발급할 수도 있습니다. 모든 Admin API 요청에는 `Authorization: Bearer <admin_token>` 헤더가 필요합니다.
 
 ```bash
-ADMIN_TOKEN="values-prod.yaml의 auth.adminToken 값"
+ADMIN_TOKEN="values-prod.yaml의 secrets.adminToken 값"
 CAS="http://cas-server:80"
 
 # 키 발급
