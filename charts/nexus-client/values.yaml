@@ -2,7 +2,7 @@
 
 image:
   repository: jiwonkim97/nexus-client
-  tag: "0.1.7"
+  tag: "0.1.8"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
