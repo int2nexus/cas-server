@@ -1,3 +1,4 @@
+{{- include "cas-server.validateStorage" . }}
 {{- if eq .Values.storage.mode "nfs" }}
 {{- range .Values.storage.nfs.backends }}
 ---

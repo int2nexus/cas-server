@@ -1,3 +1,4 @@
+{{- include "cas-server.validateStorage" . }}
 {{- if .Values.gc.enabled }}
 apiVersion: batch/v1
 kind: CronJob
@@ -24,6 +25,11 @@ spec:
             app.kubernetes.io/name: {{ include "cas-server.name" . }}-gc
             app.kubernetes.io/instance: {{ .Release.Name }}
         spec:
+          # Deployment와 같은 신원을 쓴다. 여기를 빼면 두 워크로드가 서로 다른 SA로
+          # 돌아 IRSA/Workload Identity 애노테이션이 한쪽에만 걸린다.
+          serviceAccountName: {{ include "cas-server.serviceAccountName" . }}
+          # 이 Job은 GC 엔드포인트를 curl로 치는 것뿐이다. 쿠버네티스 API를 부르지 않는다.
+          automountServiceAccountToken: {{ .Values.serviceAccount.automountToken }}
           restartPolicy: OnFailure
           containers:
           - name: gc-trigger

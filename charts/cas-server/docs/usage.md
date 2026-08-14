@@ -83,7 +83,19 @@ API 호출 없이 브라우저에서 액세스 키를 발급하고 정책을 관
 
 ### 1. UI 접속
 
-`http://cas-server:8080/_ui` 에 rootkey로 로그인하여 접속하면 Dashboard 화면이 표시됩니다. 
+`/_ui` 에 rootkey로 로그인하여 접속하면 Dashboard 화면이 표시됩니다.
+
+브라우저에서 열려면 접근 경로를 하나 만들어야 합니다. Service 는 기본값이 `NodePort`
+(`service.nodePort: 30080`)이므로 `http://<노드IP>:30080/_ui` 로 접속하거나,
+포트포워드를 쓰십시오.
+
+```bash
+kubectl port-forward -n <namespace> svc/cas-server 8080:http
+# http://localhost:8080/_ui
+```
+
+`ingress.enabled: true` 로 두셨다면 `https://<ingress.host>/_ui` 입니다.
+
 
 ![UI Dashboard](./images/ui-00-login.png)
 
@@ -129,7 +141,7 @@ aws configure set aws_access_key_id     <root_access_key_id>
 aws configure set aws_secret_access_key <root_secret_key>
 aws configure set region                cas-default
 
-CAS="http://cas-server:8080" 
+CAS="http://cas-server:80" 
 ```
 
 > region은 반드시 `cas-default`로 설정해야 합니다.
@@ -141,7 +153,7 @@ import boto3
 
 s3 = boto3.client(
     "s3",
-    endpoint_url="http://cas-server:8080",
+    endpoint_url="http://cas-server:80",
     aws_access_key_id="<root_access_key_id>",
     aws_secret_access_key="<root_secret_key>",
     region_name="cas-default",
@@ -156,7 +168,7 @@ s3 = boto3.client(
 
 ```bash
 ADMIN_TOKEN="values-prod.yaml의 auth.adminToken 값"
-CAS="http://cas-server:8080"
+CAS="http://cas-server:80"
 
 # 키 발급
 curl -s -X POST $CAS/_admin/access-keys \

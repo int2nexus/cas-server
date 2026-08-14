@@ -28,6 +28,17 @@ image:
 
 imagePullSecrets: []
 
+# 리소스 이름 오버라이드. 둘 다 비우면 이름은 "{릴리스명}-cas-server" 가 된다
+# (릴리스명에 "cas-server" 가 들어 있으면 릴리스명만 쓴다).
+#
+#   nameOverride     — 차트 이름 부분만 바꾼다
+#   fullnameOverride — 전체 이름을 그대로 대체한다
+#
+# Service·Secret·ConfigMap·Deployment 이름이 모두 이 값을 따르므로,
+# sealed-secret 의 metadata.name 도 함께 맞춰야 한다.
+nameOverride: ""
+fullnameOverride: ""
+
 # 1을 유지할 것. 늘리면 데이터 유실 가능성이 생긴다.
 #
 # GC의 blob 물리 삭제와 진행 중인 PUT 사이의 durability 보호가 **프로세스 내부**
@@ -67,9 +78,70 @@ config:
   maxUploadSizeBytes: 10737418240    # 10 GiB
   inlineHashLimitBytes: 268435456   # 256 MiB
   gcIntervalSecs: 0                 # Pod 자체 GC 비활성화 — gc-cronjob이 단독으로 트리거
-  dbMaxConnections: 20              # DB 커넥션 풀 최대 연결 수 (replica 수 × 값이 PG max_connections 미만이어야 함)
-  dbAcquireTimeoutSecs: 10          # DB 커넥션 획득 타임아웃 (초) — 부하 시 빠른 실패 선호
+
+  # soft-delete 된 object_version **행**의 DB 보존 기간 (초). 서버 기본값 604800(7일).
+  #
+  # 주의: 이것은 **실수 삭제의 되돌림 창이 아니다.** blob 물리 삭제와 무관하다 —
+  # soft-delete 된 버전은 GC 의 orphan 판정에서 "없음"으로 취급되므로, 삭제가 커밋되는
+  # 즉시 blob 은 orphan 후보가 되고 다음 GC 실행에서 물리 삭제된다. 이 값을 올려도
+  # 파일은 돌아오지 않는다.
+  #
+  # 이 값의 용도는 object_versions 테이블 팽창 관리다. 올리면 행이 오래 남아 DB 가 커지고,
+  # 내리면 빨리 정리되지만 삭제 이력을 조회할 수 있는 기간이 짧아진다.
+  #
+  # 실수 삭제로부터 보호가 필요하면 **버킷 버저닝**을 켤 것. 버저닝 버킷에서는 DELETE 가
+  # delete marker 를 새 행으로 추가하고 이전 버전 행을 그대로 두므로 blob 이 살아 있고,
+  # marker 를 지우면 복구된다. 기본값은 버저닝 없음이다.
+  softDeleteRetentionSecs: 604800
+  # DB 커넥션 풀. 파드당 총 사용량은 dbMaxConnections + gcDbMaxConnections + 1(집계 전용)이다.
+  # 지켜야 할 부등식: replicaCount × (dbMaxConnections + gcDbMaxConnections + 1) < PG max_connections
+  # 기본값 기준 1 × (20 + 2 + 1) = 23.
+  #
+  # 커넥션은 **요청당이 아니라 쿼리당** 잡힌다. PUT 은 백엔드에 물리 쓰기를 하는 동안
+  # 커넥션을 쥐지 않으므로, 20개로 20건보다 훨씬 많은 동시 업로드를 다중화한다.
+  # maxConcurrentUploads 가 이 값보다 커도 모순이 아니다.
+  dbMaxConnections: 20
+  dbMinConnections: 2               # 항상 유지할 유휴 커넥션. 0이면 뜸한 뒤 첫 요청이 접속 핸드셰이크 비용을 문다(실측 68ms → 0.5ms)
+  dbAcquireTimeoutSecs: 10          # DB 커넥션 획득 타임아웃 (초) — 부하 시 빠른 실패 선호. 아래 readinessProbe.timeoutSeconds 와 함께 움직인다
+  requestTimeoutSecs: 120           # 요청 처리 타임아웃 (초). 0=비활성화. 느린 S3 백엔드까지 포함한 요청 경로의 유일한 wall-clock 상한이다
   presignedRedirectSecs: 0          # GET presigned redirect URL 유효 시간 (초). 0=비활성화. S3 엔드포인트가 클라이언트에서 직접 접근 가능한 경우에만 활성화
+
+  # ── GC 쿼리 타임아웃 (cas-server 이미지 0.1.18 이상 필요) ────────────────────
+  # GC 전용 DB 풀에만 statement_timeout 을 건다. 0 = 걸지 않음(기존 동작).
+  #
+  # 이 값만이 **PostgreSQL 이 실제로 문장을 취소**하게 한다. requestTimeoutSecs 와
+  # dbAcquireTimeoutSecs 는 "기다리기를 포기"하는 것이고 쿼리는 DB 에서 계속 돈다.
+  # 실행 계획이 틀어져 임시 파일을 대량으로 뱉기 시작하면 애플리케이션 재시작으로도
+  # 끊지 못하고 DBA 가 pg_terminate_backend() 를 쏘아야 한다.
+  #
+  # 요청 경로 풀에는 적용되지 않는다 — 대용량 업로드의 메타데이터 커밋을 죽이면
+  # 정상 업로드가 실패한다. GC 는 배치라 잘려도 다음 주기에 재시도한다.
+  #
+  # 값 정하는 법: 현재 GC 소요 시간의 몇 배로 잡을 것. 소요는 gc-cronjob 의 Job
+  # 실행 시간이나 /_api/gc/last-result 로 확인한다. 정상 실행을 죽이면 GC 가 영구히
+  # 완주하지 못하므로, 넉넉하게 시작해 관측 후 좁히는 편이 안전하다.
+  # 잘린 실행은 gc_runs 테이블과 파드 로그에 실패로 기록된다.
+  gcStatementTimeoutSecs: 0
+
+  # ── 집계 조회 전용 풀 (cas-server 이미지 0.1.18 이상 필요) ───────────────────
+  # /_api/stats, /_api/buckets, /_api/backends, orphan 카운트는 **커넥션 1개짜리
+  # 별도 풀**에서 돈다. 요청 경로와 격리되므로 여기에는 타임아웃을 걸어도 안전하다 —
+  # 대시보드 한 화면이 실패하는 것과 업로드가 실패하는 것은 무게가 다르다.
+  #
+  # 왜 격리가 필요한가. 취소된 쿼리의 커넥션은 sqlx 가 닫지 않고 유휴 풀로 반납한다.
+  # 다음 획득자가 그 커넥션을 뽑으면 버려진 문장이 끝날 때까지 막힌다. 즉 타임아웃된
+  # 집계 요청 하나가 풀 커넥션 하나를 오염시킨다. /_internal/health 가 요청 풀을
+  # 쓰기 때문에, 격리가 없으면 **무인증 GET 한 건이 파드를 Service 엔드포인트에서
+  # 밀어낼 수 있다**(replicaCount: 1 강제). statement_timeout 만으로는 닫히지 않는다.
+  #
+  # 2026-08 고객 환경에서 이 경로로 임시 파일 352.8 GB 가 생기며 적재가 2시간 55분
+  # 멈췄고, 파드 재시작으로 끊을 수 없었다.
+  statsStatementTimeoutSecs: 30
+  # 집계 풀의 work_mem (MiB). 0 = 서버 값을 그대로 쓴다.
+  # work_mem 은 노드당·워커당 할당량이고 **PostgreSQL 쪽 메모리**를 쓴다 — 파드가 아니다.
+  # 이 풀은 커넥션 1개이고 병렬 워커를 끄므로, PG 에 여력이 있으면 올릴 값어치가 있다
+  # (해시 조인 배치 수가 줄어 스필이 크게 준다). PG 사이징을 확인한 뒤 조정할 것.
+  statsWorkMemMb: 0
 
   # ── 업로드 상한 (cas-server 이미지 0.1.16 이상 필요. image.tag 확인할 것) ───────────────────────────────────────
   # 2026-08-05 운영 OOM의 마지막 방어선이다. 상한을 넘는 업로드는 503 SlowDown +
@@ -79,11 +151,37 @@ config:
   # 주의: maxUploadBytesInFlight 는 resources.limits.memory 와 함께 움직여야 한다.
   #       한도를 내리면 이 값도 같이 내릴 것. 기준: limits.memory × 0.5
   maxUploadBytesInFlight: 3221225472  # 3 GiB  (아래 resources.limits.memory 6Gi 기준)
-  maxConcurrentUploads: 96            # 건수 상한. 보조 장치 — 실제 방어는 위 바이트 예산이 한다
+  # 건수 상한. 보조 장치 — 실제 방어는 위 바이트 예산이 한다.
+  #
+  # dbMaxConnections(20)보다 큰 것은 모순이 아니다. 커넥션은 요청당이 아니라 쿼리당
+  # 잡히고, PUT 은 백엔드 물리 쓰기 구간에 커넥션을 쥐지 않는다. 두 값은 서로 다른
+  # 자원을 재는 것이라 대소 관계를 맞출 이유가 없다.
+  #
+  # 참고: cas_upload_rejected_total 은 이 건수 상한과 위 바이트 예산의 거절을
+  # **함께** 센다. 0이면 둘 다 한 번도 안 걸렸다는 뜻이다.
+  maxConcurrentUploads: 96
+
+  # GC 전용 DB 풀 크기. 배치라 작아도 된다. 위 dbMaxConnections 의 부등식에 함께 들어간다.
+  gcDbMaxConnections: 2
 
 # ── 스토리지 백엔드 ────────────────────────────────────────────────────────────
 storage:
+  # "s3" 또는 "nfs". 대소문자를 구분한다 — 잘못된 값은 렌더 시점에 fail 로 막는다.
+  # (0.1.23 까지는 오타가 백엔드 0개로 조용히 렌더되어 파드만 기동 시 panic 했다.)
   mode: "s3"
+
+  # NFS 모드: 백엔드를 최소 한 개 정의해야 한다. mode=nfs 인데 비어 있으면 렌더가 실패한다.
+  # 빈 목록으로 렌더를 통과시키면 백엔드 0개 ConfigMap 이 만들어지고 서버가 기동 시
+  # panic 하는데, replicaCount: 1 + Recreate 조합에서 그것은 전면 장애다.
+  nfs:
+    backends: []
+    # - id: nas1                     # storage_backends[].id — blobs.storage_backend_id 에 기록된다
+    #   name: nas1                   # 표시용 이름
+    #   mountPath: /mnt/nas1         # 컨테이너 안 마운트 경로
+    #   storageClassName: nfs-client # PVC 의 storageClassName
+    #   storage: 1Ti                 # PVC 요청 용량
+    #   pvcName: ""                  # 비우면 "{fullname}-{id}" 로 자동 생성
+
   # S3 모드: 자격증명은 secrets 섹션에서 Secret으로 주입
   s3:
     endpoint: ""
@@ -114,9 +212,39 @@ externalDatabase:
 secrets:
   useExternalSecret: true
 
+  # 아래 값들은 useExternalSecret: false 일 때만 쓰입니다(차트가 Secret 을 만드는 경우).
+  # 기본값 true 에서는 무시됩니다 — sealed-secret 에 넣으십시오.
+  #
+  # 프로덕션 값을 여기에 넣고 커밋하지 마십시오.
+  dbPassword: ""
+  s3AccessKeyId: ""
+  s3SecretAccessKey: ""
+  # Admin API 토큰 **문자열**입니다. 아래 auth.adminToken 은 불리언 게이트로,
+  # 여기와 역할이 다릅니다 — auth.adminToken 주석을 읽으십시오.
+  adminToken: ""
+  # 비우면 서버가 NoAuth 모드로 동작합니다(SigV4 검증 없음).
+  secretMasterKey: ""
+  rootAccessKeyId: ""
+  rootSecretKey: ""
+
 # ── 인증 설정 ─────────────────────────────────────────────────────────────────
 auth:
   anonymousGet: true   # true이면 GET/HEAD /{bucket}/{key} 를 인증 없이 허용 (이미지 서버, FiftyOne 등)
+
+  # **불리언 게이트입니다. 토큰 값이 아닙니다.**
+  #
+  # "서버에 admin 토큰이 설정돼 있는가"를 차트에 알려주는 스위치이고, 이 값이 참이면
+  # gc-cronjob 이 Secret 의 `auth-admin-token` 을 읽어 Authorization 헤더를 붙입니다.
+  # 실제 토큰 문자열은 sealed-secret(기본) 또는 위 `secrets.adminToken`
+  # (useExternalSecret: false)에 넣습니다.
+  #
+  # 0.1.23 까지 `secret.yaml` 이 이 불리언을 **자격증명 자체로** 렌더했습니다. 그래서
+  # useExternalSecret: false 로 배포하면 admin 토큰이 리터럴 문자열 `"true"` 가 되어,
+  # 그것만 알면 blob 물리 삭제(POST /_internal/gc)를 호출할 수 있었습니다.
+  # 0.1.24 부터 Secret 은 `secrets.adminToken` 을 씁니다.
+  #
+  # false 로 두면 gc-cronjob 이 헤더를 붙이지 않습니다 — 서버에 admin 토큰이 설정돼
+  # 있으면 GC 트리거가 401 이 되므로, 서버 설정과 반드시 일치시키십시오.
   adminToken: true
 
   # GET /_internal/metrics 전용 읽기 토큰 (cas-server 이미지 0.1.18 이상).
@@ -137,6 +265,12 @@ auth:
   # sealed-secret 의 `auth-metrics-token` 키에 넣을 것. 그 키가 없어도
   # 파드는 정상 기동한다(deployment 에서 optional 로 참조한다).
   metricsToken: ""
+
+  # 자격증명 캐시 TTL (초). 서버 기본값 10.
+  #
+  # 이것이 **폐기된 액세스 키나 좁힌 정책이 실제로 막히기까지의 지연**이다.
+  # 유출 대응 중이라면 0으로 내려 캐시를 끌 것 — 대신 요청마다 DB 조회가 늘어난다.
+  cacheTtlSecs: 10
 
 # ── 서비스 ────────────────────────────────────────────────────────────────────
 service:
@@ -249,16 +383,29 @@ livenessProbe:
 
 # readiness는 의존성을 본다. DB나 백엔드가 죽으면 Service 엔드포인트에서 빠지는 것이
 # 맞는 동작이다 — 파드를 죽이지는 않으므로 의존성이 돌아오면 그대로 복귀한다.
-# 주의: DB가 응답하지 않으면 이 엔드포인트는 config.dbAcquireTimeoutSecs 만큼 붙들려
-# 있다가 503을 낸다. timeoutSeconds가 그보다 짧으면 503 대신 타임아웃으로 실패한다
-# (프로브 판정 결과는 같다).
+#
+# 중요: timeoutSeconds 는 config.dbAcquireTimeoutSecs 보다 **커야** 한다.
+#
+# 이 엔드포인트는 DB 커넥션을 얻지 못하면 dbAcquireTimeoutSecs 만큼 붙들려 있는다.
+# timeoutSeconds 가 그보다 짧으면 서버가 판정을 내리기 전에 프로브가 먼저 끊긴다.
+# 0.1.23 까지 이 차트는 5 < 10 이었고 주석은 "판정 결과는 같다"고 적었다 —
+# 그것이 틀렸다. **판정은 같아도 원인이 다르다.**
+#
+# 이미지 0.1.18 부터 서버는 두 경우를 구분한다:
+#   - 풀 포화(DB 는 살아있음) → 200, status: "saturated"
+#   - DB 에 못 닿음            → 503, status: "degraded"
+# replicaCount: 1 이 강제되므로 포화만으로 파드를 빼면 부하를 넘길 곳이 없어
+# **열화가 전면 장애로 승격된다.** 그 구분을 프로브가 실제로 받으려면 서버가 응답할
+# 시간을 줘야 하고, 그것이 아래 12 > 10 이다.
+#
+# dbAcquireTimeoutSecs 를 올리면 이 값도 함께 올릴 것.
 readinessProbe:
   httpGet:
     path: /_internal/health
     port: 8080
   initialDelaySeconds: 5
-  periodSeconds: 10
-  timeoutSeconds: 5
+  periodSeconds: 15
+  timeoutSeconds: 12
   failureThreshold: 3
 
 # ── 추가 환경변수 ─────────────────────────────────────────────────────────────
@@ -278,9 +425,35 @@ tolerations: []
 affinity: {}
 
 # ── 서비스 어카운트 ───────────────────────────────────────────────────────────
+# 0.1.23까지 이 블록은 어떤 템플릿도 참조하지 않아 **설정해도 아무 일도 일어나지
+# 않았습니다.** 0.1.24부터 실제로 배선됩니다(Deployment + GC CronJob 양쪽).
 serviceAccount:
+  # true 면 차트가 ServiceAccount 를 만든다. false 면 기존 것을 쓴다.
   create: false
+  # create: true  → 만들 이름 (비우면 fullname)
+  # create: false → 쓸 기존 이름 (비우면 네임스페이스의 "default")
   name: ""
+
+  # 토큰 자동 마운트. **기본값 false 다.**
+  #
+  # 이 서버는 쿠버네티스 API 를 부르지 않는다. 마운트된 토큰은 컨테이너가 뚫렸을 때
+  # 그대로 API 접근 수단이 되므로 붙일 이유가 없다. 특히 이 배포는 auth.anonymousGet
+  # 이 기본 true 이고 NodePort 로 노출되므로 표면을 늘리지 않는 편이 낫다.
+  #
+  # true 가 필요한 경우: AWS IRSA, GCP Workload Identity 등 투영 토큰으로 클라우드
+  # 자격증명을 받는 구성. 그때는 아래 annotations 도 함께 채운다.
+  automountToken: false
+
+  # create: true 일 때 ServiceAccount 에 붙일 애노테이션.
+  # IRSA/Workload Identity 를 쓰는 경우 이곳이 그 설정 자리다.
+  #   eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/cas-server
+  #   iam.gke.io/gcp-service-account: cas-server@project.iam.gserviceaccount.com
+  annotations: {}
+
+  # 주의: create: false + name: "" 이면 네임스페이스의 "default" SA 로 돌아가고,
+  # 그 SA 는 보통 토큰을 자동 마운트합니다. 즉 **아무것도 설정하지 않은 상태가 더
+  # 느슨한 쪽**입니다. 위 automountToken: false 가 파드에 걸리므로 마운트 자체는
+  # 막히지만, 전용 SA(create: true)를 두는 편이 권한 경계가 명확합니다.
 
 # ── GC CronJob ────────────────────────────────────────────────────────────────
 # Pod 자체 GC(gcIntervalSecs=0)를 끄고 CronJob 한 대만 GC를 트리거.

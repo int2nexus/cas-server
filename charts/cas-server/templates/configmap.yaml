@@ -1,3 +1,4 @@
+{{- include "cas-server.validateStorage" . }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -14,8 +15,11 @@ data:
     max_upload_size_bytes   = {{ .Values.config.maxUploadSizeBytes | int64 }}
     inline_hash_limit_bytes = {{ .Values.config.inlineHashLimitBytes | int64 }}
     gc_interval_secs        = {{ .Values.config.gcIntervalSecs }}
+    soft_delete_retention_secs = {{ .Values.config.softDeleteRetentionSecs | int64 }}
     db_max_connections      = {{ .Values.config.dbMaxConnections }}
+    db_min_connections      = {{ .Values.config.dbMinConnections }}
     db_acquire_timeout_secs = {{ .Values.config.dbAcquireTimeoutSecs }}
+    request_timeout_secs    = {{ .Values.config.requestTimeoutSecs }}
     presigned_redirect_secs = {{ .Values.config.presignedRedirectSecs }}
 
     # 업로드 상한. cas-server 이미지 0.1.16 이상에서만 동작한다(차트 버전 아님).
@@ -26,6 +30,23 @@ data:
     {{- end }}
     {{- with .Values.config.maxConcurrentUploads }}
     max_concurrent_uploads     = {{ . | int64 }}
+    {{- end }}
+    {{- with .Values.config.gcDbMaxConnections }}
+    gc_db_max_connections      = {{ . | int64 }}
+    {{- end }}
+
+    # GC 전용 DB 풀의 statement_timeout. cas-server 이미지 0.1.18 이상에서만 동작한다.
+    # 미설정 시 서버 기본값 0 = 걸지 않음(기존 동작).
+    {{- with .Values.config.gcStatementTimeoutSecs }}
+    gc_statement_timeout_secs  = {{ . | int64 }}
+    {{- end }}
+
+    # 집계 조회 전용 DB 풀. cas-server 이미지 0.1.18 이상에서만 동작한다.
+    # with 를 쓰지 않는다 — 0 은 "타임아웃 없음"이라는 유효한 선택이고, with 는 0 을
+    # 건너뛰어 서버 기본값 30 이 적용되므로 의도와 반대가 된다.
+    stats_statement_timeout_secs = {{ .Values.config.statsStatementTimeoutSecs | int64 }}
+    {{- with .Values.config.statsWorkMemMb }}
+    stats_work_mem_mb            = {{ . | int64 }}
     {{- end }}
 
     {{- if eq .Values.storage.mode "nfs" }}

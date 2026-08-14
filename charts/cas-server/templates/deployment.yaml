@@ -1,3 +1,5 @@
+{{- include "cas-server.validateStorage" . }}
+{{- include "cas-server.validateProbeBudget" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -29,6 +31,13 @@ spec:
         checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
         {{- end }}
     spec:
+      # 0.1.23까지 values.yaml에 serviceAccount 블록이 있었으나 어떤 템플릿도 참조하지
+      # 않아 설정해도 조용히 무시됐다. 보안 인접 노브에서 가장 나쁜 실패 형태다.
+      serviceAccountName: {{ include "cas-server.serviceAccountName" . }}
+      # 이 서버는 쿠버네티스 API를 부르지 않는다. 마운트된 토큰은 컨테이너가 뚫렸을 때
+      # 그대로 API 접근 수단이 되므로 기본값을 false로 둔다. IRSA/Workload Identity를
+      # 쓰는 경우에만 true가 필요하다.
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountToken }}
       # graceful shutdown 여유. 값을 렌더링하지 않아 쿠버네티스 기본값 30초가
       # 적용되고 있었다 — values.yaml 설정이 조용히 무시되던 자리다.
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
@@ -162,6 +171,9 @@ spec:
                   key: auth-root-secret-key
             - name: CAS__AUTH__ANONYMOUS_GET
               value: {{ .Values.auth.anonymousGet | quote }}
+            # 자격증명 캐시 TTL. 폐기된 키나 좁힌 정책이 실제로 막히기까지의 지연이다.
+            - name: CAS__AUTH__CACHE_TTL_SECS
+              value: {{ .Values.auth.cacheTtlSecs | quote }}
 
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}

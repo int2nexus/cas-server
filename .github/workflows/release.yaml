@@ -22,6 +22,21 @@ jobs:
           git config user.name "$GITHUB_ACTOR"
           git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
 
+      # values.yaml 에 선언됐는데 템플릿이 참조하지 않는 키를 잡는다.
+      #
+      # Helm 은 쓰이지 않는 값에 오류를 내지 않으므로, 이 부류의 결함은 "설정했는데
+      # 조용히 무시되는" 형태로 나타나고 운영자는 고쳤다고 믿는다. 이 저장소에서
+      # 넷을 이렇게 찾았다 — cas-server 의 config.requestTimeoutSecs 와
+      # serviceAccount.*, nexus-server 의 serviceAccount.*,
+      # 그리고 과거 cas-server 의 terminationGracePeriodSeconds.
+      #
+      # charts/ 아래 Chart.yaml 이 있는 디렉터리를 모두 검사한다. 차트를 추가할 때
+      # 이 단계를 손댈 필요가 없다.
+      - name: Check for declared-but-unrendered values keys
+        run: |
+          pip install --quiet pyyaml
+          python scripts/check-unrendered-values.py
+
       # cr 은 release-notes-file 을 패키징된 tgz 안에서 찾으므로 패키징 전에 만들어야 한다.
       - name: Extract release notes from CHANGELOG
         run: bash scripts/extract-release-notes.sh

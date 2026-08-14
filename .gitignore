@@ -4,3 +4,4 @@ CLAUDE.md
 
 # scripts/extract-release-notes.sh 가 CI에서 CHANGELOG.md 로부터 생성하는 산출물
 charts/*/RELEASE_NOTES.md
+__pycache__/

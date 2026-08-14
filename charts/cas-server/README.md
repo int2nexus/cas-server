@@ -89,7 +89,17 @@ storage:
 | `ingress.enabled` | `false` | Ingress 활성화 |
 | `config.maxUploadSizeBytes` | `10737418240` | 최대 업로드 크기 (10 GiB) |
 | `config.maxUploadBytesInFlight` | `3221225472` | 동시 업로드 바디의 총 상주 바이트 상한 (3 GiB). 초과분은 `503 SlowDown`. **`0` = 무제한.** `resources.limits.memory` × 0.5 를 기준으로 함께 조정할 것 |
-| `config.maxConcurrentUploads` | `96` | 동시 업로드 건수 상한. 위 바이트 예산의 보조 장치 |
+| `config.maxConcurrentUploads` | `96` | 동시 업로드 건수 상한. 위 바이트 예산의 보조 장치. `dbMaxConnections`보다 커도 모순이 아니다 — 커넥션은 요청당이 아니라 쿼리당 잡힌다 |
+| `config.requestTimeoutSecs` | `120` | 요청 처리 타임아웃. 느린 S3 백엔드까지 포함한 요청 경로의 유일한 wall-clock 상한. **0.1.23까지 이 문서가 이 키를 언급하면서 템플릿에는 없었다** — 설정해도 조용히 무시됐다 |
+| `config.statsStatementTimeoutSecs` | `30` | 집계 조회(`/_api/stats`, `/_api/buckets`, `/_api/backends`) 전용 풀의 쿼리 상한. 이 풀은 커넥션 1개로 요청 경로와 격리된다 (아래 참고) |
+| `config.statsWorkMemMb` | `0` | 집계 풀의 `work_mem` (MiB). `0` = 서버 값 사용. **PostgreSQL 쪽 메모리**를 쓰므로 PG 사이징 확인 후 조정할 것 |
+| `config.dbMinConnections` | `2` | 항상 유지할 유휴 커넥션. `0`이면 뜸한 뒤 첫 요청이 접속 핸드셰이크 비용을 문다(실측 68ms → 0.5ms) |
+| `config.gcDbMaxConnections` | `2` | GC 전용 풀 크기 |
+| `config.softDeleteRetentionSecs` | `604800` | soft-delete된 `object_versions` **행**의 보존 기간. **되돌림 창이 아니다** — blob 물리 삭제와 무관하다 (아래 참고) |
+| `auth.cacheTtlSecs` | `10` | 자격증명 캐시 TTL. 폐기된 키·좁힌 정책이 실제로 막히기까지의 지연. 유출 대응 시 `0` |
+| `serviceAccount.create` | `false` | `true` 면 차트가 ServiceAccount 를 만든다. **0.1.23까지 이 블록은 통째로 무시됐다** |
+| `serviceAccount.automountToken` | `false` | 토큰 자동 마운트. 이 서버는 쿠버네티스 API 를 부르지 않으므로 기본 `false`. IRSA/Workload Identity 를 쓸 때만 `true` |
+| `serviceAccount.annotations` | `{}` | `create: true` 일 때 SA 에 붙일 애노테이션. IRSA · Workload Identity 설정 자리 |
 | `resources.limits.memory` | `6Gi` | 2026-08-05 OOM 대응으로 올린 값. **당분간 유지할 것** — 하향 전제는 [values.yaml](values.yaml)의 `resources` 주석 참고 |
 | `gc.enabled` | `true` | GC CronJob 활성화. 초기 마이그레이션 중에는 `false` 권장. **이미지 `0.1.17` 이하에서는 끄면 메모리 회수 경로도 사라진다** (아래 참고) |
 | `replicaCount` | `1` | **1을 유지할 것.** 늘리면 GC와 PUT 사이 durability 보호가 깨진다 (아래 참고) |
@@ -207,6 +217,114 @@ time curl -sS -X POST -H "Authorization: Bearer $TOKEN" \
 kubectl get deploy cas-server -n <namespace> -o jsonpath='{..image}{"\n"}'
 ```
 
+## 집계 조회 격리 (이미지 `0.1.18` 이상)
+
+`/_api/stats`, `/_api/buckets`, `/_api/backends`, orphan 카운트는 전 테이블 집계입니다.
+데이터가 커지면 조인이 디스크로 스필하고, 2026-08 고객 환경에서 그 스필이 임시 파일
+**352.8 GB** 를 만들며 적재를 **2시간 55분** 막았습니다. 파드 재시작으로 끊을 수 없었습니다.
+
+이미지 `0.1.18` 부터 이 쿼리들은 **커넥션 1개짜리 별도 풀**에서 돕니다.
+
+| 장치 | 값 | 역할 |
+|---|---|---|
+| 커넥션 1개 | 고정 | 동시성 상한. 대시보드를 몇 번 새로고침해도 DB에 도는 집계는 항상 1건 |
+| `statsStatementTimeoutSecs` | `30` | PostgreSQL 이 실제로 문장을 취소하게 하는 유일한 수단 |
+| `max_parallel_workers_per_gather = 0` | 고정 | `work_mem` 은 워커마다 따로 쓴다 — 워커가 붙으면 스필이 배가된다 |
+| `statsWorkMemMb` | `0` | 올리면 해시 조인 배치 수가 줄어 스필이 준다. **PG 쪽 메모리**를 쓴다 |
+| 캐시 60초 + single-flight | 고정 | 동시 요청이 쿼리를 하나만 띄운다 |
+
+**왜 타임아웃만으로는 부족한가.** 취소된 쿼리의 커넥션은 sqlx 가 닫지 않고 유휴 풀로
+반납합니다. 다음 획득자가 그 커넥션을 뽑으면 버려진 문장이 끝날 때까지 막힙니다 —
+즉 타임아웃된 집계 요청 하나가 풀 커넥션 하나를 오염시킵니다. `/_internal/health` 가
+요청 풀을 쓰기 때문에, 격리가 없으면 **인증 없는 GET 한 건이 파드를 Service 엔드포인트에서
+밀어낼 수 있습니다.**
+
+파드당 PostgreSQL 커넥션은 `dbMaxConnections + gcDbMaxConnections + 1` 입니다.
+기본값 기준 `20 + 2 + 1 = 23`. 지켜야 할 부등식:
+
+```
+replicaCount × (dbMaxConnections + gcDbMaxConnections + 1) < PG max_connections
+```
+
+## 삭제 되돌리기 — `softDeleteRetentionSecs` 는 되돌림 창이 아닙니다
+
+`config.softDeleteRetentionSecs` (기본 7일)는 soft-delete 된 `object_versions` **행**의
+DB 보존 기간이고 **blob 물리 삭제와 무관합니다.** soft-delete 된 버전은 GC 의 orphan
+판정에서 "없음"으로 취급되므로, 삭제가 커밋되는 즉시 blob 은 orphan 후보가 되고
+**다음 GC 실행에서 물리 삭제됩니다.** 이 값을 올려도 파일은 돌아오지 않습니다.
+
+이 값의 용도는 `object_versions` 테이블 팽창 관리입니다.
+
+실수 삭제로부터 보호가 필요하면 **버킷 버저닝**을 켜세요.
+
+| 모드 | DELETE 동작 | blob |
+|---|---|---|
+| 버저닝 켜짐 | delete marker 를 새 행으로 추가, 이전 버전 행은 유지 | **살아 있다. marker 를 지우면 복구된다** |
+| 버저닝 없음 (기본) | 단일 행을 soft-delete | 다음 GC 에서 물리 삭제 |
+
+기본값은 버저닝 없음입니다. 되돌릴 수 없는 데이터를 담는 버킷이라면 버저닝을 검토하세요.
+대가는 중복 제거 이득 감소와 `object_versions` 성장 가속이므로, 대량 이관이 끝난 뒤
+켜는 편이 계획을 세우기 쉽습니다.
+
+## 서비스 어카운트
+
+**`0.1.23` 까지 `values.yaml` 의 `serviceAccount` 블록은 통째로 무시됐습니다.** 어떤
+템플릿도 참조하지 않아 `create: true` 로 둬도 ServiceAccount 가 만들어지지 않았고
+파드에 지정되지도 않았습니다. `0.1.24` 부터 Deployment 와 GC CronJob 양쪽에 배선됩니다.
+
+```yaml
+serviceAccount:
+  create: true
+  name: ""                 # 비우면 fullname
+  automountToken: false    # 기본값
+  annotations: {}
+```
+
+| `create` | `name` | 결과 |
+|---|---|---|
+| `true` | `""` | fullname 으로 SA 생성 |
+| `true` | `my-sa` | `my-sa` 로 SA 생성 |
+| `false` | `""` | 네임스페이스의 `default` SA 사용 (생성 없음) |
+| `false` | `existing-sa` | `existing-sa` 사용 (생성 없음) |
+
+`automountToken` 은 **기본 `false`** 입니다. 이 서버는 쿠버네티스 API 를 부르지 않는데,
+마운트된 토큰은 컨테이너가 뚫렸을 때 그대로 API 접근 수단이 됩니다. `auth.anonymousGet`
+이 기본 `true` 이고 NodePort 로 노출되는 배포라 표면을 늘리지 않는 편이 낫습니다.
+
+**`0.1.24` 부터 `default` SA 의 토큰 자동 마운트가 막힙니다.** 사이드카 등으로 쿠버네티스
+API 를 쓰고 계셨다면 `automountToken: true` 로 되돌리세요.
+
+IRSA / Workload Identity 를 쓰는 경우 토큰이 필요하므로 둘을 함께 설정합니다.
+
+```yaml
+serviceAccount:
+  create: true
+  automountToken: true
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/cas-server
+```
+
+## 릴리스 전 점검 — 선언됐는데 렌더되지 않는 키
+
+Helm 은 쓰이지 않는 값에 오류를 내지 않습니다. 그래서 `values.yaml` 에 키를 선언하고
+템플릿에서 참조하지 않으면 **설정해도 조용히 무시되고, 운영자는 고쳤다고 믿습니다.**
+이 저장소에서 넷을 그렇게 찾았습니다 — cas-server 의 `config.requestTimeoutSecs`(문서가
+언급하는데 미렌더)와 `serviceAccount.*`, nexus-server 의 `serviceAccount.*`,
+그리고 과거 cas-server 의 `terminationGracePeriodSeconds`.
+
+```bash
+python scripts/check-unrendered-values.py                    # charts/ 전체
+python scripts/check-unrendered-values.py charts/cas-server  # 특정 차트
+```
+
+릴리스 CI 가 `charts/` 아래 모든 차트에 이 검사를 돌리고, 미참조 키가 있으면 실패합니다.
+`resources` 처럼 조상이 `toYaml` 로 통째로 소비되는 블록은 정상으로 분류합니다.
+
+**한계**: `.Values.*` 와 템플릿만 대조하므로 **렌더된 TOML 의 서버측 키 이름 오타는
+잡지 못합니다**(서버도 `deny_unknown_fields` 가 없어 조용히 무시합니다). 설정 키를
+추가·변경할 때는 렌더된 ConfigMap 을 실제 바이너리에 먹여 기동 로그의 `적용된 설정`
+줄로 확인하십시오.
+
 ## 레플리카 수
 
 **`replicaCount` 는 1을 유지하세요.** 처리량이 부족하면 레플리카 대신 파드 리소스를 키웁니다.
@@ -237,7 +355,30 @@ per-hash 뮤텍스에 의존합니다. 파드가 둘 이상이면 이 락이 공
 |--------|-----------|----------|
 | `startupProbe` | `GET /_internal/live` | 기동(DB 마이그레이션 포함) 완료 여부. 성공 전까지 나머지 둘은 평가되지 않음 |
 | `livenessProbe` | `GET /_internal/live` | 프로세스 응답성만. **의존성을 보지 않음** |
-| `readinessProbe` | `GET /_internal/health` | DB ping + 백엔드 가용성. 비정상이면 503 |
+| `readinessProbe` | `GET /_internal/health` | **DB에 닿는지** + 백엔드 가용성. 닿지 못하면 503 |
+
+### readinessProbe.timeoutSeconds 는 dbAcquireTimeoutSecs 보다 커야 합니다
+
+`/_internal/health` 는 DB 커넥션을 얻지 못하면 `config.dbAcquireTimeoutSecs` 만큼 붙들려
+있습니다. `timeoutSeconds` 가 그보다 짧으면 **서버가 판정을 내리기 전에 프로브가 먼저
+끊깁니다.** 기본값은 `12 > 10` 으로 맞춰져 있습니다. `dbAcquireTimeoutSecs` 를 올리면
+이 값도 함께 올리세요.
+
+`0.1.23` 까지 이 차트는 `5 < 10` 이었고 주석은 "프로브 판정 결과는 같다"고 적었습니다.
+**그것이 틀렸습니다 — 판정은 같아도 원인이 다릅니다.**
+
+이미지 `0.1.18` 부터 서버는 두 경우를 구분합니다.
+
+| 상황 | 응답 | 이유 |
+|---|---|---|
+| DB 커넥션 풀 포화 (DB는 살아있음) | `200`, `status: "saturated"` | 프로세스는 정상 서빙 중이다 |
+| DB에 못 닿음 | `503`, `status: "degraded"` | 의존성이 죽었다 |
+
+`replicaCount` 가 1로 고정되므로 **포화만으로 파드를 빼면 부하를 넘길 곳이 없어 열화가
+전면 장애로 승격됩니다.** 다중 레플리카라면 부하를 덜어내는 의미가 있지만 여기서는
+반대로 작동합니다. 2026-08 고객 환경에서 실제로 그렇게 됐습니다 — 집계 쿼리가 요청 풀
+커넥션을 오염시켜 ping 이 붙들렸고, 프로브가 연속 실패해 유일한 파드가 엔드포인트에서
+빠졌습니다. DB 는 죽은 게 아니라 바빴을 뿐입니다.
 
 `livenessProbe` 를 `/_internal/health` 로 두면 안 됩니다. DB failover(보통 30~120초)나 NAS
 순간 장애에 쿠버네티스가 파드를 죽이는데, 재시작으로는 외부 의존성이 복구되지 않습니다.
