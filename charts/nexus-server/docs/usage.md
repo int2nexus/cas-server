@@ -176,11 +176,54 @@ client.change_password("현재비번", "새비번123")      # 현재 비밀번�
 result = client.delete_account("새비번123")          # 완전 삭제 — 되돌릴 수 없다
 ```
 
-- **비밀번호 변경은 새 로그인부터 적용된다.** 이미 발급된 토큰은 만료(최대 24시간)까지 그대로 유효하다. 이 클라이언트 인스턴스는 계속 써도 된다.
+- **비밀번호 변경은 새 로그인부터 적용된다.** 이미 발급된 토큰은 만료까지(기본 24시간, 배포마다 `jwt.ttlHours`로 다를 수 있다 — 아래 참조) 그대로 유효하다. 이 클라이언트 인스턴스는 계속 써도 된다.
 - 설정 파일(`~/.int2nexus/settings.json`)에 비밀번호를 적어두었다면 **그 파일도 함께 고쳐야 한다** — 안 그러면 다음 `nx.connect()`가 실패한다.
 - **`delete_account`는 비활성화가 아니라 삭제다.** 이메일이 풀려 같은 주소로 다시 가입할 수 있다.
-- 삭제 응답의 **`released_datasets`가 0이 아니면**, 그 dataset들은 주인이 없어져 **인증된 누구나 수정·삭제할 수 있게 된다.** 팀이 쓰던 데이터라면 삭제 전에 소유자를 옮겨야 하는데, 옮기는 API가 아직 없어 서버 운영자가 DB에서 처리해야 한다.
-- 비밀번호를 잊어 로그인할 수 없는 계정은 본인이 처리할 수 없다 — 서버 운영자가 DB에서 재설정해야 한다.
+- 삭제 응답의 **`released_datasets`가 0이 아니면**, 그 dataset들은 주인이 없어져 **인증된 누구나 수정·삭제할 수 있게 된다.** 팀이 쓰던 데이터라면 삭제 전에 소유자를 옮기는 편이 낫다 — 차트 0.3.0부터 superuser가 `PUT /api/v1/admin/datasets/{dataset_id}/owner`로 지정할 수 있다(아래 참조).
+- 비밀번호를 잊어 로그인할 수 없는 계정은 본인이 처리할 수 없다 — 차트 0.3.0부터 superuser가 `POST /api/v1/admin/users/password-reset`으로 임시 비밀번호를 발급한다(아래 참조). superuser를 설정하지 않은 배포에서는 여전히 운영자가 DB에서 처리해야 한다.
+
+#### superuser (차트 0.3.0+, 선택)
+
+운영자가 `auth.superuserEmail`과 시크릿의 `NEXUS__AUTH__SUPERUSER_PASSWORD`로 지정한 **단일 관리 계정**이다. 설정하지 않은 배포에서는 `/api/v1/admin/*`가 누구에게나 403이다. 능력은 둘뿐이고, 사용자 목록·계정 비활성화·감사 로그는 없다.
+
+```python
+import requests
+h = {"Authorization": f"Bearer {su_token}"}   # superuser 계정으로 로그인한 토큰
+
+# 1) 비밀번호를 잊은 계정 풀어주기 — 임시 비밀번호가 응답에 한 번만 실려 온다
+r = requests.post(f"{base}/api/v1/admin/users/password-reset",
+                  json={"email": "잠긴사람@int2.us"}, headers=h)
+print(r.json()["password"])   # 어디에도 저장되지 않는다. 지금 전달할 것
+
+# 2) dataset 소유자 지정 — 양도와 인수(주인 없는 dataset)가 같은 연산이다
+requests.put(f"{base}/api/v1/admin/datasets/{dataset_id}/owner",
+             json={"email": "새주인@int2.us"}, headers=h)
+```
+
+- **임시 비밀번호는 응답에 한 번만 실려 온다.** 서버 어디에도 저장되지 않으니 그 자리에서 전달하고, 받은 사람은 곧바로 `client.change_password(...)`로 바꾼다.
+- **재설정해도 그 사람의 기존 토큰은 만료까지(기본 24시간, 배포마다 `jwt.ttlHours`로 다를 수 있다 — 아래 참조) 유효하다.** "잊어버림"을 푸는 도구지 "탈취 즉시 차단"이 아니다.
+- **소유권 이전은 즉시 적용된다.** 소유자 검사는 요청마다 DB를 보므로 이전 소유자는 그 다음 요청부터 403이다.
+- 주인 없는 dataset은 `GET /datasets`의 `owner_user_id`가 null인 것들이다. 방치해도 잠기지는 않지만 **인증된 누구나 쓸 수 있는** 상태로 남는다.
+- **superuser 비밀번호를 바꾼 뒤에도 시크릿을 갱신할 필요가 없다.** `NEXUS__AUTH__SUPERUSER_PASSWORD`는 **그 계정이 없을 때 새로 만드는 용도로만** 읽힌다 — 계정이 이미 있으면 기동 시 값을 읽지도, 비교하지도 않는다. 그래서 시크릿의 값과 실제 로그인 비밀번호가 달라도 파드는 정상 기동하고, 반대로 시크릿을 바꿔 재배포해도 비밀번호는 바뀌지 않는다. 이 값을 "현재 비밀번호"가 아니라 **"계정 생성용 씨앗"**으로 보시는 편이 정확하다. 실제로 다시 쓰이는 경우는 하나뿐이다 — `auth.superuserEmail`을 **아직 가입되지 않은** 주소로 바꿔 재배포하면, 그때 이 값으로 새 계정이 만들어진다(이미 누가 쓰는 주소를 넣으면 그 계정을 채택하므로 그 사람이 superuser가 된다).
+- **다만 시크릿 값을 비우지는 마십시오.** 이메일만 있고 비밀번호가 없으면(공백만 있는 경우 포함) **서버가 기동에 실패한다.** 쓰이지 않는 값이라도 8자 이상으로 남겨 두어야 하며, 기능을 끄실 때는 `auth.superuserEmail`과 이 시크릿 키를 **함께** 비우십시오.
+
+#### 인증 관련 설정 (차트 0.3.0+)
+
+superuser 외에도 차트 0.3.0부터 인증 관련 설정 세 가지를 helm 값으로 조정할 수 있다.
+
+| values 키 | 기본값 | 설명 |
+|---|---|---|
+| `jwt.ttlHours` | 빈 값 (서버 기본 **24**) | 발급 토큰의 수명(시간). 허용 범위 **1~8760**. 이 서버는 토큰을 무효화할 수 없으므로(위 계정 관리·superuser 항목 참조) 이 값이 곧 탈취·비밀번호변경·계정삭제 이후에도 토큰이 살아있는 최대 시간이다. **범위를 벗어난 값(`0` 포함)을 주면 서버가 기동에 실패한다** — DB 연결보다 먼저 검사하므로 "0을 줬는데 조용히 24시간으로 되돌아갔다"처럼 잘못 설정한 채 넘어가는 일이 없다. 줄이면 노출 시간은 줄지만 `POST /api/v1/auth/refresh` 호출이 그만큼 잦아진다. |
+| `auth.registrationEnabled` | `true` | `false`로 하면 `POST /api/v1/auth/register`만 403이 되고, 로그인·토큰 갱신·기존 계정은 영향을 받지 않는다. **끄기 전에 필요한 계정을 모두 만들어 둘 것** — 끈 뒤에는 계정을 새로 만들 방법이 없다(계정 생성 API가 register 하나뿐이라 superuser도 새 계정을 만들 수 없다). |
+| `auth.docsEnabled` | `true` | `false`로 하면 `/api-docs/openapi.json`, `/swagger-ui`, `/swagger-ui/` 세 경로가 **404**가 된다(라우트 자체가 등록되지 않아서다 — 403이 아니다). 스펙은 이미 전 경로가 인증 뒤에 있으므로, 이걸로 감추는 것은 API 경로 목록뿐이다. |
+
+```bash
+helm upgrade --install nexus-server int2nexus/nexus-server -n <namespace> \
+  --set cas.baseUrl=<CAS 주소> \
+  --set jwt.ttlHours=8 \
+  --set auth.registrationEnabled=false \
+  --set auth.docsEnabled=false
+```
 
 ### 2.2 CVAT 연동 (선택, 차트 0.2.0+)
 
@@ -318,6 +361,7 @@ ds = nx.Dataset.load_or_create("my-dataset", "v0")
 
 로컬 이미지를 CAS에 직접 올리고 각 파일을 가리키는 참조 `{CasRef}`를 받는다. 이후 이 참조로 샘플을 등록한다.
 - 같은 파일을 다시 올려도 내용이 같으면 건너뛴다(멱등). 실패한 파일만 골라 재시도할 수 있다(같은 목록으로 재호출).  
+- 같은 key에 **다른** 내용이 이미 있으면 기본은 에러(충돌)다. 의도적으로 교체하려면 `nx.upload(..., overwrite=True)`를 쓴다 — 이때 썸네일도 새 내용으로 함께 다시 만든다(안 그러면 옛 썸네일이 새 이미지에 그대로 남는다). 내용이 같으면 `overwrite` 여부와 무관하게 그대로 건너뛴다(SDK 0.1.4+).
 - 이미 CAS에 올라가 있는 파일이면 이 단계를 건너뛰고, 그 파일의 CAS URL을 바로 다음 단계(nx.Sample(image=...))에 명시하여 사용할 수 있다. 다만 그렇게 하면 이미지 크기를 알 수 없어 `meta.width`/`meta.height`가 비게 된다 — 아래 [`nx.probe`](#nxprobe--업로드-없이-이미지-크기만-채우기-sdk-013)로 채운다.
 
 ```python
@@ -867,9 +911,9 @@ except NexusError as e:
 | `401` | 토큰이 없거나 만료됐다 | **SDK 0.1.2+는 자동으로 다시 로그인하고 재시도한다** — 보통 이 예외를 볼 일이 없다. 그래도 401이 올라오면 자격증명 자체가 안 맞는 것이다(비밀번호가 바뀌었거나 서버 JWT 시크릿이 교체됨) |
 | `403` | 로그인은 됐지만 **그 dataset의 소유자가 아니다** | 소유자에게 요청하거나, `clone()`으로 내 dataset을 만들어 작업한다 |
 
-**조회를 포함한 모든 요청에 토큰이 필요하다.** 그리고 dataset을 바꾸는 작업 — 적재(`flush`), annotation 수정, 샘플 추가·삭제, seal, 이름 변경, 삭제 — 은 **소유자만** 할 수 있다. 소유자는 dataset을 만든 계정으로 고정되며 옮기는 기능은 아직 없다. 조회는 소유자가 아니어도 된다.
+**조회를 포함한 모든 요청에 토큰이 필요하다.** 그리고 dataset을 바꾸는 작업 — 적재(`flush`), annotation 수정, 샘플 추가·삭제, seal, 이름 변경, 삭제 — 은 **소유자만** 할 수 있다. 소유자는 dataset을 만든 계정으로 고정된다 — 본인이 옮길 수는 없고, 차트 0.3.0+에서 superuser가 `PUT /api/v1/admin/datasets/{dataset_id}/owner`로 지정한다. 조회는 소유자가 아니어도 된다.
 
-예외가 하나 있다. **소유자가 지정되지 않은 dataset은 누구나 바꿀 수 있다.** 소유권 도입 이전에 만들어졌거나 소유자 계정이 삭제된 경우이며, 이때는 403이 나지 않는다. 남의 dataset인 줄 알았는데 쓰기가 되면 이 경우다.
+예외가 하나 있다. **소유자가 지정되지 않은 dataset은 누구나 바꿀 수 있다.** 소유권 도입 이전에 만들어졌거나 소유자 계정이 삭제된 경우이며, 이때는 403이 나지 않는다. 남의 dataset인 줄 알았는데 쓰기가 되면 이 경우다. 주인을 붙이려면 superuser가 위 엔드포인트로 지정한다(같은 연산이다).
 
 `flush`는 권한 때문에 거부된 건이 있으면 조용히 넘기지 않고 예외를 던진다. 남의 dataset에 적재를 시도하다 일부만 들어가는 상황을 막기 위해서다.
 
@@ -880,7 +924,7 @@ except NexusError as e:
 |---|---|
 |`nx.connect(nexus_url=, email=, password=, cas_url=, cas_key_id=, cas_secret=)`|서버 연결|
 |`nx.list_datasets(q=, name=, description=, tags=, sort=, order=, favorite=)`|dataset 목록 검색|
-|`nx.upload(paths, bucket, prefix="", workers=8)` → {경로: CasRef}|파일 업로드|
+|`nx.upload(paths, bucket, prefix="", workers=8, overwrite=False)` → {경로: CasRef}|파일 업로드. `overwrite=True`면 같은 key에 다른 내용이 있어도 에러 대신 덮어씀(SDK 0.1.4+)|
 |`nx.probe(refs, workers=8, strict=False, max_header_bytes=65536)` → [CasRef]|업로드 없이 CAS 객체의 이미지 크기만 채움(앞부분만 읽음, 순서 보존)|
 |`nx.image_info(data)` → ImageInfo(width, height, mime, channels)|로컬 bytes에서 헤더만 읽어 크기 판독|
 |`nx.Sample(image=, annotation=, assets=, split=, tags=)`|샘플 정의|

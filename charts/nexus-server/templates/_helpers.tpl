@@ -42,3 +42,12 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "nexus-server.secretName" -}}
 {{- if .Values.secret.existingSecret }}{{ .Values.secret.existingSecret }}{{- else }}{{ include "nexus-server.fullname" . }}{{- end }}
 {{- end }}
+
+{{/* ServiceAccount 이름. create=true면 name 또는 fullname, false면 name 또는 "default" */}}
+{{- define "nexus-server.serviceAccountName" -}}
+{{- if .Values.serviceAccount.create }}
+{{- default (include "nexus-server.fullname" .) .Values.serviceAccount.name }}
+{{- else }}
+{{- default "default" .Values.serviceAccount.name }}
+{{- end }}
+{{- end }}
