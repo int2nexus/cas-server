@@ -488,6 +488,49 @@ for r in (r for r in results if not r.ok):
 - `assets`는 image 외 추가 모달리티(depth map 등)를 담는 범용 dict(`{role: ref}`).  
 `image`외 새 모달리티(thermal, lidar 등)가 필요하면 필드 추가 없이 이 dict에 role을 추가한다.
 
+#### GT 파일만 있고 이미지는 이미 CAS에 있을 때
+
+업로드를 이미 마쳤고 로컬에는 GT(JSON)만 남은 경우다. **GT의 `meta.filename`에 그 이미지의
+CAS URL이 들어 있다면 이미지와 GT를 따로 짝지을 필요가 없다** — 파일명 규칙이나 확장자를
+추정하지 않고 GT가 가리키는 주소를 그대로 쓴다.
+
+```python
+import json
+from pathlib import Path
+
+ann_dir = Path(r"...\annotations")
+
+samples = []
+for p in sorted(ann_dir.glob("*.json")):
+    gt = json.loads(p.read_text(encoding="utf-8"))
+    samples.append(nx.Sample(
+        image=gt["meta"]["filename"],   # GT 안의 CAS URL을 그대로 쓴다
+        annotation=gt,                   # 이미 읽었으므로 dict로 넘긴다(파일을 다시 읽지 않는다)
+        # split="train", tags=[...],    # 선택
+    ))
+
+ds.add(samples)
+results = ds.flush(workers=8)
+
+print("ok:", sum(r.ok for r in results), "/", len(results))
+for r in (r for r in results if not r.ok):
+    print("  FAIL:", r.error)
+```
+
+**GT에 `meta`가 있으면 그 값이 그대로 쓰인다.** SDK는 `meta`가 있는 경우 어떤 필드도
+수정하지 않는다. 따라서 GT가 `width`/`height`를 이미 담고 있으면 [`nx.probe`](#nxprobe--업로드-없이-이미지-크기만-채우기-sdk-013)로
+크기를 채울 필요가 없다. `meta`가 **없을 때만** SDK가 최소 meta(`format_version`,
+`filename`, 그리고 ref에 크기가 있으면 `width`/`height`)를 만들어 넣는다.
+
+주의할 점 둘:
+
+- **`meta`는 통째로 신뢰된다.** `filename`만 있고 `width`/`height`가 없는 부분 meta를 주면
+  SDK가 나머지를 채워주지 않는다. 그 샘플은 크기 facet·히스토그램 집계에서 빠지고 CVAT
+  편집 세션 생성이 거부된다. 크기가 없는 GT라면 [`nx.probe`](#nxprobe--업로드-없이-이미지-크기만-채우기-sdk-013)로
+  ref를 채워 `image=`에 넘기거나, 등록 후 `ds.backfill_dims()`로 보정한다.
+- **업로드를 건너뛰었으므로 썸네일이 없다.** UI는 원본으로 폴백하므로 동작은 정상이고
+  로딩만 무겁다(§3.2 참조).
+
 ### 3.4 등록 확인
 ```python
 samples = ds.list_samples()                        # 이 버전의 샘플 목록
