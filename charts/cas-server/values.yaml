@@ -230,7 +230,6 @@ secrets:
 
 # ── 인증 설정 ─────────────────────────────────────────────────────────────────
 auth:
-  # true 이면 GET/HEAD /{bucket}/{key} 를 인증 없이 허용한다 (이미지 서버, FiftyOne 등).
   # true 면 GET/HEAD /{bucket}/{key} 를 인증 없이 허용한다 (이미지 서버, FiftyOne 등).
   # ListObjects·ListBuckets 는 제외되므로 보호는 "버킷명과 키를 알아야 읽을 수 있다" 하나다.
   # 노출 범위는 아래 service 절 주의도 함께 볼 것.
