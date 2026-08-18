@@ -17,6 +17,18 @@ backendUrl: "http://nexus-server:80"
 # 보통 불필요 — 백엔드가 브라우저에서 닿는 CAS URL 을 반환하면 <img> 로 직접 로드된다.
 casUrl: ""
 
+# ── CAS SigV4 자격증명(선택) ──────────────────────────────────────────
+# CAS 가 비익명(anonymousGet:false)이면, 사이드카가 CAS 이미지 GET 에 SigV4 서명을 붙이도록
+# cas-console(Keys 탭)에서 발급한 GET 전용 정책 키를 주입한다.
+# 비활성(기본)이면 사이드카는 무서명 GET → 익명 배포(anonymousGet:true)에서만 이미지가 로드된다.
+# 서명은 사이드카→CAS 구간에서만 붙는다(브라우저는 키·서명·CAS 주소를 보지 못한다).
+casAuth:
+  enabled: false
+  region: "cas-default"
+  # CAS 키(CAS_ACCESS_KEY_ID·CAS_SECRET_ACCESS_KEY)를 담은 기존 Secret 이름.
+  # sealed-secret 등으로 미리 만들어 이름만 참조한다. enabled=true 이면 필수.
+  existingSecret: ""
+
 service:
   type: NodePort
   port: 80

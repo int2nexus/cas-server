@@ -46,6 +46,22 @@ spec:
             - name: CAS_URL
               value: {{ .Values.casUrl | quote }}
             {{- end }}
+            {{- if .Values.casAuth.enabled }}
+            {{- $casSecret := required "casAuth.existingSecret 가 필요합니다 (casAuth.enabled=true)" .Values.casAuth.existingSecret }}
+            # CAS 비익명 접근용 SigV4 자격증명 — 프록시 사이드카가 CAS 이미지 GET 서명에 사용한다.
+            - name: CAS_REGION
+              value: {{ .Values.casAuth.region | quote }}
+            - name: CAS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $casSecret }}
+                  key: CAS_ACCESS_KEY_ID
+            - name: CAS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $casSecret }}
+                  key: CAS_SECRET_ACCESS_KEY
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
