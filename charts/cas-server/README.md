@@ -189,7 +189,7 @@ kubectl rollout restart -n <namespace> deploy/<fullname>   # 릴리스명이 아
 | `cas_db_pool_connections` | gauge | 건수 | **요청 경로 풀만.** 현재값이고 max 가 아닙니다 |
 | `cas_db_pool_idle_connections` | gauge | 건수 | 요청 경로 풀만 |
 | `cas_db_pool_acquire_timeouts_total` | counter | 건수 | HTTP 오류 응답이 된 것만. 요청 경로 풀 + 집계 풀 + `dry_run=true` 의 GC 풀을 **합산**하며, `/_internal/health` 의 풀 타임아웃은 **세지 않습니다** |
-| `cas_blob_dedup_total` | counter | 건수 | |
+| `cas_blob_dedup_total` | counter | 건수 | **PUT 이 기존 blob 에 맞은 횟수.** 데이터셋 중복률이 아닙니다 — 아래 참고 |
 | `cas_blob_put_bytes_total` | counter | 바이트 | |
 | `cas_gc_deleted_blobs_total` | counter | 건수 | **GC 가 한 번 돌아야 등록됩니다** |
 | `cas_gc_freed_bytes_total` | counter | 바이트 | 〃 |
@@ -198,6 +198,18 @@ kubectl rollout restart -n <namespace> deploy/<fullname>   # 릴리스명이 아
 `axum_http_requests_duration_seconds` · `axum_http_requests_pending` 이 함께 나오고
 이쪽은 `endpoint`/`method`/`status` 라벨을 답니다(경로는 라우트 패턴으로 정규화되므로
 키마다 늘지는 않습니다).
+
+**`cas_blob_dedup_total` 을 중복률로 읽지 마십시오.** 이 카운터가 세는 것은 **PUT 경로에서
+기존 blob 을 만난 횟수**이고, 다음을 세지 않습니다.
+
+- **`CopyObject`** — 기존 blob 을 가리키는 행만 추가하므로 이 값이 움직이지 않습니다.
+- **프로세스 재시작 이전분** — 프로세스 수명 카운터라 파드가 바뀌면 `0` 부터 다시 셉니다.
+
+**데이터셋 전체의 중복률은 이 값으로 구할 수 없습니다.** 개수 기준 중복률은
+`1 - (고유 blob 수) / (오브젝트 수)` 이고 두 값 모두 `/_api/stats` 에 있습니다.
+다만 그 응답은 데이터가 커지면 `statsStatementTimeoutSecs` 에 걸려 `500` 으로 끝날 수 있습니다
+— 두 값 자체는 조인 없는 집계인데 같은 문장의 다른 서브쿼리가 무겁기 때문입니다
+(아래 "집계 조회 격리" 절).
 
 **풀별 분리는 없습니다** — `cas_db_pool_connections` 로는 집계 격리가 동작하는지 판정할 수
 없습니다. 격리 확인은 "집계 조회 격리" 절의 방법을 쓰십시오.
