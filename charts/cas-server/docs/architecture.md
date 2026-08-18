@@ -226,6 +226,11 @@ S3-sub   (objectstorage-2.internal / bucket-b)  ←── 2번째 업로드
 S3-main  ...                                     ←── 3번째 업로드
 ```
 
+> **S3 모드의 한계 두 가지.** ⑴ 잔여 용량을 읽을 수단이 없어 `/_api/backends` 의 용량
+> 필드가 `null` 입니다 — 용량 감시는 오브젝트 스토리지 쪽 지표로 하십시오. ⑵ 같은 이유로
+> `/_internal/health` 의 백엔드 검사도 S3 에 대해서는 **항상 통과합니다.** 오브젝트
+> 스토리지가 죽어도 파드는 Ready 로 남고, 업로드 실패로만 드러납니다.
+
 ### 4.4 백엔드 장애 시 동작
 
 | 상황 | 동작 |
@@ -233,7 +238,7 @@ S3-main  ...                                     ←── 3번째 업로드
 | 특정 NAS 연결 끊김 | 해당 NAS 관련 요청만 503 반환, 나머지 백엔드는 정상 동작 |
 | 해당 NAS에만 있는 블롭 다운로드 요청 | 503 `BackendUnavailable` 반환 |
 | S3 백엔드 응답 불가 | 동일하게 503 반환, 다른 S3 백엔드는 정상 동작 |
-| 신규 업로드 | 정상 백엔드 중 가용 공간 최대인 곳에 저장 |
+| 신규 업로드 | **NFS**: 정상 백엔드 중 가용 공간 최대인 곳. **S3**: 등록 순서 round-robin(잔여 용량을 읽을 수단이 없습니다). 버킷이 특정 백엔드에 핀돼 있으면 그쪽 |
 
 ---
 
@@ -332,7 +337,15 @@ S3 표준에 없는 CAS 전용 헤더가 업로드 응답에 추가됩니다.
 | 404 | `NoSuchUpload` | 멀티파트 업로드 ID 없음 |
 | 409 | `BucketAlreadyExists` | 이미 존재하는 버킷 이름 |
 | 409 | `BucketNotEmpty` | 비어 있지 않은 버킷 삭제 시도 |
+| 412 | `PreconditionFailed` | `If-None-Match: *` 인데 객체가 이미 있음 |
+| 408 | — | `config.requestTimeoutSecs`(기본 120초) 초과. **이 시점에도 DB 쪽 쿼리는 계속 돕니다** |
 | 503 | `BackendUnavailable` | 스토리지 백엔드 접근 불가 — 운영팀 확인 필요 |
+| 503 | `SlowDown` | 업로드 상한(건수 또는 바이트 예산) 초과. `Retry-After` 동반 |
+| 503 | `SlowDown` | DB 커넥션 풀 획득 타임아웃 (이미지 `0.1.18` 이상. 그 이하는 `500`) |
+
+`503` 은 세 가지 뜻을 갖습니다. 구분은 지표로 합니다 — 업로드 상한은
+`cas_upload_rejected_total`, 풀 고갈은 `cas_db_pool_acquire_timeouts_total` 이 오릅니다.
+`BackendUnavailable` 은 둘 다 오르지 않습니다.
 
 ---
 

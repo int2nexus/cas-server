@@ -82,6 +82,84 @@ cas-server 는 기동 시 `CREATE TABLE IF NOT EXISTS` 만 실행하므로 보�
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.1.25
+
+image: `int2jieun/cas-server:0.1.18` (변경 없음)
+
+**문서·주석만 바뀝니다.** 템플릿에는 손대지 않았고 렌더된 설정 내용(`default.toml`)도
+`0.1.24` 와 동일합니다.
+
+**다만 파드는 교체됩니다.** 차트 버전이 오르면 ConfigMap 의 `helm.sh/chart` 라벨이 바뀌고,
+Deployment 의 `checksum/config` 애노테이션이 그 오브젝트를 해싱하므로 값이 달라집니다.
+`updateStrategy: Recreate` 이므로 그 사이 **짧은 전면 중단**이 있습니다(`replicaCount: 1`).
+설정이 바뀌어서가 아니라 라벨이 바뀌어서입니다 — 급하지 않다면 다음 이미지 릴리스와 함께
+올리셔도 됩니다.
+
+**정정** — `parts/` 프리픽스의 lifecycle 규칙 안내가 틀렸습니다
+
+`0.1.24` 는 `AbortIncompleteMultipartUpload` 를 두라고 적었습니다. **그 규칙은 스토리지
+자신의 네이티브 멀티파트 상태에만 듣는데, cas-server 는 파트를 평범한 객체로 그 프리픽스
+아래 씁니다.** 그대로 걸었다면 아무것도 회수하지 않으면서 조치된 것으로 보였을 것입니다.
+
+프리픽스가 셋이고 필요한 규칙이 각각 다릅니다 — `objects/` 는 `AbortIncompleteMultipartUpload`
+**만**(`Expiration` 을 걸면 데이터가 지워집니다), `tmp/` 는 둘 다, `parts/` 는 `Expiration` 만.
+표와 근거는 README 의 "오브젝트 스토리지 lifecycle 규칙" 절에 있습니다.
+
+**정정** — `storage.s3.keyPrefix` 를 비우면 루트가 아니라 `cas/` 입니다
+
+서버가 그 값을 지정하지 않으면 `cas/` 로 폴백합니다. 차트 기본값이 빈 문자열이라 실제 키는
+`cas/objects/…` 입니다. lifecycle 규칙이나 버킷 탐색을 이 값 기준으로 잡아야 합니다.
+
+**정정** — 동시 업로드 상한과 DB 풀 크기의 관계는 판정 보류입니다
+
+`0.1.24` 의 `values.yaml` 주석과 이 문서가 "두 값은 서로 다른 자원이라 맞출 이유가 없다"고
+확정형으로 적었습니다. 그 결론을 철회하고 판정 기준(두 지표의 동시 표본)으로 바꿨습니다.
+커넥션이 쿼리당 잡힌다는 기전 자체는 그대로 맞습니다.
+
+**정정** — S3 모드의 신규 업로드 배정은 round-robin 입니다
+
+`architecture.md` 4.4 가 "가용 공간 최대"라고 적었는데 그것은 NFS 모드입니다. S3 는 잔여
+용량을 읽을 수단이 없어 등록 순서 round-robin 입니다.
+
+**추가** — 노출 주의 절
+
+`/_ui` 와 `/_api/*` 는 `/_api/gc/*` 셋을 뺀 전부가 무인증이고 끄는 설정 키가 없습니다.
+`service.type: NodePort` 기본값과 겹치면 표면이 클러스터의 모든 노드가 됩니다. README 에
+경로별 인증 표와 완화 방법을, `docs/usage.md` 의 UI 접속 안내에 같은 주의를 넣었습니다.
+
+**추가** — Operator 없는 Prometheus 용 스크레이프 설정
+
+`ServiceMonitor` 는 Prometheus Operator 가 없으면 아무 일도 하지 않습니다(CRD 만 있는
+클러스터에서도 그렇습니다). `scrape_configs` 형태와 토큰 파일 마운트 방법을 README 에
+넣었습니다. 포트는 **이름이 `http`** 이고, Secret 은 네임스페이스 자원이라 Prometheus 쪽에
+복사본이 필요합니다.
+
+**추가** — 노출 지표 명세표
+
+12종의 타입·단위와 **어느 풀을 보는지**를 README 에 표로 넣었습니다. `cas_db_pool_*` 는
+요청 경로 풀만 보고하므로 그 값으로는 집계 격리 여부를 판정할 수 없습니다.
+
+**정정** — 그 밖에
+
+- `gcStatementTimeoutSecs` 값을 "현재 소요의 몇 배"로 잡으라는 안내를 철회했습니다. GC 소요가
+  주당 약 3배로 늘고 있어 어떤 배수도 몇 주면 소진됩니다.
+- `dry_run=true` 실행은 `gc_runs` 에 남지 않습니다(이전에는 "잘린 실행은 기록된다"고만 적었습니다).
+- `dry_run=true` 는 `requestTimeoutSecs`(120초)에 걸리고, 408 이후에도 DB 쿼리는 계속 돕니다.
+  in-flight 플래그를 거치지 않아 주기 실행이 겹쳐 쌓일 수 있습니다.
+- 메모리 바닥값 판정 PromQL 의 `pod=~"cas-server.*"` 셀렉터는 fullname 을 따릅니다 — 릴리스명이
+  다르면 **빈 그래프가 오류 없이** 나옵니다.
+- `gcDbMaxConnections: 0` 은 ConfigMap 에서 생략되어 서버 기본값 `2` 가 적용됩니다.
+- S3 백엔드는 용량 필드가 `null` 이고 `/_internal/health` 의 백엔드 검사도 항상 통과합니다.
+- `0.1.18` 이후의 상태 코드(`408`, `412`, `503 SlowDown` 두 갈래)를 `architecture.md` 에 넣었습니다.
+- 이미지 태그 확인 명령이 줄 이음 오타로 실행되지 않던 것을 고쳤습니다.
+- `rollout restart` 대상이 릴리스명이 아니라 fullname 임을 명시했습니다.
+- 미참조 키 게이트가 실제로 잡은 것은 셋입니다. `config.requestTimeoutSecs` 는 values 에 선언
+  자체가 없어 그 게이트가 아니라 문서 대조로 찾았습니다.
+- `storage.nfs.backends[].accessMode` 를 항목 예시에 넣었습니다.
+- 항목당 바이트를 `190~240` 으로 통일했습니다.
+
+---
+
 ## 0.1.24
 
 image: `int2jieun/cas-server:0.1.18`
@@ -143,7 +221,7 @@ image: `int2jieun/cas-server:0.1.18`
 | `statsStatementTimeoutSecs` | `30` | PostgreSQL 이 실제로 문장을 취소하게 하는 유일한 수단 |
 | `max_parallel_workers_per_gather = 0` | 고정 | `work_mem` 은 워커마다 따로 쓴다 — 워커가 붙으면 스필이 배가된다 |
 | `statsWorkMemMb` | `0` | 올리면 해시 조인 배치 수가 줄어 스필이 준다 |
-| 캐시 + single-flight | 고정 | 동시 요청이 쿼리를 하나만 띄운다 |
+| 캐시 60초 + single-flight | `/_api/stats` 만 | 동시 요청이 쿼리를 하나만 띄운다. 나머지 넷은 캐시되지 않는다 |
 
 캐시는 이전부터 60초로 있었으나 **동시 요청 중복 제거가 없었습니다** — 동시에 N 건이
 들어오면 N 건 모두 캐시 미스로 판정하고 N 건 모두 같은 쿼리를 띄웠습니다. 또 캐시 쓰기가
@@ -261,9 +339,10 @@ S3 백엔드의 파트 삭제는 목록 조회 오류를 건너뛰고 개별 삭
 이제 실패하면 행을 남겨 다음 GC 패스에서 재시도합니다. 미룬 건수는 `GcResult.errors` 로
 나가 `gc_runs` 이력과 `/_api/gc/last-result` 에 드러납니다.
 
-**운영 조치** — S3 백엔드를 쓰신다면 `parts/` 프리픽스에
-`AbortIncompleteMultipartUpload` lifecycle 규칙이 설정돼 있는지 확인하십시오.
-중단된 업로드가 남긴 미완료 멀티파트는 서버가 회수하지 않고 그 정책에 위임합니다.
+**운영 조치** — S3 백엔드를 쓰신다면 lifecycle 규칙을 두십시오. **프리픽스마다 필요한 규칙
+종류가 다릅니다** — `parts/` 의 파트는 네이티브 멀티파트가 아니라 **평범한 객체**라
+`AbortIncompleteMultipartUpload` 로는 회수되지 않습니다. 프리픽스별 표와 실효 프리픽스
+확인 방법은 README 의 "오브젝트 스토리지 lifecycle 규칙" 절에 있습니다.
 
 **동작 변경** — 이미지 0.1.18: 적용된 설정 전량을 기동 로그에 남깁니다
 
@@ -337,12 +416,14 @@ GC 전용 DB 풀에만 `statement_timeout` 을 겁니다. **기본값이 0 이�
 못하고 `pg_terminate_backend()` 를 직접 쏘아야 합니다.
 
 **요청 경로 풀에는 적용되지 않습니다.** 대용량 업로드의 메타데이터 커밋을 죽이면 정상
-업로드가 실패합니다. GC 는 배치라 잘려도 다음 주기에 재시도하고, 잘린 실행은 `gc_runs`
-테이블과 파드 로그에 실패로 기록됩니다.
+업로드가 실패합니다. GC 는 배치라 잘려도 다음 주기에 재시도하고, 잘린 **실제** 실행은 `gc_runs` 에
+`status=failed` 로 남습니다(집계값이 0으로 기록되어 부분 진행분은 이력에 보이지 않습니다).
+**`dry_run=true` 실행은 성공·실패 어느 쪽도 `gc_runs` 에 남지 않고 파드 로그에만 남습니다.**
 
-값은 현재 GC 소요 시간의 몇 배로 잡으십시오 — gc-cronjob 의 Job 실행 시간이나
-`/_api/gc/last-result` 로 확인할 수 있습니다. 정상 실행을 죽이면 GC 가 영구히 완주하지
-못하므로, 넉넉하게 시작해 관측 후 좁히는 편이 안전합니다.
+**값을 고정 배수로 두지 마십시오.** 2026-08 운영 건에서 GC 소요가 4초 → 34초 → 94초로
+주당 약 3배씩 늘었습니다. 어떤 배수도 몇 주면 소진되고, 정상 실행을 죽이면 GC 가 영구히
+완주하지 못합니다. 매주 `gc_runs` 의 소요를 보고 갱신하십시오 — gc-cronjob 의 Job 실행
+시간이나 `/_api/gc/last-result` 로 확인할 수 있습니다.
 
 **설정 키** — `config.requestTimeoutSecs` (기본값 `120`)
 
@@ -408,12 +489,17 @@ Helm 은 쓰이지 않는 값에 오류를 내지 않으므로, 문서를 따라
 
 `dbAcquireTimeoutSecs` 를 올리시면 이 값도 함께 올리십시오.
 
-**주의** — `config.maxConcurrentUploads` 가 `dbMaxConnections` 보다 큰 것은 모순이 아닙니다.
+**주의** — `config.maxConcurrentUploads` 와 `dbMaxConnections` 의 대소 관계는 **판정 보류입니다.**
 
-기본값이 `96` 과 `20` 이라 "리미터가 풀보다 위에 있어 동작하지 않는다"고 읽힐 수 있는데,
-그렇지 않습니다. **커넥션은 요청당이 아니라 쿼리당 잡히고**, 업로드는 백엔드에 물리
-쓰기를 하는 동안 커넥션을 쥐지 않습니다. 20개로 20건보다 훨씬 많은 동시 업로드를
-다중화합니다. 두 값은 서로 다른 자원을 재는 것이라 대소 관계를 맞출 이유가 없습니다.
+기본값이 `96` 과 `20` 이라 "리미터가 풀보다 위에 있어 동작하지 않는다"고 읽힐 수 있습니다.
+**커넥션이 요청당이 아니라 쿼리당 잡히는 것은 맞습니다** — 업로드는 백엔드에 물리 쓰기를
+하는 동안 커넥션을 쥐지 않습니다. 다만 그것만으로 두 값이 무관하다고 단정할 수는 없습니다.
+메타데이터 커밋의 점유 시간에는 상한이 없고(요청 경로 풀에는 `statement_timeout` 을 걸지
+않습니다), `96` 에 닿은 관측도 아직 없습니다.
+
+판정에는 적재 중 `cas_upload_in_flight` 와 `cas_db_pool_idle_connections` 의 동시 표본이
+필요합니다. `in_flight` 가 `96` 에 훨씬 못 미치는데 `idle` 이 `0` 으로 지속되면 커넥션이 먼저
+소진되는 것이므로, 리미터를 내리는 것이 아니라 `dbMaxConnections` 를 올리는 쪽이 맞습니다.
 
 관련해 `cas_upload_rejected_total` 의 의미를 문서에 명시했습니다. 이 카운터는 건수 상한과
 바이트 예산의 거절을 **함께** 셉니다. `0` 이면 둘 다 한 번도 걸리지 않았다는 뜻이고,
@@ -537,7 +623,7 @@ kubeseal --format yaml < /tmp/secret-plain.yaml > sealed-secret.yaml && rm /tmp/
 
 **동작 변경** — `docs/usage.md` 의 클러스터 내부 접속 예시를 `:80` 으로 정정
 
-`http://cas-server:8080` 으로 적힌 3곳을 `http://cas-server:80` 으로 고쳤습니다.
+`http://cas-server:8080` 으로 적힌 자리를 `http://cas-server:80` 으로 고쳤습니다.
 Service 가 `port 80 → targetPort 8080` 이므로 클러스터 내부에서 `:8080` 은 연결되지
 않습니다 — 그대로 따라 하면 연결 실패합니다. nexus-server 쪽 문서는 먼저 정정됐고
 cas-server 쪽에 남아 있던 건입니다.

@@ -79,6 +79,30 @@ storage:
     allowHttp: true
 ```
 
+## 노출 주의 — `/_ui` 와 `/_api` 는 무인증입니다
+
+**이미지 `0.1.18` 기준으로 `/_ui` 와 `/_api/*` 는 `/_api/gc/*` 셋을 뺀 전부가 인증을 거치지
+않습니다. 그것을 끄는 설정 키도 없습니다.**
+
+| 경로 | 인증 |
+|---|---|
+| `/_api/gc/orphan-count` · `last-result` · `history` | admin 토큰 |
+| `/_internal/metrics` | metrics 토큰(없으면 admin 토큰) |
+| **그 밖의 `/_api/*` 전부, `/_ui`** | **없음** |
+| `GET`/`HEAD /{bucket}/{key}` | `auth.anonymousGet: true`(기본값)이면 없음 |
+
+`service.type` 기본값이 `NodePort` 이므로 표면은 **클러스터의 모든 노드 x `nodePort`** 입니다 —
+파드가 없는 노드 IP 에서도 응답합니다. 그리고 `/_api/stats` 는 2026-08 운영 사고를 일으킨 집계 경로입니다. 이미지 `0.1.18` 부터 30초 상한이 걸리지만 **그 30초 동안의 인스턴스 지연은
+남습니다.**
+
+**신뢰 네트워크 밖이라면 `service.type: ClusterIP` 로 두고 인증 프록시나 NetworkPolicy 뒤에
+놓으십시오.** 차트가 제공할 수 있는 완화는 그것뿐입니다.
+
+`/_ui` 를 브라우저로 여는 것 자체는 인증이 켜져 있으면 집계를 부르지 않습니다 — 첫 화면은
+`/_api/auth-mode` 하나만 호출하고 로그인 화면을 띄웁니다. 대시보드(`/_api/stats`,
+`/_api/backends`)는 로그인 성공 뒤에 부릅니다. **다만 인증이 꺼진 NoAuth 모드에서는 여는
+즉시 그 둘이 나가고, 어느 모드든 `/_api/stats` 를 직접 호출하는 것은 막히지 않습니다.**
+
 ## 주요 values
 
 | 키 | 기본값 | 설명 |
@@ -92,7 +116,7 @@ storage:
 | `ingress.enabled` | `false` | Ingress 활성화 |
 | `config.maxUploadSizeBytes` | `10737418240` | 최대 업로드 크기 (10 GiB) |
 | `config.maxUploadBytesInFlight` | `3221225472` | 동시 업로드 바디의 총 상주 바이트 상한 (3 GiB). 초과분은 `503 SlowDown`. **`0` = 무제한.** `resources.limits.memory` × 0.5 를 기준으로 함께 조정할 것 |
-| `config.maxConcurrentUploads` | `96` | 동시 업로드 건수 상한. 위 바이트 예산의 보조 장치. `dbMaxConnections`보다 커도 모순이 아니다 — 커넥션은 요청당이 아니라 쿼리당 잡힌다 |
+| `config.maxConcurrentUploads` | `96` | 동시 업로드 건수 상한. 위 바이트 예산의 보조 장치. **`dbMaxConnections`와의 대소 관계는 판정 보류** — `values.yaml` 주석 참고 |
 | `config.requestTimeoutSecs` | `120` | 요청 처리 타임아웃. 느린 S3 백엔드까지 포함한 요청 경로의 유일한 wall-clock 상한 |
 | `config.statsStatementTimeoutSecs` | `30` | 집계 조회 전용 풀의 쿼리 상한. 이 풀은 커넥션 1개로 요청 경로와 격리된다 (대상 목록은 아래 참고) |
 | `config.statsWorkMemMb` | `0` | 집계 풀의 `work_mem` (MiB). `0` = 서버 값 사용. **PostgreSQL 쪽 메모리**를 쓰므로 PG 사이징 확인 후 조정할 것 |
@@ -143,13 +167,143 @@ deployment가 `optional: true`로 참조하므로, 추가하지 않아도 파드
 원인이 "토큰이 틀렸나"로 보입니다.
 
 ```bash
-kubectl rollout restart -n <namespace> deploy/<release>
+kubectl rollout restart -n <namespace> deploy/<fullname>   # 릴리스명이 아니라 fullname
 ```
 
 업그레이드와 함께 갱신한다면 **Secret을 먼저 적용**하고 `helm upgrade`하면 파드 교체와
 함께 들어가므로 별도 재시작이 필요 없습니다.
 
-차트는 `ServiceMonitor`를 포함하지 않습니다 — 모니터링 스택 구성은 배포 측 소관입니다.
+차트는 `ServiceMonitor`를 포함하지 않습니다 — 모니터링 스택 구성이 배포마다 다르고, 차트가
+만든 오브젝트가 그쪽 셀렉터에 맞지 않으면 **아무것도 수집되지 않는데 오브젝트는 존재하는**
+상태가 되기 때문입니다. 대신 두 형태의 설정 예시를 아래에 둡니다.
+
+### 노출되는 지표
+
+| 지표 | 타입 | 단위 | 어느 풀·무엇 |
+|---|---|---|---|
+| `cas_upload_in_flight` | gauge | 건수 | 동시 업로드 |
+| `cas_upload_in_flight_bytes` | gauge | 바이트 | 인플라이트 바디 합(Content-Length 기준) |
+| `cas_upload_limit` | gauge | 건수 | `maxConcurrentUploads` (`0`=무제한). **바이트 예산의 상한 게이지는 없습니다** |
+| `cas_upload_rejected_total` | counter | 건수 | 건수·바이트 거절을 **함께** 셉니다. 구분하려면 위 두 게이지를 함께 보십시오 |
+| `cas_blob_lock_map_entries` | gauge | 건수 | 진행 중인 쓰기가 걸린 **고유 해시 수**(대기자 포함). 이미지 `0.1.18` 이상에서 **유휴 시 `0`** |
+| `cas_db_pool_connections` | gauge | 건수 | **요청 경로 풀만.** 현재값이고 max 가 아닙니다 |
+| `cas_db_pool_idle_connections` | gauge | 건수 | 요청 경로 풀만 |
+| `cas_db_pool_acquire_timeouts_total` | counter | 건수 | HTTP 오류 응답이 된 것만. 요청 경로 풀 + 집계 풀 + `dry_run=true` 의 GC 풀을 **합산**하며, `/_internal/health` 의 풀 타임아웃은 **세지 않습니다** |
+| `cas_blob_dedup_total` | counter | 건수 | |
+| `cas_blob_put_bytes_total` | counter | 바이트 | |
+| `cas_gc_deleted_blobs_total` | counter | 건수 | **GC 가 한 번 돌아야 등록됩니다** |
+| `cas_gc_freed_bytes_total` | counter | 바이트 | 〃 |
+
+위 `cas_*` 에는 라벨이 없습니다. 다만 같은 엔드포인트에 `axum_http_requests_total` ·
+`axum_http_requests_duration_seconds` · `axum_http_requests_pending` 이 함께 나오고
+이쪽은 `endpoint`/`method`/`status` 라벨을 답니다(경로는 라우트 패턴으로 정규화되므로
+키마다 늘지는 않습니다).
+
+**풀별 분리는 없습니다** — `cas_db_pool_connections` 로는 집계 격리가 동작하는지 판정할 수
+없습니다. 격리 확인은 "집계 조회 격리" 절의 방법을 쓰십시오.
+
+### Prometheus Operator 를 쓰는 경우
+
+`ServiceMonitor` 를 직접 만드십시오. 포트는 **이름이 `http`** 입니다(`metrics` 가 아닙니다).
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: cas-server
+  namespace: <cas 네임스페이스>
+  labels:
+    release: <Prometheus 릴리스명>     # Prometheus 의 serviceMonitorSelector 와 맞아야 합니다
+spec:
+  namespaceSelector:
+    matchNames: ["<cas 네임스페이스>"]
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cas-server
+      app.kubernetes.io/instance: <helm 릴리스명>
+  endpoints:
+    - port: http
+      path: /_internal/metrics
+      interval: 30s
+      authorization:
+        type: Bearer
+        credentials:
+          name: <fullname>
+          key: auth-metrics-token
+```
+
+`authorization` 은 Operator `0.49` 이상입니다. 그보다 낮으면
+`bearerTokenSecret: {name: <fullname>, key: auth-metrics-token}` 을 쓰십시오.
+
+### Operator 없이 `scrape_configs` 로 수집하는 경우
+
+**`ServiceMonitor` 오브젝트는 Operator 가 없으면 아무 일도 하지 않습니다.** CRD 만 있고
+컨트롤러가 없으면 `kubectl apply` 는 성공하고 리소스는 남지만, 그것을 읽어 스크레이프
+설정을 만드는 주체가 없습니다. 그 경우 아래를 Prometheus 설정에 직접 넣으십시오.
+
+```yaml
+- job_name: cas-server-metrics
+  scrape_interval: 30s
+  scrape_timeout: 10s
+  metrics_path: /_internal/metrics
+  scheme: http
+  authorization:
+    type: Bearer
+    credentials_file: /etc/secrets/cas-metrics/auth-metrics-token
+  kubernetes_sd_configs:
+    - role: endpoints
+      namespaces:
+        names: ["<cas 네임스페이스>"]
+  relabel_configs:
+    - source_labels: [__meta_kubernetes_service_label_app_kubernetes_io_name]
+      action: keep
+      regex: cas-server
+    - source_labels: [__meta_kubernetes_service_label_app_kubernetes_io_instance]
+      action: keep
+      regex: <helm 릴리스명>
+    - source_labels: [__meta_kubernetes_endpoint_port_name]
+      action: keep
+      regex: http
+    - source_labels: [__meta_kubernetes_namespace]
+      target_label: namespace
+    - source_labels: [__meta_kubernetes_service_name]
+      target_label: service
+    - source_labels: [__meta_kubernetes_pod_name]
+      target_label: pod
+```
+
+**`authorization.credentials_file` 은 Prometheus `2.26.0` 이상입니다.** 그보다 낮으면 그 세 줄을
+`bearer_token_file: /etc/secrets/cas-metrics/auth-metrics-token` 한 줄로 바꾸십시오.
+
+**토큰은 파일로 마운트합니다.** 설정이 ConfigMap 에서 오므로 시크릿 값을 그 안에 넣을 수
+없습니다. `prometheus-community/prometheus` 차트라면 이렇습니다.
+
+```yaml
+server:
+  extraSecretMounts:
+    - name: cas-metrics-token
+      mountPath: /etc/secrets/cas-metrics
+      subPath: ""
+      secretName: cas-metrics-token
+      readOnly: true
+```
+
+**Secret 은 네임스페이스 자원이므로 Prometheus 쪽에 복사본이 필요합니다.**
+
+```bash
+kubectl -n <prometheus 네임스페이스> create secret generic cas-metrics-token \
+  --from-literal=auth-metrics-token='<sealed-secret 의 같은 값>'
+```
+
+Secret 전체를 마운트하면 파일 이름이 키 이름이 되므로 경로가
+`/etc/secrets/cas-metrics/auth-metrics-token` 이 됩니다. 파일 끝의 개행은 무시됩니다.
+
+**`role: endpoints` 디스커버리에는 `services`·`endpoints`·`pods` 에 대한 `get,list,watch`
+권한이 필요합니다.** 위 차트는 `rbac.create: true` 기본값에서 이미 부여합니다.
+
+**어노테이션 디스커버리로는 붙일 수 없습니다** — `Authorization` 헤더를 넣을 수단이 없어
+401 이 됩니다. 차트는 `prometheus.io/*` 애노테이션을 붙이지 않으므로, 과거에 손으로 붙여
+두었다면 제거하십시오. 남아 있으면 위 job 과 별개로 계속 401 을 냅니다.
 
 ## 대량 적재 중에는 GC를 끄십시오 (모든 이미지 버전)
 
@@ -163,7 +317,7 @@ kubectl rollout restart -n <namespace> deploy/<release>
 ## GC와 메모리 회수 (이미지 `0.1.17` 이하)
 
 **이미지 `0.1.17` 이하에서는 GC 주기가 곧 서버 내부 해시별 쓰기 락 테이블의 회수
-주기입니다.** 항목은 고유 해시마다 하나씩 생기고 항목당 약 180~240바이트입니다.
+주기입니다.** 항목은 고유 해시마다 하나씩 생기고 항목당 약 190~240바이트입니다.
 
 | `gc.enabled` | 회수 | 쌓이는 양 |
 |---|---|---|
@@ -248,7 +402,7 @@ time curl -sS -X POST -H "Authorization: Bearer $TOKEN" \
 현재 이미지 태그 확인:
 
 ```bash
-kubectl get deploy "$REL" -n <namespace> \n  -o jsonpath='{.spec.template.spec.containers[?(@.name=="cas-server")].image}{"\n"}'
+kubectl get deploy "$REL" -n "$NS" \n  -o jsonpath='{.spec.template.spec.containers[?(@.name=="cas-server")].image}'; echo
 ```
 
 ## 집계 조회 격리 (이미지 `0.1.18` 이상)
@@ -320,6 +474,72 @@ DB 를 직접 고쳐야 하므로, 필요하면 GC 를 먼저 멈추고(`gc.enab
 쓰지 않으므로(항상 최신을 읽습니다) 켜도 사용자에게 이전 버전이 보이지 않는 반면,
 `object_versions` 행 누적은 그대로 옵니다.
 
+## 오브젝트 스토리지 lifecycle 규칙 (S3 모드)
+
+GC 가 회수하지 못하고 새는 객체가 세 자리에 있습니다. 스토리지 쪽 lifecycle 규칙이 그
+마지막 방어선인데, **프리픽스마다 필요한 규칙 종류가 다릅니다.**
+
+### 실효 프리픽스를 먼저 확인하십시오
+
+`storage.s3.keyPrefix` 를 비워 두면 **서버가 `cas/` 를 씁니다** — 버킷 루트에 쓰는 선택지는
+없습니다. 즉 차트 기본값 그대로면 실제 키는 `cas/objects/…` 입니다. 규칙을 `parts/` 에 걸면
+아무것도 매치하지 않습니다. 기동 로그 첫 줄의 설정 출력에서 실제 값을 확인하십시오.
+
+아래 표의 `{prefix}` 는 그 실효 프리픽스입니다(기본값이면 `cas/`).
+
+### 프리픽스별 규칙
+
+| 프리픽스 | 무엇이 들어 있나 | 저장 형태 | 걸 규칙 | 권장 TTL |
+|---|---|---|---|---|
+| `{prefix}objects/` | **살아 있는 blob** | 평범한 객체 + 대용량 쓰기 중의 네이티브 멀티파트 | **`AbortIncompleteMultipartUpload` 만.** `Expiration` 을 걸면 데이터가 지워집니다 | 개시 후 7일 |
+| `{prefix}tmp/` | 업로드 스테이징 | 네이티브 멀티파트 + 완료 후 남은 평범한 객체 | **둘 다** | 7일 |
+| `{prefix}parts/` | 멀티파트 업로드의 파트 | **평범한 객체** | **`Expiration` 만** | 7일 |
+
+**`parts/` 에 `AbortIncompleteMultipartUpload` 를 걸면 아무것도 회수하지 않습니다.** 그 규칙은
+스토리지 자신의 네이티브 멀티파트 상태에만 듣는데, cas-server 는 파트를 **평범한 객체로**
+그 프리픽스 아래 씁니다. 프리픽스로 열거되는 것이 그 증거입니다.
+
+**`objects/` 에는 절대 `Expiration` 을 걸지 마십시오.** 살아 있는 blob 이 그 아래 있습니다.
+그 프리픽스에 필요한 것은 대용량 쓰기가 중간에 죽었을 때 남는 네이티브 멀티파트 상태를
+치우는 것뿐이고, 그것은 `AbortIncompleteMultipartUpload` 가 합니다 — 이 규칙은 완성된 객체를
+건드리지 않습니다.
+
+### TTL 을 7일로 두는 이유
+
+서버는 24시간이 지난 미완료 업로드의 파트를 GC 가 정리합니다(코드에 고정된 값입니다).
+lifecycle 은 **그 정리가 실패했을 때의 백스톱**이므로 24시간보다 넉넉해야 합니다. 너무 짧게
+잡으면 진행 중인 업로드의 파트가 조립 전에 사라져 **쓰기가 5xx 로 실패합니다** — 읽기에서
+데이터가 비는 형태가 아니라 쓰기 실패로 드러나므로 즉시 눈에 띕니다.
+
+### 회수되는지 확인하는 방법
+
+목록 API 없이, 프로덕션 쓰기 없이 확인할 수 있습니다.
+
+```bash
+# 1) 미완료 업로드 목록 — 이 응답은 PostgreSQL 에서 옵니다(스토리지 목록 API 를 타지 않음)
+curl -s "http://<host>/<bucket>?uploads"
+
+# 2) 그 uploadId 의 파트를 정확한 키로 조회 — 파트가 평범한 객체라 HEAD 가 됩니다
+#    TTL 전 200, 만료 후 404 면 규칙이 집행된 것입니다
+```
+
+**규칙이 펌웨어에서 지원되는지는 넣어 본 뒤 읽어 보면 알 수 있습니다.** lifecycle 설정을
+PUT 한 뒤 다시 GET 해서 그 요소가 그대로 돌아오는지 보십시오 — 지원하지 않는 어플라이언스는
+거부하거나 조용히 그 요소를 빼고 저장합니다.
+
+### GC 의 파트 정리가 실패하고 있지 않은지 함께 보십시오
+
+GC 는 파트를 지울 때 **스토리지의 목록 API** 를 씁니다. 그 API 가 실패하는 백엔드에서는
+파트 정리가 매번 실패하고, 그것이 누출의 원인일 수 있습니다. 이미지 `0.1.18` 부터 이 실패가
+GC 결과에 드러납니다.
+
+```bash
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" http://<host>/_api/gc/last-result
+```
+
+`errors` 가 0 이 아니면 그것입니다. **`status` 는 `success` 로 남으므로 `status` 가 아니라
+`errors` 를 보십시오.**
+
 ## 서비스 어카운트
 
 **`0.1.23` 까지 `values.yaml` 의 `serviceAccount` 블록은 통째로 무시됐습니다.** 어떤
@@ -362,11 +582,14 @@ serviceAccount:
 
 Helm 은 쓰이지 않는 값에 오류를 내지 않습니다. 그래서 `values.yaml` 에 키를 선언하고
 템플릿에서 참조하지 않으면 **설정해도 조용히 무시되고, 운영자는 고쳤다고 믿습니다.**
-이 저장소에서 넷을 그렇게 찾았습니다 — cas-server 의 `config.requestTimeoutSecs`(문서가
+이 게이트가 실제로 잡은 것은 셋입니다 — cas-server 의 `serviceAccount.*`, nexus-server 의
+`serviceAccount.*`, 그리고 과거 cas-server 의 `terminationGracePeriodSeconds`.
+`config.requestTimeoutSecs`(문서가
 언급하는데 미렌더)와 `serviceAccount.*`, nexus-server 의 `serviceAccount.*`,
 그리고 과거 cas-server 의 `terminationGracePeriodSeconds`.
 
 ```bash
+# 저장소 기준입니다 — 이 스크립트는 차트 tgz 에 들어가지 않습니다.
 python scripts/check-unrendered-values.py                    # charts/ 전체
 python scripts/check-unrendered-values.py charts/cas-server  # 특정 차트
 ```

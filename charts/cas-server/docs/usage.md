@@ -93,9 +93,17 @@ API 호출 없이 브라우저에서 액세스 키를 발급하고 정책을 관
 
 `/_ui` 에 rootkey로 로그인하여 접속하면 Dashboard 화면이 표시됩니다.
 
-브라우저에서 열려면 접근 경로를 하나 만들어야 합니다. Service 는 기본값이 `NodePort`
-(`service.nodePort: 30080`)이므로 `http://<노드IP>:30080/_ui` 로 접속하거나,
-포트포워드를 쓰십시오.
+브라우저에서 열려면 접근 경로를 하나 만들어야 합니다.
+
+> **먼저 읽으십시오.** `/_ui` 와 `/_api/*` 는 `/_api/gc/*` 셋을 뺀 전부가 **무인증**이고
+> 끄는 설정 키가 없습니다(이미지 `0.1.18` 기준). Service 기본값 `NodePort` 는 표면을
+> **클러스터의 모든 노드 x 30080** 으로 만들고, 파드가 없는 노드 IP 에서도 응답합니다.
+> 그 표면에는 `/_api/stats` 집계가 함께 있습니다.
+> **신뢰 네트워크 밖이라면 `service.type: ClusterIP` 로 두고 포트포워드나 인증 프록시를
+> 쓰십시오.** 차트 README 의 "노출 주의" 절에 자세히 적었습니다.
+
+포트포워드가 가장 안전합니다. `NodePort` 를 그대로 쓰는 경우에는
+`http://<노드IP>:30080/_ui` 입니다.
 
 ```bash
 kubectl port-forward -n <namespace> svc/cas-server 8080:http
@@ -568,6 +576,31 @@ curl -s http://localhost:8080/_internal/metrics \
 
 `metricsToken`을 설정하지 않으면 서버가 `ADMIN_TOKEN`으로 폴백하므로, 위 명령을
 `$ADMIN_TOKEN`으로 바꿔도 동작합니다(기존 배포 동작 유지).
+
+**노출되는 지표는 `cas_*` 12종입니다.** 타입·단위와 각 값이 무엇을 보는지(특히 `cas_db_pool_*`
+가 어느 풀을 보고하는지)는 차트 README 의 "메트릭 스크레이프" 절에 표로 정리했습니다.
+같은 엔드포인트에 `axum_http_*` 3종이 함께 나오고 이쪽은 라벨을 답니다.
+
+먼저 볼 값 셋만 여기 적습니다.
+
+| 지표 | 정상 | 어긋나면 |
+|---|---|---|
+| `cas_blob_lock_map_entries` | **유휴 시 `0`** | 0으로 안 떨어지면 항목 회수가 동작하지 않는 것입니다 |
+| `cas_db_pool_idle_connections` | 부하 중에도 `0` 이 지속되지 않음 | `connections` 가 max 인데 `idle` 이 0 으로 지속되면 풀 포화입니다 |
+| `cas_db_pool_acquire_timeouts_total` | 증가하지 않음 | 증가하면 포화가 실제 실패로 이어진 것입니다(`503`) |
+
+### 스크레이프 배선
+
+**Prometheus Operator 가 있으면** `ServiceMonitor` 를, **없으면** `scrape_configs` 를 직접
+씁니다. `ServiceMonitor` 오브젝트는 Operator 가 없으면 CRD 가 있어도 아무 일도 하지 않습니다.
+양쪽 예시와 토큰 파일 마운트 방법은 차트 README 의 "메트릭 스크레이프" 절에 있습니다.
+
+배선할 때 틀리기 쉬운 값 셋입니다.
+
+- 포트는 **이름이 `http`** 입니다(`metrics` 가 아니고, 숫자 `8080` 도 아닙니다).
+- 경로는 `/_internal/metrics` 입니다.
+- Secret 은 네임스페이스 자원이라 **Prometheus 쪽 네임스페이스에 복사본이 필요합니다.**
+  키 이름은 `auth-metrics-token` 입니다.
 
 ### 블롭 dedup 사전 확인
 
