@@ -44,6 +44,20 @@ nexus-server 버전을 함께 씁니다.
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.1.8
+
+image: `jiwonkim97/nexus-client:0.1.9`
+
+이번 릴리스: CAS 비익명(anonymousGet:false) 환경 이미지 로드 지원(사이드카 SigV4 서명),
+계정 메뉴 앱 버전 표시, 샘플 상세 원본 JSON 뷰어 추가.
+
+**동작 변경** — 없음. casAuth 미설정(기본) 시 /cas 프록시는 기존과 동일한 무서명 GET → 익명 CAS 배포는 영향 없음. casAuth.enabled=true 로 켠 경우에만 사이드카→CAS 구간에 SigV4 서명이 붙는다(브라우저에 키·서명·CAS 주소 노출 없음).
+**마이그레이션** — 없음
+**설정 키** — `casAuth.enabled`(기본 false) / `casAuth.region`(기본 "cas-default") / `casAuth.existingSecret` 추가.
+  - 주입: cas-console Keys 탭에서 GET 전용 정책 키(key_id/secret_key) 발급 → 이를 담은 Secret 을 **먼저** 생성(운영은 sealed-secret 권장) → `casAuth.existingSecret` 으로 이름만 참조. Secret 의 키 이름은 반드시 `CAS_ACCESS_KEY_ID`·`CAS_SECRET_ACCESS_KEY`. 전체 kubectl/kubeseal 절차는 차트 README "CAS 이미지 인증(SigV4)" 참고.
+  - enabled=true 인데 existingSecret 이 비면 helm 렌더가 `required` 가드로 실패(오배포 방지).
+**호환성** — casAuth(사이드카 SigV4 서명)를 쓰려면 **차트 0.1.8 이상과 image/appVersion 0.1.9 이상이 함께** 필요하다. 차트가 자격증명 env 를 컨테이너에 주입하고, 이미지 안의 사이드카가 그 env 를 읽어 서명하기 때문에 한쪽만 새 버전이면 동작하지 않는다: 차트가 0.1.8 미만이면 casAuth.enabled 를 켜도 env 자체가 주입되지 않고, 이미지가 0.1.9 미만이면 env 가 들어와도 사이드카가 서명하지 않아 비익명 CAS 에서 이미지가 계속 안 뜬다. 이 차트 0.1.8 은 values 의 image.tag 를 0.1.9 로 고정하므로 기본 설치는 서로 맞는 조합이다. casAuth 를 쓰지 않는 익명(anonymousGet:true) 배포는 차트·이미지 어느 조합이든 예전과 똑같이 동작한다(기존 배포는 그대로 유지된다). CAS 서버는 SigV4 서명을 검증하는 비익명(anonymousGet:false) 배포여야 하며, nexus-server 버전과는 무관하다(서명은 사이드카와 CAS 사이 구간에만 붙는다).
+
 ## 0.1.7
 
 image: `jiwonkim97/nexus-client:0.1.8`
