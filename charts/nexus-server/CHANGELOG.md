@@ -53,6 +53,30 @@ nexus-server 는 마이그레이션이 바이너리에 임베드되어 **기동 
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.3.1
+
+image: `int2jieun/nexus-server:0.1.4`
+
+**동작 변경** — **`serviceAccount.automountToken`이 이제 실제로 적용됩니다.** 지금까지 이 값은 `templates/serviceaccount.yaml`에만 렌더됐는데, 그 파일은 `serviceAccount.create: true`일 때만 만들어져 **기본값(`create: false`) 설치에서는 아무 효과가 없었습니다** — 파드는 네임스페이스의 `default` ServiceAccount를 쓰고 그 토큰이 그대로 마운트됐습니다(`values.yaml`이 `false`라고 문서화한 것과 반대 동작이었습니다). `0.3.1`부터는 Deployment podSpec에도 `create` 여부와 무관하게 직접 렌더됩니다. Pod에 명시된 값은 항상 ServiceAccount 쪽 설정보다 우선합니다(쿠버네티스 우선순위).
+
+**주의** — **기본 설치의 동작이 뒤집힙니다: "토큰 마운트됨" → "토큰 마운트 안 됨".** `0.3.0` 이하에서는 기본 설치가 (버그로) `default` ServiceAccount의 토큰을 그대로 마운트했습니다. `0.3.1`부터는 문서대로 마운트되지 않습니다. nexus-server 자체는 쿠버네티스 API를 부르지 않아 영향이 없지만, 그 파드의 토큰에 기대던 디버그 컨테이너·사이드카·서비스 메시가 있다면 토큰을 잃습니다 — 필요하면 `--set serviceAccount.automountToken=true`로 되돌리세요. 값이 바뀌는 순간 파드 스펙이 바뀌므로 **롤링 재시작이 한 번 일어납니다.**
+
+**동작 변경** — **`delete_cas` 기본값이 "삭제"에서 "보존"으로 바뀝니다.** `DELETE /datasets/{id}/versions/{v}`와 `DELETE /samples/{sample_id}` 둘 다 대상입니다. 지금까지는 파라미터를 생략하면 미참조 이미지·썸네일 바이트가 CAS에서 **영구히** 삭제됐습니다. `0.1.4`부터는 생략하면 보존되고, 예전처럼 지우려면 **`delete_cas=true`를 명시적으로 줘야 합니다.**
+
+바꾼 이유는 실패 방향의 비대칭입니다 — 잘못된 `false`는 미참조 파일이 남는 것뿐이라 되돌릴 수 있는 스토리지 비용이지만, 잘못된 `true`는 바이트를 되돌릴 수 없이 파괴합니다. 기본값은 되돌릴 수 있는 쪽으로 두는 것이 안전합니다. **이 릴리스에서 가장 영향이 큰 변경입니다** — 삭제 후 CAS 용량이 자동으로 정리되는 것에 의존해 온 운영이라면, 업그레이드 후 그 정리가 멈춥니다(파일이 안 지워질 뿐 삭제 요청 자체는 그대로 성공합니다). 예전 동작이 필요한 호출부는 전부 `delete_cas=true`를 명시하도록 고쳐야 합니다.
+
+**동작 변경** — **readiness 응답에 근거가 실립니다.** `GET /_internal/health`가 성공 시 `{"status":"ok","db":true}`, 실패 시 `{"status":"error","db":false}`(503)를 반환합니다. 지금까지 성공 응답은 `{"status":"ok"}`뿐이라 DB를 실제로 확인하지 않던 구버전 빌드와 구분할 수 없었습니다. 프로브는 상태 코드만 읽으므로 **프로브 동작 자체는 바뀌지 않습니다** — 응답 본문을 직접 파싱하는 스크립트가 있을 때만 영향이 있습니다.
+
+**동작 변경** — **기동 마이그레이션 로그가 적용 건수를 알려줍니다.** 형식이 `마이그레이션 완료 applied=<건수> elapsed_ms=<소요>`로 바뀝니다. `applied`가 0보다 큰 기동만 실제 스키마 작업을 측정한 것입니다 — 적용할 것이 없는 기동도 `elapsed_ms`는 찍힙니다(버전 확인 자체의 비용입니다). `applied`를 보지 않고 `elapsed_ms`만 스키마 반영 시간으로 읽으면 착오가 생기는데, 이 필드가 그 착오를 막기 위한 것입니다.
+
+**동작 변경** — **annotation 왕복 엔드포인트 추가**(`GET /datasets/{id}/versions/{v}/samples/{sid}/annotations`). 같은 경로의 기존 `PUT`이 `annotation_data` 안에 받는 것과 정확히 같은 모양을 그대로 돌려줍니다 — 평탄화된 샘플 응답을 거치지 않고 annotation을 받아서 고쳐서 그대로 다시 저장할 수 있습니다. Python SDK `int2nexus-sdk 0.1.5`에 `ds.get_annotation()`/`ds.save_annotation()`이 함께 추가됐습니다. **`PUT`은 그 버전의 인스턴스를 병합이 아니라 통째로 교체합니다** — 받은 것 일부만 고쳐 보내면 나머지가 사라집니다.
+
+**마이그레이션** — 없음. 새 테이블도 컬럼도 없습니다. `helm rollback`이 안전합니다.
+
+**설정 키** — 없음. `automountToken`은 이미 있던 키이고 이번에는 배선만 고쳤습니다.
+
+**호환성** — appVersion **`0.1.4`** 필요. 프로브 경로는 `0.3.0`과 동일해 구 이미지에서도 파드가 깨지지는 않지만, 위 `delete_cas` 기본값 변경·readiness 근거·마이그레이션 로그 건수·annotation 왕복 엔드포인트는 구 이미지에는 **존재하지 않습니다.** annotation 왕복 메서드(`ds.get_annotation()`/`ds.save_annotation()`)를 쓰려면 SDK **`0.1.5`** 이상이 필요합니다 — 구 SDK에는 그 메서드 자체가 없습니다.
+
 ## 0.3.0
 
 image: `int2jieun/nexus-server:0.1.3`

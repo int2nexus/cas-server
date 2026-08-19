@@ -18,6 +18,11 @@ spec:
       # 조용히 아무 일도 일어나지 않던 자리다(고객 리포트 N11). PodSecurity/NetworkPolicy를
       # ServiceAccount 기준으로 거는 배포에서는 "통제를 걸었다고 믿는데 안 걸린" 상태가 된다.
       serviceAccountName: {{ include "nexus-server.serviceAccountName" . }}
+      # serviceAccount.create가 false면(기본값) templates/serviceaccount.yaml 자체가
+      # 렌더되지 않아 그 안의 automountServiceAccountToken도 함께 사라진다 — create 여부와
+      # 무관하게 값이 실제로 적용되려면 podSpec에도 명시적으로 렌더해야 한다. Pod의 이 필드가
+      # 있으면 ServiceAccount 쪽 설정보다 항상 우선한다.
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountToken }}
       {{- if .Values.waitForPostgres.enabled }}
       {{- $pgHost := required "waitForPostgres.host가 비어 있다 — waitForPostgres.enabled=true면 반드시 지정할 것. DB 주소는 Secret의 NEXUS__DATABASE__URL로만 전달되어 이 차트는 host를 볼 수 없고, 비운 채로 두면 initContainer가 빈 주소에 대고 무한 재시도하며 Pod가 Init 단계에 원인 없이 멈춘다." .Values.waitForPostgres.host }}
       initContainers:

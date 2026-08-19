@@ -97,14 +97,14 @@ CVAT 연동은 `cvat.baseUrl`·`cvat.user`·시크릿의 `NEXUS__CVAT__PASSWORD`
 
 ## 헬스 체크
 
-`GET /_internal/health` 를 liveness·readiness 프로브로 사용한다. 기동이 DB 연결·마이그레이션 성공에 게이트되므로, 200이면 정상 기동을 의미한다.
+프로브는 셋으로 갈린다. `GET /_internal/live`(의존성을 조회하지 않는 프로세스 응답성 확인)를 startup·liveness에, `GET /_internal/health`(DB ping)를 readiness에 쓴다. liveness를 `/_internal/health`로 두면 DB failover(보통 30~120초) 중에 파드가 kill되는데, 재시작으로는 외부 의존성이 복구되지 않아 중단이 원래 장애보다 길어진다 — 자세한 배경은 [CHANGELOG](CHANGELOG.md) 0.3.0 참조.
 
 ```bash
 kubectl port-forward svc/nexus-server 8090:80 -n <namespace>
-curl localhost:8090/_internal/health      # {"status":"ok"}
+curl localhost:8090/_internal/health      # {"status":"ok","db":true}
 ```
 
-이 경로만 인증이 면제된다(프로브가 자격증명 없이 호출해야 하므로). 나머지 API는 조회를 포함해 전부 토큰이 필요하다.
+이 두 경로만 인증이 면제된다(프로브가 자격증명 없이 호출해야 하므로). 나머지 API는 조회를 포함해 전부 토큰이 필요하다.
 
 ### `server.port`를 바꿀 때
 

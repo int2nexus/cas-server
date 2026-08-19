@@ -14,7 +14,7 @@
 
 image:
   repository: int2jieun/nexus-server
-  tag: "0.1.3"
+  tag: "0.1.4"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -283,4 +283,10 @@ serviceAccount:
   annotations: {}
   # 파드 안에서 쿠버네티스 API를 부르지 않으므로 토큰을 마운트할 이유가 없다.
   # 마운트된 토큰은 컨테이너가 뚫렸을 때 그대로 API 접근 수단이 된다.
+  #
+  # **0.3.1부터 이 값이 실제로 적용된다.** 그 전에는 templates/serviceaccount.yaml
+  # 하나에만 렌더됐는데 그 파일은 create: true일 때만 만들어져, 기본값(create: false)
+  # 설치에서는 이 키가 아무 효과가 없었다 — 파드는 네임스페이스의 default ServiceAccount를
+  # 쓰고 그 토큰이 그대로 마운트됐다(문서와 반대). 이제 Deployment podSpec에도 직접
+  # 렌더되어 create 여부와 무관하게 적용된다.
   automountToken: false
