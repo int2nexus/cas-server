@@ -606,11 +606,14 @@ for inst in ann["det"]:
     if inst["id"] == "a":
         inst["label"] = "truck"
 
-ds.save_annotation(sample_id, ann)                        # 그대로 다시 저장
+rep = ds.save_annotation(sample_id, ann)                  # 그대로 다시 저장
+# rep == {"instances": 12, "skipped": 0,
+#         "skipped_reasons": {"missing_label": 0, "not_an_object": 0, "group_not_an_array": 0}}
 ```
 - `save_annotation`은 내부적으로 `patch_annotations`와 동일하게 동작한다 — **이 버전의 인스턴스를 병합이 아니라 통째로 교체**한다. 받은 것 중 일부 그룹만 빼고 보내면 그 그룹은 사라진다(§3.5 위 패턴대로 건드리지 않는 그룹도 함께 넣어 보낼 것).
 - `meta`는 버전이 아니라 샘플에 붙는다 — **모든 버전이 같은 `meta`를 공유**하므로, `get_annotation`으로 받아 그대로 `save_annotation`에 되돌리는 왕복만 해도 `meta`가 다시 쓰인다(다른 버전에서 이미 `meta`를 바꿔 뒀다면 그 값을 덮어쓰지 않도록 왕복 전에 확인할 것).
-- 구 서버(`0.1.4` 미만)나 구 SDK(`0.1.5` 미만)에는 이 메서드 자체가 없다 — 기존 `patch_annotations`/`get_sample` 조합은 그대로 쓸 수 있다.
+- `save_annotation`은 **서버가 버린 인스턴스 수를 담은 보고서를 반환한다.** 서버는 형식이 어긋난 원소(`label` 필드가 없는 원소, object가 아닌 원소, 값이 배열이 아닌 그룹)를 버리는데, 교체는 병합이 아니므로 **버려진 만큼 기존 인스턴스가 지워진다.** `skipped`가 0이 아니면 SDK가 `RuntimeWarning`도 함께 낸다 — 반환값을 보지 않는 스크립트에서도 유실이 드러나야 하기 때문이다. `patch_annotations`(단일·배치)도 같은 경고를 낸다.
+- 구 서버(`0.1.4` 미만)나 구 SDK(`0.1.5` 미만)에는 이 메서드 자체가 없다 — 기존 `patch_annotations`/`get_sample` 조합은 그대로 쓸 수 있다. 구 서버에 새 SDK를 붙이면 `save_annotation`의 반환은 빈 dict이고 경고도 나지 않는다(서버가 보고서를 주지 않으므로 유실을 주장할 근거가 없다).
 
 ### 3.6 seal - 버전 잠금
 검수가 끝난 draft 버전을 봉인해 불변 상태로 전환한다(draft → sealed, 단방향 - 되돌릴 수 없음). seal 시 annotation을 NDJSON 스냅샷으로 CAS에 박제하고 manifest hash를 기록한다.
