@@ -21,9 +21,9 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
 - **CVAT은 선택** — 설정하지 않아도 서버는 정상 동작한다. 세션 생성·결과 회수만 503이 되고 카탈로그·업로드·seal·조회는 영향이 없다.
 - **superuser도 선택** — 설정하지 않으면 `/api/v1/admin/*`가 누구에게나 403일 뿐 나머지는 영향이 없다. 다만 **CVAT과 달리 반쪽 설정은 조용히 꺼지지 않고 기동을 실패시킨다**(아래 참조).
 
-DB 마이그레이션은 바이너리에 임베드되어 **기동 시 자동 적용**된다(별도 Job 불필요). 서버는 stateless(파일=CAS, 메타=Postgres)라 PVC가 없다.
+DB 마이그레이션은 바이너리에 임베드되어 **기동 시 자동 적용**된다(별도 Job 불필요). 마이그레이션이 끝나야 포트가 열리므로 그 시간은 곧 startupProbe 예산(기본 `periodSeconds 10 × failureThreshold 60` = 600초)에서 나간다 — 스키마가 바뀌는 릴리스로 올릴 때는 [CHANGELOG](CHANGELOG.md)의 해당 버전 **마이그레이션** 항목에서 예상 소요를 먼저 확인할 것. 서버는 stateless(파일=CAS, 메타=Postgres)라 PVC가 없다.
 
-> **appVersion 0.1.1은 파괴적 변경을 포함한다** — 조회를 포함한 **모든 API가 인증을 요구**하고, dataset을 바꾸는 요청은 **소유자만** 통과한다. 업그레이드 전에 [CHANGELOG](CHANGELOG.md)의 0.2.0 항목을 반드시 읽을 것.
+> **업그레이드 전에 [CHANGELOG](CHANGELOG.md)를 읽을 것.** 이번 릴리스(차트 0.3.1 / appVersion 0.1.5)는 동작이 뒤집히는 변경 둘을 포함한다 — 삭제 요청에서 **`delete_cas` 기본값이 "삭제"에서 "보존"으로 바뀌고**(예전처럼 지우려면 `delete_cas=true`를 명시해야 한다), **기본 설치에서 ServiceAccount 토큰이 더 이상 마운트되지 않는다**(롤링 재시작 한 번). 그리고 appVersion 0.1.1부터는 조회를 포함한 **모든 API가 인증을 요구**하고 dataset을 바꾸는 요청은 **소유자만** 통과한다(0.2.0 항목 참조).
 
 ## 설치
 
@@ -77,7 +77,10 @@ helm install nexus-server int2nexus/nexus-server -n <namespace> \
 | `cvat.projectNamePrefix` | `nexus` | 생성되는 CVAT project 이름 접두사 |
 | `cvat.segmentSize` / `cvat.maxSessionSamples` | `""` / `""` | 비우면 서버 기본값(각각 0=CVAT 기본, 2000) |
 | `cvat.staleCreatingSecs` | `""` | 비우면 서버 기본값 1800초. 이 시간을 넘긴 `creating` 세션을 기동 시 `failed`로 정리 |
+| `jwt.ttlHours` | `""` | 비우면 서버 기본 24시간. 허용 범위 1~8760, **벗어나면 기동 실패**(DB 연결보다 먼저 검사). 토큰을 무효화할 수 없으므로 이 값이 곧 노출 상한 |
+| `auth.registrationEnabled` / `auth.docsEnabled` | `true` / `true` | 공개 회원가입 / API 문서 3경로. 각각 끄면 `register`만 403, 문서 경로는 **404**(403이 아니다) |
 | `auth.superuserEmail` | `""` | **비우면 superuser 기능 꺼짐.** 채우면 시크릿의 `NEXUS__AUTH__SUPERUSER_PASSWORD`도 **반드시 함께** 있어야 한다 |
+| `serviceAccount.automountToken` | `false` | ServiceAccount 토큰 마운트 여부. **차트 0.3.1부터 이 값이 실제로 적용된다** — 그 전에는 `serviceAccount.create: true`일 때만 렌더돼 기본 설치에서 효과가 없었다. 기본 설치의 동작이 "마운트됨"에서 "마운트 안 됨"으로 뒤집히고 **롤링 재시작이 한 번 일어난다.** 파드 토큰에 기대는 사이드카가 있으면 `--set serviceAccount.automountToken=true` |
 
 전체 키는 [`values.yaml`](values.yaml) 참조.
 
@@ -91,7 +94,7 @@ CVAT 연동은 `cvat.baseUrl`·`cvat.user`·시크릿의 `NEXUS__CVAT__PASSWORD`
 
 **끌 때도 두 곳을 함께 비운다.** `auth.superuserEmail`만 지우고 Secret에 비밀번호를 남겨두면 "비밀번호만 있는" 상태가 되어 역시 기동에 실패한다.
 
-**여기 적은 비밀번호는 최초 계정 생성 때만 쓰인다.** 서버가 기동 시 그 계정이 없으면 만들고(그래야 그 주소를 아무도 선점할 수 없다), 이미 있으면 **비밀번호를 덮지 않는다** — 운영자가 API로 바꾼 값이 파드 재시작마다 되돌아가면 안 되기 때문이다. 나중에 이 env를 바꿔도 로그인 비밀번호는 바뀌지 않는다(자주 나오는 오해다). 잊었다면 Secret을 고치는 게 아니라 그 계정을 지우고 다시 기동해야 한다.
+**여기 적은 비밀번호는 최초 계정 생성 때만 쓰인다.** 서버가 기동 시 그 계정이 없으면 만들고(그래야 그 주소를 아무도 선점할 수 없다), 이미 있으면 **비밀번호를 덮지 않는다** — 운영자가 API로 바꾼 값이 파드 재시작마다 되돌아가면 안 되기 때문이다. 나중에 이 env를 바꿔도 로그인 비밀번호는 바뀌지 않는다(자주 나오는 오해다). 잊었다면 Secret을 고쳐도 소용이 없다 — `auth.superuserEmail`을 **아직 가입되지 않은** 새 주소로 바꿔 재배포하면 서버가 그 주소로 계정을 새로 만들고, 그때는 Secret의 비밀번호가 그대로 쓰인다. 같은 주소를 유지해야 한다면 운영자가 DB에서 그 `users` 행을 직접 지운 뒤 재기동하는 방법뿐이다 — **superuser 계정은 API로 삭제할 수 없고(403), 그 이메일로는 가입할 수도 없다(409).** 계정이 사라진 창에 아무나 그 주소를 선점하면 그대로 최고 권한을 가져가기 때문이다.
 
 권한은 토큰이 아니라 **이 설정값**으로 판정하므로, 이메일을 바꿔 재배포하면 즉시 회수된다 — 토큰을 무효화할 수 없는 이 서버에서 유일한 예외다. 능력은 비밀번호 재설정(`POST /api/v1/admin/users/password-reset`)과 dataset 소유자 지정(`PUT /api/v1/admin/datasets/{dataset_id}/owner`) 둘뿐이고, 사용자 목록·계정 비활성화·감사 로그는 없다.
 

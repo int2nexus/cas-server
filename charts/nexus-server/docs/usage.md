@@ -87,6 +87,8 @@ python -c "import importlib.metadata as m; print(m.version('int2nexus-sdk'))"
 `nx.connect`는 로그인 후 JWT를 받아 클라이언트를 초기화한다. 계정이 없으면 등록을 먼저 실행
 ```python
 # (최초 1회) 테스트 계정 등록 - 이미 있으면 409, 그대로 진행
+import requests
+
 NEXUS_URL = "http://<HOST>:8090"
 resp = requests.post(f"{NEXUS_URL}/api/v1/auth/register", json={
 "email": "<EMAIL>", "password": "<PASSWORD>", "display_name": "<NAME>",
@@ -420,13 +422,14 @@ ds.add([nx.Sample(r) for r in refs])
 ds.flush()
 ```
 
-입력은 `CasRef` 또는 `s3://`·`http(s)://` URL 문자열이다(`nx.Sample(image=)`와 같은 규칙). 반환은 **입력 순서를 보존한 리스트**이고 길이가 줄지 않는다 — 실패한 객체도 자리를 지키며 크기만 비어 있으므로, 호출부가 자기 파일명 목록과 zip해도 어긋나지 않는다. 이미 크기가 있는 ref는 네트워크를 타지 않아 같은 목록으로 재호출하면 실패분만 재시도된다. CAS가 Range 요청을 지원하지 않아도 동작한다(앞부분만 읽고 연결을 끊는다).
+입력은 `CasRef` 또는 `s3://`·`http(s)://` URL 문자열의 리스트다(`nx.Sample(image=)`와 같은 규칙). `nx.upload`가 돌려준 `{경로: CasRef}` dict를 그대로 넘겨도 된다(내부에서 값만 취한다). 반환은 **입력 순서를 보존한 리스트**이고 길이가 줄지 않는다 — 실패한 객체도 자리를 지키며 크기만 비어 있으므로, 호출부가 자기 파일명 목록과 zip해도 어긋나지 않는다. 이미 크기가 있는 ref는 네트워크를 타지 않아 같은 목록으로 재호출하면 실패분만 재시도된다. CAS가 Range 요청을 지원하지 않아도 동작한다(앞부분만 읽고 연결을 끊는다).
 
 로컬 파일이 손에 있다면 네트워크를 탈 이유가 없다. 같은 파서를 직접 부르면 된다.
 
 ```python
-info = nx.image_info(path.read_bytes())   # width/height/mime/channels, 헤더만 읽음
-ref = CasRef(bucket="my-bucket", key=key, width=info.width, height=info.height)
+info = nx.image_info(path.read_bytes())   # width/height/mime/channels, 헤더만 읽음 (실패 시 None)
+ref = (CasRef(bucket="my-bucket", key=key, width=info.width, height=info.height)
+       if info else CasRef(bucket="my-bucket", key=key))   # 모르면 키를 넣지 않는다
 ```
 
 > 크기를 못 구하면 `meta`에 `width`/`height` 키를 **넣지 않는다**. `0`을 적으면 크기 facet의 range가 `min:0`으로 오염되고, CVAT이 그 값으로 정규화 좌표를 계산해 좌표가 망가진다. 키가 없으면 집계에서 조용히 빠지고, **CVAT 편집 세션 생성은 명확한 에러로 거부된다**([6.1](#61-시작-전-확인)).
@@ -436,7 +439,7 @@ ref = CasRef(bucket="my-bucket", key=key, width=info.width, height=info.height)
 `nx.probe`가 생기기 전에 등록된 샘플은 `meta.width`/`meta.height`가 `0`으로 들어가 있다. 그 `0`은 측정값이 아니라 SDK가 자리를 채우려고 넣은 값이고, **CVAT에서는 세션 생성은 통과한 뒤 export 단계에서 해당 인스턴스가 조용히 빠진다.** 썸네일 백필과 같은 성격의 일회성 정비다.
 
 ```python
-ds = nx.load_or_create("<dataset>", version="<version>")
+ds = nx.Dataset.load_or_create("<dataset>", "<version>")
 
 report = ds.backfill_dims(dry_run=True)   # 대상 규모와 실제 측정 가능 건수만 확인
 report = ds.backfill_dims(workers=8)      # 적용
@@ -543,8 +546,10 @@ trucks = ds.samples(group_key="det", label="truck")         # det 그룹 안에�
 just_these = ds.samples(sample_ids=["s1", "s2", "s3"])       # 이 sample_id들만
 by_split = ds.samples(split="val", tags=["night"])  
 ```
-`samples(sample_ids=, group_key=, label=, confidence_min=, confidence_max=, track_id=, split=, tags=, meta=)` 특정 조건 필터를 추가하여 조건에 맞는 샘플만 조회한다.  `limit`을 지정하지 않으면 커서를 자동으로 순회해 매칭 전체를 모아서 반환한다.  
-매칭되는 샘플이 아주 많을 수 있는 대규모 dataset이면 `limit`없이 그냥 부를 경우 전체 데이터를 로드하느라 느려지거나 메모리를 많이 쓸 수 있다. `limit`을 명시하여 필요한 만큼만 가져오는 것을 권장한다.  
+`samples(sample_ids=, group_key=, label=, confidence_min=, confidence_max=, track_id=, split=, tags=, meta=, include_annotations=True)` 특정 조건 필터를 추가하여 조건에 맞는 샘플만 조회한다.  `limit`을 지정하지 않으면 커서를 자동으로 순회해 매칭 전체를 모아서 반환한다.  
+매칭되는 샘플이 아주 많을 수 있는 대규모 dataset이면 `limit`없이 그냥 부를 경우 전체 데이터를 로드하느라 느려지거나 메모리를 많이 쓸 수 있다. `limit`을 명시하여 필요한 만큼만 가져오는 것을 권장한다. annotation이 필요 없는 대규모 스캔이라면 `include_annotations=False`로 경량 코어 필드만 받는 편이 훨씬 싸다.  
+
+**`meta=` 필터는 서버 `0.1.5`부터 번들 스키마에 선언되지 않은 키도 받는다.** 그 dataset에서 실제로 관측된 값의 타입을 보고 숫자는 범위, 문자열은 값 목록, 불리언은 참/거짓으로 다룬다(선언된 필드는 선언이 우선이다). 관측된 문자열은 날짜처럼 보여도 범위가 아니라 값 목록이다. 선언에도 관측 표에도 없는 이름은 계속 400이다(오타를 빈 결과로 삼키지 않기 위한 것이다). 다만 **meta 키 이름이 `[A-Za-z0-9_]`를 벗어나면(예: `capture-time`, `카메라`) 그 필드는 필터·facet 대상이 되지 않는다** — 값은 그대로 저장되고 `ds.get_sample()`·`ds.samples()` 응답에도 보이지만 걸러낼 수는 없고 `GET .../schema` 목록에도 나타나지 않으니, 필터로 쓸 키는 영문·숫자·밑줄로 짓는다.  
 
 직접 페이지 단위로 로드 - `after`로 다음 페이지의 시작점(이전 호출 결과의 마지막 `sample_id`)을 지정::
 ```python
@@ -585,10 +590,9 @@ ds.patch_annotations(sample_id, {"det": [{"id": "a", "label": "truck"}]})   # �
 한 그룹의 일부만 고치고 싶을 때 안전한 방법은 전체를 가져와서 필요한 부분만 바꾼 뒤 통째로 다시 보내는 것이다. 
   ```python
   full = ds.get_sample(sample_id)                          # 이 버전의 annotation 전체
-  annotation_data = {
-      k: v for k, v in full.items()
-      if k not in ("sample_id", "image_url", "thumbnail_url")
-  }                                                        # {"meta": ..., "det": [...], "seatbelt": [...]}
+  CORE = ("sample_id", "split", "tags", "created_at", "image_url", "thumbnail_url")
+  annotation_data = {k: v for k, v in full.items() if k not in CORE}
+                                                           # {"meta": ..., "det": [...], "seatbelt": [...]}
 
   for inst in annotation_data["det"]:                      # det 그룹 안 인스턴스 하나만 라벨 수정
       if inst["id"] == "a":
@@ -597,7 +601,9 @@ ds.patch_annotations(sample_id, {"det": [{"id": "a", "label": "truck"}]})   # �
   ds.patch_annotations(sample_id, annotation_data)         # seatbelt 등 나머지 그룹은 그대로 유지됨
   ```
 
-**annotation 왕복 전용 메서드**(서버 `0.1.4`+, SDK `0.1.5`+): 위 패턴처럼 `get_sample()` 응답에서 `sample_id`/`image_url`/`thumbnail_url` 같은 부가 필드를 직접 걸러내지 않아도, `get_annotation`/`save_annotation`이 이 버전의 annotation만 그대로 주고받는다.
+**코어 필드를 하나라도 빠뜨리면 서버가 그것을 annotation 그룹으로 보고 버린다** — 응답의 `skipped`가 0이 아니게 되고 SDK가 경고를 낸다. 1건만 고칠 때는 아래 `get_annotation`/`save_annotation`이 더 안전하다.
+
+**annotation 왕복 전용 메서드**(서버 `0.1.5`+, SDK `0.1.5`+): 위 패턴처럼 `get_sample()` 응답에서 `sample_id`/`split`/`tags`/`created_at`/`image_url`/`thumbnail_url` 같은 코어 필드를 직접 걸러내지 않아도, `get_annotation`/`save_annotation`이 이 버전의 annotation만 그대로 주고받는다.
 
 ```python
 ann = ds.get_annotation(sample_id)                        # 이 버전의 annotation 전체 — {"meta": ..., "det": [...], ...}
@@ -613,7 +619,8 @@ rep = ds.save_annotation(sample_id, ann)                  # 그대로 다시 저
 - `save_annotation`은 내부적으로 `patch_annotations`와 동일하게 동작한다 — **이 버전의 인스턴스를 병합이 아니라 통째로 교체**한다. 받은 것 중 일부 그룹만 빼고 보내면 그 그룹은 사라진다(§3.5 위 패턴대로 건드리지 않는 그룹도 함께 넣어 보낼 것).
 - `meta`는 버전이 아니라 샘플에 붙는다 — **모든 버전이 같은 `meta`를 공유**하므로, `get_annotation`으로 받아 그대로 `save_annotation`에 되돌리는 왕복만 해도 `meta`가 다시 쓰인다(다른 버전에서 이미 `meta`를 바꿔 뒀다면 그 값을 덮어쓰지 않도록 왕복 전에 확인할 것).
 - `save_annotation`은 **서버가 버린 인스턴스 수를 담은 보고서를 반환한다.** 서버는 형식이 어긋난 원소(`label` 필드가 없는 원소, object가 아닌 원소, 값이 배열이 아닌 그룹)를 버리는데, 교체는 병합이 아니므로 **버려진 만큼 기존 인스턴스가 지워진다.** `skipped`가 0이 아니면 SDK가 `RuntimeWarning`도 함께 낸다 — 반환값을 보지 않는 스크립트에서도 유실이 드러나야 하기 때문이다. `patch_annotations`(단일·배치)도 같은 경고를 낸다.
-- 구 서버(`0.1.4` 미만)나 구 SDK(`0.1.5` 미만)에는 이 메서드 자체가 없다 — 기존 `patch_annotations`/`get_sample` 조합은 그대로 쓸 수 있다. 구 서버에 새 SDK를 붙이면 `save_annotation`의 반환은 빈 dict이고 경고도 나지 않는다(서버가 보고서를 주지 않으므로 유실을 주장할 근거가 없다).
+- 구 서버(`0.1.5` 미만)나 구 SDK(`0.1.5` 미만)에는 이 메서드 자체가 없다 — 기존 `patch_annotations`/`get_sample` 조합은 그대로 쓸 수 있다. 구 서버에 새 SDK를 붙이면 `save_annotation`의 반환은 빈 dict이고 경고도 나지 않는다(서버가 보고서를 주지 않으므로 유실을 주장할 근거가 없다).
+- **SDK `0.1.5`는 서버와 별도로 발행된다.** 위 §2의 업데이트 명령을 돌린 뒤 `python -c "import importlib.metadata as m; print(m.version('int2nexus-sdk'))"`로 확인하고, 아직 낮으면 인덱스에 올라오지 않은 것이다 — 그동안은 `patch_annotations`/`get_sample` 조합을 쓰거나 `GET`/`PUT` 엔드포인트를 직접 호출한다.
 
 ### 3.6 seal - 버전 잠금
 검수가 끝난 draft 버전을 봉인해 불변 상태로 전환한다(draft → sealed, 단방향 - 되돌릴 수 없음). seal 시 annotation을 NDJSON 스냅샷으로 CAS에 박제하고 manifest hash를 기록한다.
@@ -708,14 +715,23 @@ ds.update(name="new-name", description="새 설명")
 - Dataset의 소유자(생성자) 계정만 이름/설명을 바꿀 수 있다.
 
 ### 4.3 데이터셋 삭제 정책
-Dataset 삭제는 버전 단위로 수행한다. `ds.delete()`로 버전을 삭제하고, 남은 버전이 하나도 없으면 Dataset도 자동으로 삭제된다. 이때 Dataset에 속한 잔여 Sample도 모두 정리되며, `delete_cas=True`를 명시적으로 준 경우에만 CAS로 Asset 삭제 요청을 보내 CAS에서 Asset이 정리될 수 있도록 한다(기본값은 아래처럼 보존이다).
-Dataset의 소유자(생성자)만 삭제 가능하며, sealed 버전은 삭제할 수 없다.
+Dataset 삭제는 버전 단위로 수행한다. `ds.delete()`로 버전을 삭제하고, 남은 버전이 하나도 없으면 Dataset도 자동으로 삭제된다. 이때 Dataset에 속한 잔여 Sample도 모두 정리되며, CAS로 Asset 삭제 요청을 보낼지는 아래 `delete_cas`가 정한다.
+Dataset의 소유자(생성자)만 삭제 가능하며, sealed 버전은 삭제할 수 없다(409, 예외 없음 — 그 버전이 Dataset의 마지막 버전이어도 마찬가지다).
 
-**`delete_cas`는 기본적으로 꺼져 있다.** 지정하지 않으면 카탈로그(메타데이터)만 지워지고 **CAS 원본은 그대로 남는다.** CAS 용량을 회수하려면 명시해야 한다.
+**CAS 원본 삭제(`delete_cas`)는 층마다 기본값이 다르다.**
+
+- `ds.delete(...)`(SDK 고수준): `delete_cas`를 생략하면 **한 번 물어본다** — 대화형(터미널·노트북)이면 `삭제=y / 보존=N` 프롬프트가 뜨고, 입력이 불가능한 비대화형(CI·파이프)에서는 **보존(False)**으로 진행한다. 묻지 않게 하려면 `delete_cas=False`(보존) 또는 `delete_cas=True`(삭제)를 명시한다. 이 동작은 예전과 같다.
+- **HTTP로 직접 호출할 때(서버 `0.1.5`부터 변경):** `?delete_cas=`를 생략하면 이제 **CAS 객체를 지우지 않는다.** 이전 버전은 지웠다. `DELETE /datasets/{id}/versions/{v}`와 `DELETE /samples/{sample_id}` 둘 다 해당한다. 지우려면 `?delete_cas=true`를 명시해야 한다.
+- **SDK 저수준 `client.delete_version(...)`(SDK `0.1.5`부터 변경):** 기본값이 `delete_cas=True`에서 **`False`(보존)**로 바뀌었다. 이 함수를 직접 부르며 기본값에 기대어 용량을 회수하던 스크립트는 이제 `delete_cas=True`를 명시해야 한다.
+
+sealed 버전이 참조하는 객체는 `delete_cas` 값과 무관하게 **항상 보존**된다(변경 없음).
+
+`confirm`에는 **삭제할 버전 문자열**을 준다(`True`면 현재 버전). 서버가 경로의 버전과 정확히 비교해 어긋나면 400이다 — dataset 이름이 아니다.
 
 ```python
-ds.delete(confirm="my-dataset")                   # 카탈로그만 삭제, CAS 원본 유지
-ds.delete(confirm="my-dataset", delete_cas=True)  # CAS로 삭제 요청까지 보냄
+ds.delete(confirm="v0")                   # delete_cas 생략 → 대화형으로 한 번 물어본다
+ds.delete(confirm="v0", delete_cas=False) # 묻지 않고 카탈로그만 삭제, CAS 원본 유지
+ds.delete(confirm="v0", delete_cas=True)  # CAS로 삭제 요청까지 보냄
 ```
 
 ## 5. 데이터셋 버전 관리
@@ -754,8 +770,10 @@ Seal 하면 그 시점 상태로 불변 스냅샷이 된다. 이후:
 기존 버전을 기반으로 새로운 작업용 버전을 만든다.
 ```python
 ds_v1 = nx.Dataset.load_or_create("my-dataset", "v1", fork_from="v0")   # 전량 fork
-sealed v1 --(fork_from)--> draft v2
 ```
+
+> `sealed v0` --(fork_from)--> `draft v1`
+
 fork된 버전은 원본의 샘플 구성(+ Annotation)을 그대로 이어받지만, 이후 샘플 추가/제거나 Annotation 수정은 새 버전에서 독립적으로 이루어진다(원본에 영향 없음).  
 특정 샘플만 골라서 fork하고 싶으면 sample_ids=[...]를 같이 넘기거나, 조건으로 바로 고르고 싶으면 ds.fork()를 사용해 매칭되는 샘플만 담은 새 버전을 만든다:
 ```python
@@ -963,7 +981,7 @@ except NexusError as e:
 ```
 
 - `e.status_code`(`int | None`)와 `e.server_message`(`str | None`)로 서버가 보낸 실제 에러 사유를 프로그램적으로 분기할 수 있다. `str(e)`에도 같은 내용이 포함되지만(사람이 읽는 용도), 상태코드로 분기하려면 이 두 속성을 쓴다.
-- `flush`/`patch_annotations`의 배치 호출은 건당 결과를 `IngestResult(ok, sample, sample_id, error)`로 모아서 반환한다 — `strict=True`면 실패가 하나라도 있을 때 `NexusBatchError(failures=[...])`를 던진다.
+- `flush`/`patch_annotations`의 배치 호출은 건당 결과를 `IngestResult(ok, sample, sample_id, error, status_code)`로 모아서 반환한다 — `strict=True`면 실패가 하나라도 있을 때 `NexusBatchError(failures=[...])`를 던진다.
 
 #### 401과 403을 구분한다
 
@@ -989,7 +1007,7 @@ except NexusError as e:
 |`nx.probe(refs, workers=8, strict=False, max_header_bytes=65536)` → [CasRef]|업로드 없이 CAS 객체의 이미지 크기만 채움(앞부분만 읽음, 순서 보존)|
 |`nx.image_info(data)` → ImageInfo(width, height, mime, channels)|로컬 bytes에서 헤더만 읽어 크기 판독|
 |`nx.Sample(image=, annotation=, assets=, split=, tags=)`|샘플 정의|
-|`nx.CasRef(bucket, key, hash_hex=, size=, content_type=)`|파일 참조|
+|`nx.CasRef(bucket, key, hash_hex=, size=, content_type=, width=, height=)`|파일 참조|
 |`nx.annotation_sessions(status=, dataset_id=, mine=, limit=)`|CVAT 편집 세션 목록(전역, 기본 진행 중인 것만)|
 |`nx.annotation_session(session_id)`|세션 id로 다시 잡기|
 
@@ -999,7 +1017,7 @@ except NexusError as e:
 |`Dataset.load_or_create(name, version, tags=, description=, fork_from=, sample_ids=)`|dataset/버전 생성 또는 조회|
 |`.add(sample)` / `.flush()`|	샘플 등록|
 |`.list_samples()` / `.get_sample(id)`|	조회|
-|`.samples(sample_ids=, group_key=, label=, confidence_min=, confidence_max=, track_id=, split=, tags=, meta=, limit=, after=)`|	조건 조회(기본 전체, limit=주면 한 페이지)|
+|`.samples(sample_ids=, group_key=, label=, confidence_min=, confidence_max=, track_id=, split=, tags=, meta=, include_annotations=True, limit=, after=)`|	조건 조회(기본 전체, limit=주면 한 페이지). `include_annotations=False`면 annotation 없는 경량 코어만|
 |`.patch_annotations(sample_id, data)`|	annotation 수정|
 |`.backfill_dims(workers=8, chunk_size=500, dry_run=False)` → dict|	`meta.width/height`가 빈 샘플을 실측값으로 보정(빈칸만 채움)|
 |`.sample_history(sample_id)` / `.diff(against=)`|	이력 / 비교|
@@ -1009,7 +1027,7 @@ except NexusError as e:
 |`.update(name=, description=)`|	이름/설명 수정|
 |`.seal()`|	버전 확정|
 |`.to_df(groups=, path=, format=, chunksize=)`|	DataFrame 변환|
-|`.delete(confirm=, delete_cas=)`|	버전 삭제. `delete_cas` 미지정 시 CAS 원본은 유지된다([4.3](#43-데이터셋-삭제-정책))|
+|`.delete(confirm=, delete_cas=)`|	버전 삭제. `confirm`은 버전 문자열(또는 `True`). `delete_cas` 미지정 시 대화형으로 한 번 묻고, 비대화형이면 CAS 원본을 유지한다([4.3](#43-데이터셋-삭제-정책))|
 |`.favorite()` / `.unfavorite()`|	즐겨찾기|
 |`.create_annotation_session(sample_ids, groups=, extra_labels=, wait=True, timeout=600)`|	CVAT 편집 세션 생성|
 |`.annotation_sessions(status=)`|	이 dataset·version의 세션 목록|
@@ -1034,4 +1052,4 @@ except NexusError as e:
 |`client.change_password(current, new)`|본인 비밀번호 변경(현재 비밀번호 재확인)|
 |`client.delete_account(password)` → dict|본인 계정 **완전 삭제** — 되돌릴 수 없다|
 |`NexusError`, `NexusAuthError`, `NexusCasError`, `NexusIngestError`, `NexusBatchError`|	예외 타입(`.status_code`, `.server_message`)|
-|`IngestResult(ok, sample, sample_id, error)`|	배치 처리 건별 결과|
+|`IngestResult(ok, sample, sample_id, error, status_code)`|	배치 처리 건별 결과|
