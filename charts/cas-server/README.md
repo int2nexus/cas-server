@@ -81,15 +81,19 @@ storage:
 
 ## 노출 주의 — `/_ui` 와 `/_api` 는 무인증입니다
 
-**이미지 `0.1.18` 기준으로 `/_ui` 와 `/_api/*` 는 `/_api/gc/*` 셋을 뺀 전부가 인증을 거치지
-않습니다. 그것을 끄는 설정 키도 없습니다.**
+**`/_ui` 와 `/_api/*` 는 `/_api/gc/*` 셋을 뺀 전부가 인증을 거치지 않습니다. 그것을 끄는
+설정 키도 없습니다.** 경로 단위 이야기이고, 응답 안의 민감한 필드 하나는 따로 가려집니다
+(아래 `/_api/backends`).
 
 | 경로 | 인증 |
 |---|---|
 | `/_api/gc/orphan-count` · `last-result` · `history` | admin 토큰 |
 | `/_internal/metrics` | metrics 토큰(없으면 admin 토큰) |
+| `/_api/backends` | **없음.** 다만 백엔드 스토리지 주소(`endpoint_url`)는 admin 토큰이 있을 때만 나갑니다 |
 | **그 밖의 `/_api/*` 전부, `/_ui`** | **없음** |
 | `GET`/`HEAD /{bucket}/{key}` | `auth.anonymousGet: true`(기본값)이면 없음 |
+
+등록되지 않은 `/_api/*` 경로는 `404` 입니다.
 
 `service.type` 기본값이 `NodePort` 이므로 표면은 **클러스터의 모든 노드 x `nodePort`** 입니다 —
 파드가 없는 노드 IP 에서도 응답합니다. 그리고 `/_api/stats` 는 2026-08 운영 사고를 일으킨 집계 경로입니다. 이미지 `0.1.18` 부터 30초 상한이 걸리지만 **그 30초 동안의 인스턴스 지연은
@@ -205,11 +209,22 @@ kubectl rollout restart -n <namespace> deploy/<fullname>   # 릴리스명이 아
 - **`CopyObject`** — 기존 blob 을 가리키는 행만 추가하므로 이 값이 움직이지 않습니다.
 - **프로세스 재시작 이전분** — 프로세스 수명 카운터라 파드가 바뀌면 `0` 부터 다시 셉니다.
 
-**데이터셋 전체의 중복률은 이 값으로 구할 수 없습니다.** 개수 기준 중복률은
-`1 - (고유 blob 수) / (오브젝트 수)` 이고 두 값 모두 `/_api/stats` 에 있습니다.
-다만 그 응답은 데이터가 커지면 `statsStatementTimeoutSecs` 에 걸려 `500` 으로 끝날 수 있습니다
-— 두 값 자체는 조인 없는 집계인데 같은 문장의 다른 서브쿼리가 무겁기 때문입니다
-(아래 "집계 조회 격리" 절).
+**데이터셋 전체의 중복률은 이 값으로 구할 수 없습니다.** 그 값은 `/_api/stats` 의
+`object_count` 와 `blob_count` 로 구합니다. 둘 다 조인 없는 집계라 기본 응답에 항상
+들어 있습니다 — 무거운 용량 계산은 `?sizes=true` 를 붙였을 때만 돕니다.
+
+```
+개수 기준 중복률 ≥ 1 - blob_count / object_count
+```
+
+**하한입니다.** `blob_count` 는 `blobs` 전수라 GC 가 아직 회수하지 않은 blob 을 포함하고,
+`object_count` 는 live 최신 버전만 셉니다. 분모가 부풀어 있으므로 실제 중복률은 이 값
+이상입니다. 콘솔이 이 카드를 `≥` 로 표시하는 이유가 그것이고, GC 대기분이 live 오브젝트보다
+많으면 값이 음수가 되므로 `N/A` 로 냅니다.
+
+모수가 맞는 값(live 오브젝트가 참조하는 고유 blob 만)은 `?sizes=true` 가 필요하고, 그쪽은
+`object_versions` × `blobs` 조인이라 데이터가 커지면 `statsStatementTimeoutSecs` 에 걸릴 수
+있습니다(아래 "집계 조회 격리" 절).
 
 **풀별 분리는 없습니다** — `cas_db_pool_connections` 로는 집계 격리가 동작하는지 판정할 수
 없습니다. 격리 확인은 "집계 조회 격리" 절의 방법을 쓰십시오.
@@ -414,13 +429,19 @@ time curl -sS -X POST -H "Authorization: Bearer $TOKEN" \
 현재 이미지 태그 확인:
 
 ```bash
-kubectl get deploy "$REL" -n "$NS" \n  -o jsonpath='{.spec.template.spec.containers[?(@.name=="cas-server")].image}'; echo
+kubectl get deploy "$REL" -n "$NS" \
+  -o jsonpath='{.spec.template.spec.containers[?(@.name=="cas-server")].image}'; echo
 ```
 
 ## 집계 조회 격리 (이미지 `0.1.18` 이상)
 
 `/_api/stats`, `/_api/buckets`, `/_api/buckets/{bucket}/objects` 의 서브폴더 조회,
 `/_api/backends` 의 blob 집계, `/_api/gc/orphan-count` 는 전 테이블 집계입니다.
+
+`/_api/stats` 와 `/_api/buckets` 는 **용량 계산을 기본에서 뺐습니다.** 그 둘만
+`object_versions` × `blobs` 조인을 요구하기 때문이고, 한 문장에 두면 상한에 걸릴 때
+조인이 없는 나머지 값까지 함께 죽습니다. 용량이 필요하면 `?sizes=true` 를 붙이십시오 —
+그 요청만 무거운 쪽으로 갑니다.
 데이터가 커지면 조인이 디스크로 스필하고, 2026-08 고객 환경에서 그 스필이 임시 파일
 **352.8 GB** 를 만들며 적재를 **2시간 55분** 막았습니다. 파드 재시작으로 끊을 수 없었습니다.
 
@@ -438,6 +459,10 @@ kubectl get deploy "$REL" -n "$NS" \n  -o jsonpath='{.spec.template.spec.contain
 장애가 이어지는 동안 임의로 오래된 숫자가 보일 수 있고, 화면에 그 사실이 표시되지
 않습니다. 실패 직후 30초는 재질의하지 않으며(캐시된 값이 없으면 오류), 대시보드 숫자가
 멈춘 것처럼 보이면 DB 쪽을 먼저 보십시오.
+
+**다만 `?sizes=true` 요청에 용량 없는 지난 값을 주지는 않습니다.** 그 경우는 오류입니다 —
+`null` 을 200 으로 돌려주면 화면이 그것을 "중복이 없다"로 읽습니다. 쿨다운도 비용 등급별로
+갈라져 있어, 용량 계산이 실패해도 기본 조회는 그대로 응답합니다.
 
 **왜 타임아웃만으로는 부족한가.** 취소된 쿼리의 커넥션은 sqlx 가 닫지 않고 유휴 풀로
 반납합니다. 다음 획득자가 그 커넥션을 뽑으면 버려진 문장이 끝날 때까지 막힙니다 —
@@ -651,7 +676,12 @@ per-hash 뮤텍스에 의존합니다. 파드가 둘 이상이면 이 락이 공
 `/_internal/health` 는 DB 커넥션을 얻지 못하면 `config.dbAcquireTimeoutSecs` 만큼 붙들려
 있습니다. `timeoutSeconds` 가 그보다 짧으면 **서버가 판정을 내리기 전에 프로브가 먼저
 끊깁니다.** 기본값은 `12 > 10` 으로 맞춰져 있습니다. `dbAcquireTimeoutSecs` 를 올리면
-이 값도 함께 올리세요.
+이 값도 함께 올리세요. 차트는 렌더 시점에 이 부등식을 검증하고, 어긋나면 설치가
+실패합니다.
+
+**차트 밖에서 돌리거나 `extraEnv` 로 값을 덮어쓰면 그 검증이 듣지 않습니다.** 서버는
+프로브 값을 볼 수 없으므로 그 경우 아무 경고도 하지 않습니다. `CAS__READINESS_PROBE_TIMEOUT_SECS`
+에 실제 프로브 값을 넣으면 서버가 기동 시 같은 부등식을 검사하고 어긋날 때만 경고합니다.
 
 
 DB 가 죽은 것과 바쁜 것은 대응이 다르고, 이미지 `0.1.18` 부터 서버가 그 둘을 구분합니다.

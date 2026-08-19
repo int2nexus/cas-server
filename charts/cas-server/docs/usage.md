@@ -160,7 +160,12 @@ aws configure set region                cas-default
 CAS="http://cas-server:80" 
 ```
 
-> region은 반드시 `cas-default`로 설정해야 합니다.
+> region 은 아무 값이나 됩니다. 서버가 클라이언트의 선언 값으로 서명 키를 유도하므로,
+> 지정하지 않아 SDK 기본값(boto3 는 `us-east-1`)이 들어가도 그대로 동작합니다.
+> 예시의 `cas-default` 는 관례일 뿐입니다.
+>
+> 이미지 `0.1.18` 이하는 `cas-default` 만 받았고, 다른 값이면
+> `403 InvalidAccessKeyId` 로 거부했습니다.
 
 ### boto3
 
@@ -172,7 +177,7 @@ s3 = boto3.client(
     endpoint_url="http://cas-server:80",
     aws_access_key_id="<root_access_key_id>",
     aws_secret_access_key="<root_secret_key>",
-    region_name="cas-default",
+    region_name="cas-default",   # 임의 값 가능. 생략하면 boto3 기본값이 쓰이고 그것도 동작합니다
 )
 ```
 

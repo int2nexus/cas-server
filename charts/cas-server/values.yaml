@@ -23,7 +23,7 @@ image:
   #  - 해시별 쓰기 락 테이블의 즉시 회수. GC 실행 시에만 회수되므로,
   #    gc.enabled: false 배포에서는 유휴 바닥값이 상승한다 (gc 섹션 주석 참고)
   #  - auth.metricsToken. 그 토큰으로 스크레이프하면 401 이 된다
-  tag: "0.1.18"
+  tag: "0.1.19"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -272,7 +272,8 @@ auth:
 # ── 서비스 ────────────────────────────────────────────────────────────────────
 #
 # **노출 주의.** /_ui 와 /_api/* 는 /_api/gc/* 셋을 뺀 전부가 무인증이고, 그것을 끄는
-# 설정 키가 없다. NodePort 는 **클러스터의 모든 노드 x nodePort** 를 표면으로 만든다 —
+# 설정 키가 없다. 경로 단위 이야기다 — /_api/backends 는 무인증이지만 응답 안의 백엔드
+# 스토리지 주소(endpoint_url)만은 admin 토큰 뒤에 있다. NodePort 는 **클러스터의 모든 노드 x nodePort** 를 표면으로 만든다 —
 # 파드가 없는 노드 IP 에서도 응답한다.
 #
 # 그 표면에 /_api/stats 같은 전 테이블 집계가 포함된다. 상한(config.statsStatementTimeoutSecs,

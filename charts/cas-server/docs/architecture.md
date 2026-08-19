@@ -271,7 +271,9 @@ aws s3 presign s3://documents/2026/report.pdf \
 | **NoAuth** | 인증 없음, 내부망 전용 운용 시 사용 |
 | **SigV4** | AWS 표준 서명(AWS4-HMAC-SHA256). Access Key + Secret Key 필요 |
 
-SigV4 사용 시 region은 반드시 `cas-default`로 지정해야 합니다. 
+SigV4 사용 시 region 은 아무 값이나 됩니다 — 서버가 클라이언트의 선언 값으로 서명 키를
+유도하므로, 지정하지 않아 SDK 기본값(boto3 는 `us-east-1`)이 들어가도 동작합니다.
+아래 예시의 `cas-default` 는 관례입니다. (이미지 `0.1.18` 이하는 이 값만 받았습니다.)
 
 ```bash
 aws configure set aws_access_key_id     <발급된-키-ID>
@@ -328,18 +330,26 @@ S3 표준에 없는 CAS 전용 헤더가 업로드 응답에 추가됩니다.
 
 | HTTP 상태 | 에러 코드 | 원인 및 대응 |
 |-----------|-----------|--------------|
-| 400 | `InvalidBucketName` | 버킷 이름 형식 오류 |
 | 400 | `InvalidArgument` | 요청 파라미터 오류 |
-| 401 | `InvalidSignature` | SigV4 서명 불일치 — 키·region 확인 |
-| 403 | `AccessDenied` | 해당 작업 권한 없음 |
+| 400 | `InvalidDigest` | `x-cas-hash` 로 넘긴 해시와 실제 본문이 다름 |
+| 400 | `InvalidPart` | 멀티파트 파트 번호·구성 오류 |
+| 400 | `AuthorizationHeaderMalformed` | Authorization 헤더/presigned 쿼리 형식 오류 — 서명을 계산할 수조차 없음 |
+| 403 | `AccessDenied` | 자격증명이 없거나, 해당 작업 권한이 없거나, presigned URL 이 만료됨 |
+| 403 | `InvalidAccessKeyId` | 그런 액세스 키가 없음 (비활성·유효기간 만료 포함) |
+| 403 | `SignatureDoesNotMatch` | 서명 불일치 — 시크릿 값을 확인 |
+| 403 | `RequestTimeTooSkewed` | 요청 시각이 서버 시각과 15분 이상 차이 (헤더 인증 경로에만 해당) |
 | 404 | `NoSuchBucket` | 버킷 없음 |
-| 404 | `NoSuchKey` | 오브젝트 없음 |
+| 404 | `NoSuchKey` | 오브젝트 없음. 등록되지 않은 `/_api/*` 경로도 이 코드입니다 |
 | 404 | `NoSuchUpload` | 멀티파트 업로드 ID 없음 |
-| 409 | `BucketAlreadyExists` | 이미 존재하는 버킷 이름 |
-| 409 | `BucketNotEmpty` | 비어 있지 않은 버킷 삭제 시도 |
-| 412 | `PreconditionFailed` | `If-None-Match: *` 인데 객체가 이미 있음 |
+| 405 | `MethodNotAllowed` | 삭제 마커인 버전을 GET/HEAD |
 | 408 | — | `config.requestTimeoutSecs`(기본 120초) 초과. **이 시점에도 DB 쪽 쿼리는 계속 돕니다** |
-| 503 | `BackendUnavailable` | 스토리지 백엔드 접근 불가 — 운영팀 확인 필요 |
+| 409 | `BucketNotEmpty` | 비어 있지 않은 버킷 삭제 시도 |
+| 409 | `GcAlreadyRunning` | GC 가 이미 실행 중 |
+| 412 | `PreconditionFailed` | `If-None-Match: *` 인데 객체가 이미 있음 |
+| 413 | `EntityTooLarge` | `config.maxUploadSizeBytes` 초과 |
+| 500 | `InternalError` | 서버 내부 오류 (DB 오류 포함) |
+| 501 | `NotImplemented` | 지원하지 않는 파라미터 조합 (예: ListObjectVersions + delimiter) |
+| 503 | `ServiceUnavailable` | 스토리지 백엔드 접근 불가 — 운영팀 확인 필요 (내부 오류 타입명은 `BackendUnavailable`) |
 | 503 | `SlowDown` | 업로드 상한(건수 또는 바이트 예산) 초과. `Retry-After` 동반 |
 | 503 | `SlowDown` | DB 커넥션 풀 획득 타임아웃 (이미지 `0.1.18` 이상. 그 이하는 `500`) |
 
@@ -347,6 +357,38 @@ S3 표준에 없는 CAS 전용 헤더가 업로드 응답에 추가됩니다.
 `cas_upload_rejected_total`, 풀 고갈은 `cas_db_pool_acquire_timeouts_total` 이 오릅니다.
 `BackendUnavailable` 은 둘 다 오르지 않습니다.
 
+
+#### 인증 실패의 진단
+
+와이어에서 합쳐지는 사유도 **서버 로그에서는 갈라집니다.** 인증 실패는 `reason` 필드를
+달고 나가며, 그 값은 알림 규칙을 걸 수 있도록 고정돼 있습니다.
+
+```
+WARN cas_server::auth::middleware: authn fail path=/ reason="signature_mismatch" key_id="CASK..."
+```
+
+
+
+
+| `reason` | 뜻 | 운영자가 할 일 |
+|---|---|---|
+| `no_credentials` | 자격증명이 아예 없음 | 클라이언트 설정 확인 |
+| `malformed_header` | 헤더/쿼리 형식 오류 | 클라이언트 SDK 버전 확인 |
+| `unknown_key` | 그런 키가 없음 | 키 발급 여부 확인 |
+| `key_inactive` | 키가 비활성 | 키 재활성화 |
+| `key_expired` | 키 유효기간 만료 | 키 재발급 |
+| `secret_undecryptable` | 저장된 시크릿 복호화 실패 | **서버 문제** — `auth.secret_master_key` 가 바뀌었는지 확인 |
+| `clock_skew` | 요청 시각 차이 초과 | 클라이언트 시각 동기화 |
+| `presigned_expired` | presigned URL 만료 | URL 재발급 |
+| `signature_mismatch` | 서명 불일치 | 시크릿 값 확인 |
+| `other` | 인증 처리 자체가 실패 (예: 인증 조회 중 DB 오류) | **서버 문제** — 이 값이 보이면 응답도 `500` 입니다 |
+
+`key_id` 는 요청이 **주장한** 값이고 검증된 것이 아닙니다. 어느 자격증명이 실패했는지
+좁히는 용도입니다.
+
+**region 은 검사하지 않습니다.** 서명 키를 클라이언트가 선언한 region 으로 유도하므로
+어떤 region 으로 서명해도 통과합니다 — S3 호환 클라이언트의 기본 설정(boto3 는 지정하지
+않으면 `us-east-1`)을 그대로 쓸 수 있습니다. `service` 는 `s3` 여야 합니다.
 ---
 
 ## 7. 부록: 대용량 파일 업로드 (멀티파트)
