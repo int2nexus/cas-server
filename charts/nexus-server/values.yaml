@@ -223,8 +223,7 @@ terminationGracePeriodSeconds: 30
 # "이 프로세스의 마이그레이션 실행 동안 DB 전체에 걸린 델타"라서, sqlx의 advisory lock에
 # 걸려 뒤에 도는 파드가 자신은 아무것도 적용하지 않았는데도 0이 아닌 applied를 보고할
 # 수 있다 — 이 경우 그 파드의 elapsed_ms는 다른 파드의 마이그레이션이 끝나길 기다린
-# 시간이지 자신이 스키마를 바꾼 시간이 아니다. 이 시나리오를 실측한 적은 없고 코드
-# 상의 추론이다. 여유가 부족하면 failureThreshold를 올릴 것.
+# 시간이지 자신이 스키마를 바꾼 시간이 아니다. 여유가 부족하면 failureThreshold를 올릴 것.
 startupProbe:
   enabled: true
   httpGet:
