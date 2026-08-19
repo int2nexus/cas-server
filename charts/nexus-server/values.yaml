@@ -216,7 +216,15 @@ terminationGracePeriodSeconds: 30
 # 돈다). 그래서 프로브는 "200이 아닌 응답"이 아니라 connection refused를 받는다.
 # 스키마를 바꾸는 릴리스에서 마이그레이션이 이 예산을 넘기면 kill → 재기동 →
 # 마이그레이션 재시작이 반복된다. 실제 소요는 기동 로그의
-# `마이그레이션 완료 elapsed_ms=…` 줄로 확인하고, 여유가 부족하면 failureThreshold를 올릴 것.
+# `마이그레이션 완료 applied=<건수> elapsed_ms=<소요>` 줄로 확인한다 — 단, elapsed_ms가
+# 실제 스키마 작업 시간을 뜻하는 것은 applied가 0보다 큰 기동뿐이다(applied=0이면
+# 마이그레이션은 이미 최신 상태였고 elapsed_ms는 그냥 확인에 걸린 시간이다).
+# replicaCount: 1이면 이 판단이 그대로 맞는다. replicaCount > 1일 때는 applied가
+# "이 프로세스의 마이그레이션 실행 동안 DB 전체에 걸린 델타"라서, sqlx의 advisory lock에
+# 걸려 뒤에 도는 파드가 자신은 아무것도 적용하지 않았는데도 0이 아닌 applied를 보고할
+# 수 있다 — 이 경우 그 파드의 elapsed_ms는 다른 파드의 마이그레이션이 끝나길 기다린
+# 시간이지 자신이 스키마를 바꾼 시간이 아니다. 이 시나리오를 실측한 적은 없고 코드
+# 상의 추론이다. 여유가 부족하면 failureThreshold를 올릴 것.
 startupProbe:
   enabled: true
   httpGet:
@@ -271,8 +279,9 @@ securityContext: {}
 nodeSelector: {}
 tolerations: []
 affinity: {}
-# 파드가 쓸 ServiceAccount. **0.3.0부터 실제로 배선된다** — 그 전에는 이 블록이 있어도
-# 템플릿이 참조하지 않아 설정해도 조용히 무시됐다(고객 리포트 N11).
+# 파드가 쓸 ServiceAccount. **`serviceAccount.create`/`serviceAccount.name`은 0.3.0부터
+# 실제로 배선된다** — 그 전에는 이 블록이 있어도 템플릿이 참조하지 않아 설정해도 조용히
+# 무시됐다(고객 리포트 N11).
 #   create: true  → 차트가 만든다(이름은 name 또는 릴리스 fullname)
 #   create: false → 이미 있는 것을 쓴다(name이 비면 "default")
 # PodSecurity/NetworkPolicy를 ServiceAccount 기준으로 거는 배포에서는 이 값이 실제로
@@ -284,7 +293,7 @@ serviceAccount:
   # 파드 안에서 쿠버네티스 API를 부르지 않으므로 토큰을 마운트할 이유가 없다.
   # 마운트된 토큰은 컨테이너가 뚫렸을 때 그대로 API 접근 수단이 된다.
   #
-  # **0.3.1부터 이 값이 실제로 적용된다.** 그 전에는 templates/serviceaccount.yaml
+  # **`automountToken`은 0.3.1부터 이 값이 실제로 적용된다.** 그 전에는 templates/serviceaccount.yaml
   # 하나에만 렌더됐는데 그 파일은 create: true일 때만 만들어져, 기본값(create: false)
   # 설치에서는 이 키가 아무 효과가 없었다 — 파드는 네임스페이스의 default ServiceAccount를
   # 쓰고 그 토큰이 그대로 마운트됐다(문서와 반대). 이제 Deployment podSpec에도 직접

@@ -597,6 +597,21 @@ ds.patch_annotations(sample_id, {"det": [{"id": "a", "label": "truck"}]})   # �
   ds.patch_annotations(sample_id, annotation_data)         # seatbelt 등 나머지 그룹은 그대로 유지됨
   ```
 
+**annotation 왕복 전용 메서드**(서버 `0.1.4`+, SDK `0.1.5`+): 위 패턴처럼 `get_sample()` 응답에서 `sample_id`/`image_url`/`thumbnail_url` 같은 부가 필드를 직접 걸러내지 않아도, `get_annotation`/`save_annotation`이 이 버전의 annotation만 그대로 주고받는다.
+
+```python
+ann = ds.get_annotation(sample_id)                        # 이 버전의 annotation 전체 — {"meta": ..., "det": [...], ...}
+
+for inst in ann["det"]:
+    if inst["id"] == "a":
+        inst["label"] = "truck"
+
+ds.save_annotation(sample_id, ann)                        # 그대로 다시 저장
+```
+- `save_annotation`은 내부적으로 `patch_annotations`와 동일하게 동작한다 — **이 버전의 인스턴스를 병합이 아니라 통째로 교체**한다. 받은 것 중 일부 그룹만 빼고 보내면 그 그룹은 사라진다(§3.5 위 패턴대로 건드리지 않는 그룹도 함께 넣어 보낼 것).
+- `meta`는 버전이 아니라 샘플에 붙는다 — **모든 버전이 같은 `meta`를 공유**하므로, `get_annotation`으로 받아 그대로 `save_annotation`에 되돌리는 왕복만 해도 `meta`가 다시 쓰인다(다른 버전에서 이미 `meta`를 바꿔 뒀다면 그 값을 덮어쓰지 않도록 왕복 전에 확인할 것).
+- 구 서버(`0.1.4` 미만)나 구 SDK(`0.1.5` 미만)에는 이 메서드 자체가 없다 — 기존 `patch_annotations`/`get_sample` 조합은 그대로 쓸 수 있다.
+
 ### 3.6 seal - 버전 잠금
 검수가 끝난 draft 버전을 봉인해 불변 상태로 전환한다(draft → sealed, 단방향 - 되돌릴 수 없음). seal 시 annotation을 NDJSON 스냅샷으로 CAS에 박제하고 manifest hash를 기록한다.
 
@@ -690,7 +705,7 @@ ds.update(name="new-name", description="새 설명")
 - Dataset의 소유자(생성자) 계정만 이름/설명을 바꿀 수 있다.
 
 ### 4.3 데이터셋 삭제 정책
-Dataset 삭제는 버전 단위로 수행한다. `ds.delete()`로 버전을 삭제하고, 남은 버전이 하나도 없으면 Dataset도 자동으로 삭제된다. 이때 Dataset에 속한 잔여 Sample도 모두 정리되며 필요 시 CAS로 Asset 삭제 요청을 보내 CAS에서 Asset이 정리될 수 있도록 한다. 
+Dataset 삭제는 버전 단위로 수행한다. `ds.delete()`로 버전을 삭제하고, 남은 버전이 하나도 없으면 Dataset도 자동으로 삭제된다. 이때 Dataset에 속한 잔여 Sample도 모두 정리되며, `delete_cas=True`를 명시적으로 준 경우에만 CAS로 Asset 삭제 요청을 보내 CAS에서 Asset이 정리될 수 있도록 한다(기본값은 아래처럼 보존이다).
 Dataset의 소유자(생성자)만 삭제 가능하며, sealed 버전은 삭제할 수 없다.
 
 **`delete_cas`는 기본적으로 꺼져 있다.** 지정하지 않으면 카탈로그(메타데이터)만 지워지고 **CAS 원본은 그대로 남는다.** CAS 용량을 회수하려면 명시해야 한다.

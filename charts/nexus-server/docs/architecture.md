@@ -193,7 +193,7 @@ Seal된 Version은 변경되지 않는다.
 ### 4.6 삭제와 저장소 정리
 Draft Version 은 언제든 삭제할 수 있다.  
 마지막 Draft Version 이 삭제되고, 해당 Dataset에 남은 Version 이 없다면 Dataset 도 함께 삭제된다.  
-이때 더 이상 어디에서도 참조되지 않는 원본 파일은 CAS에 삭제 요청을 보내 CAS  내부 GC 로직에 의해 정리될 수 있도록 한다.
+이때 삭제 요청에 `delete_cas=true`를 명시적으로 지정한 경우에만, 더 이상 어디에서도 참조되지 않는 원본 파일에 대해 CAS에 삭제 요청을 보내 CAS 내부 GC 로직에 의해 정리될 수 있도록 한다. `delete_cas`는 기본값이 `false`(보존)이므로, 별도로 지정하지 않으면 CAS 객체는 그대로 남는다.
 
 ## 5. Annotation Versioning
 ### 5.1 개요
