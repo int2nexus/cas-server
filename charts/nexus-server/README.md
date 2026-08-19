@@ -104,7 +104,7 @@ kubectl port-forward svc/nexus-server 8090:80 -n <namespace>
 curl localhost:8090/_internal/health      # {"status":"ok","db":true}
 ```
 
-이 두 경로만 인증이 면제된다(프로브가 자격증명 없이 호출해야 하므로). 나머지 API는 조회를 포함해 전부 토큰이 필요하다.
+이 두 경로는 프로브가 자격증명 없이 호출해야 하므로 인증이 면제된다. 그 밖의 면제 경로는 `POST /api/v1/auth/register`·`POST /api/v1/auth/login`과 API 문서 경로(`/api-docs/openapi.json`, `/swagger-ui`, `/swagger-ui/`)뿐이며, 문서 경로는 `auth.docsEnabled: false`로 끄면 404가 된다. **데이터 API는 조회를 포함해 전부 토큰이 필요하다.**
 
 ### `server.port`를 바꿀 때
 
