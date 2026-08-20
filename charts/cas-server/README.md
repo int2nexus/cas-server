@@ -133,6 +133,10 @@ storage:
 | `serviceAccount.annotations` | `{}` | `create: true` 일 때 SA 에 붙일 애노테이션. IRSA · Workload Identity 설정 자리 |
 | `resources.limits.memory` | `6Gi` | 2026-08-05 OOM 대응으로 올린 값. **당분간 유지할 것** — 하향 전제는 [values.yaml](values.yaml)의 `resources` 주석 참고 |
 | `gc.enabled` | `true` | GC CronJob 활성화. 초기 마이그레이션 중에는 `false` 권장. **이미지 `0.1.17` 이하에서는 끄면 메모리 회수 경로도 사라진다** (아래 참고) |
+| `gc.phases` | `""` | 이 CronJob 이 돌릴 GC 단계. 쉼표 구분 `multipart`·`orphan`·`purge`, 비우면 전부. `orphan` 만 데이터 크기를 따라간다 (아래 참고) |
+| `gc.fullSweep.enabled` | `false` | 전 단계를 도는 두 번째 CronJob. `gc.phases` 에서 `orphan` 을 뺐다면 **반드시 켤 것** |
+| `config.multipartTtlSecs` | `86400` | GC 가 미완료 멀티파트를 만료로 보는 기준(초). **운영에서 줄이지 말 것** — 진행 중인 업로드가 `5xx` 로 실패한다 |
+| `config.consoleEnabled` | `true` | `/_ui` 와 콘솔용 `/_api/*` 마운트 여부. `false` 여도 `/_api/gc/*` 는 남으므로 GC CronJob 은 그대로 동작한다 |
 | `replicaCount` | `1` | **1을 유지할 것.** 늘리면 GC와 PUT 사이 durability 보호가 깨진다 (아래 참고) |
 | `updateStrategy.type` | `Recreate` | 롤아웃 중 구·신 파드가 겹치지 않게 한다. 기본값 `RollingUpdate`는 `replicas=1`에서도 `maxSurge=1`이라 겹침 창이 생기고, 그 창에서 위 durability 보호가 깨진다. 대가는 롤아웃 중 짧은 중단 |
 | `startupProbe.failureThreshold` | `60` | 기동 허용 시간 = `periodSeconds`(10초) × 이 값 = 600초 |
@@ -331,6 +335,41 @@ Secret 전체를 마운트하면 파일 이름이 키 이름이 되므로 경로
 **어노테이션 디스커버리로는 붙일 수 없습니다** — `Authorization` 헤더를 넣을 수단이 없어
 401 이 됩니다. 차트는 `prometheus.io/*` 애노테이션을 붙이지 않으므로, 과거에 손으로 붙여
 두었다면 제거하십시오. 남아 있으면 위 job 과 별개로 계속 401 을 냅니다.
+
+## GC가 오래 걸린다면 단계를 나누십시오
+
+GC는 세 단계로 나뉘고 비용이 크게 다릅니다. `orphan` 만 `blobs` 전체를 훑기 때문에 데이터가
+늘어나는 만큼 실행 시간이 함께 늘어납니다. 나머지 둘은 인덱스로 처리되어 규모의 영향을
+받지 않습니다.
+
+blobs 200만 / object_versions 358만 환경에서 완료 로그의 `ms_*` 로 받은 값입니다.
+
+| 단계 | `ms_*` |
+|---|---|
+| `multipart` | 2~5 |
+| `orphan` | **13,729** |
+| `purge` | 213~319 |
+
+`gc.phases` 로 주간 CronJob 에서 `orphan` 을 빼고, `gc.fullSweep` 으로 월간에 돌리면
+주간 소요가 크게 줄어듭니다. 위 환경에서 `multipart,purge` 편성은 324 ms 로 끝났습니다.
+
+```yaml
+gc:
+  schedule: "0 2 * * 0"
+  phases: "multipart,purge"
+  fullSweep:
+    enabled: true
+    schedule: "0 3 1 * *"
+```
+
+**`orphan` 을 빼면서 `fullSweep` 을 켜지 않으면 회수가 아예 돌지 않습니다.** 그 조합을 막지는
+않지만 CronJob 이 매 실행 경고를 남깁니다.
+
+주기는 데이터 크기가 아니라 **회수 대상이 쌓이는 속도**로 정하십시오. 스캔 비용은 회수할
+blob 이 0건이든 수천 건이든 같습니다. 판단 기준과 미루는 비용 계산은
+[docs/usage.md](docs/usage.md) 의 "주기를 정하는 기준" 을 참고하십시오.
+
+이미지 `0.1.20` 이상이 필요합니다. 그 이하는 `phases` 를 무시하고 전 단계를 돕니다.
 
 ## 대량 적재 중에는 GC를 끄십시오 (모든 이미지 버전)
 
