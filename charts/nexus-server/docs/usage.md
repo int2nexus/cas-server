@@ -740,18 +740,26 @@ ds.delete(confirm="v0", delete_cas=True)  # CAS로 삭제 요청까지 보냄
 
 Dataset의 소유자는 그것을 만든 계정이다. 적재·annotation 수정·seal·이름 변경·삭제가 전부 소유자 전용이므로, 담당자가 바뀌거나 계정을 정리할 때는 소유권을 넘겨야 한다. **서버 0.1.6부터 소유자 본인이 넘길 수 있다** — 그 전에는 superuser만 할 수 있었고, superuser를 설정하지 않은 배포에서는 방법이 없었다.
 
-SDK 메서드는 아직 없으므로 엔드포인트를 직접 호출한다.
+SDK `0.1.6`부터 메서드가 있다.
 
 ```python
-import requests
+ds = nx.Dataset.load_or_create("my-dataset", "v0")
 
-h = {"Authorization": f"Bearer {token}"}      # 현재 소유자 계정으로 로그인한 토큰
-r = requests.put(f"{base}/api/v1/datasets/{ds.dataset_id}/owner",
-                 json={"email": "새주인@int2.us"}, headers=h)
-print(r.status_code)                           # 403이면 내가 소유자가 아니다
+updated = ds.transfer_owner("새주인@int2.us")
+print(updated["owner_user_id"])                # 새 소유자의 user_id
+```
+
+저수준은 `client.transfer_dataset_owner(dataset_id, email)`이고, SDK 없이 부를 때는 이렇다.
+
+```bash
+curl -X PUT "$BASE/api/v1/datasets/$DATASET_ID/owner" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"email":"새주인@int2.us"}'
 ```
 
 - **현재 소유자만 넘길 수 있다**(아니면 403). 받는 사람은 이미 가입된 계정이어야 한다(아니면 404).
+- **자기 자신에게 넘기면 400이다.** 아무 일도 일어나지 않은 것을 200으로 돌려주면 넘긴 것으로 읽히기 때문이다.
+- **소유권은 dataset 단위다** — 어느 버전에서 부르든 그 dataset의 모든 버전이 함께 넘어간다.
 - **이전은 즉시 적용된다.** 소유자 검사는 요청마다 DB를 보므로 이전 소유자는 그 다음 요청부터 403이다. 되돌리려면 새 소유자가 다시 넘겨야 한다.
 - **주인이 없는 dataset은 이 경로로 가져올 수 없다.** 소유자가 없다는 것은 인증된 누구나 쓸 수 있다는 뜻이라, 열어 두면 먼저 부르는 사람이 주인이 된다. 그런 dataset의 인수는 superuser의 `PUT /api/v1/admin/datasets/{dataset_id}/owner`로 한다([2.1 superuser](#superuser-차트-030-선택)).
 - **계정을 지우기 전에 소유한 dataset을 정리해야 한다.** 서버 0.1.6부터 소유한 dataset이 남아 있으면 계정 삭제가 409로 거부된다 — 이 이관이 그 거부를 푸는 정규 수단이다(넘길 곳이 없으면 dataset을 먼저 삭제해도 된다).

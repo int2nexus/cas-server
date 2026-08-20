@@ -81,7 +81,7 @@ curl -X PUT "$NEXUS/api/v1/datasets/$DATASET_ID/owner" \
 
 **설정 키** — 없음.
 
-**호환성** — appVersion **`0.1.6`** 필요. 구 이미지에서는 소유자 이관 경로가 404이고 계정 삭제는 예전처럼 성공합니다. 차트만 올리고 이미지를 `--set image.tag`로 낮춰 쓰면 이 릴리스가 문서화하는 두 동작이 모두 없는 상태가 됩니다. Python SDK에는 이관 전용 메서드가 아직 없으므로 위 `curl` 예시처럼 엔드포인트를 직접 호출하십시오 — `client.delete_account()`는 소유 dataset이 남아 있으면 `NexusError(status_code=409)`를 던집니다.
+**호환성** — appVersion **`0.1.6`** 필요. 구 이미지에서는 소유자 이관 경로가 404이고 계정 삭제는 예전처럼 성공합니다. 차트만 올리고 이미지를 `--set image.tag`로 낮춰 쓰면 이 릴리스가 문서화하는 두 동작이 모두 없는 상태가 됩니다. Python SDK는 `0.1.6`부터 `ds.transfer_owner(email)`(저수준 `client.transfer_dataset_owner(dataset_id, email)`)로 이관을 지원합니다 — 그 이전 SDK에서는 위 `curl` 예시처럼 엔드포인트를 직접 호출하십시오. **SDK는 이 차트와 별도로 발행되므로 인덱스에 올라왔는지 먼저 확인하세요.** `client.delete_account()`는 소유 dataset이 남아 있으면 `NexusError(status_code=409)`를 던집니다.
 
 **주의** — **마이그레이션 예상 소요를 "행 수에 선형"으로 환산하지 마십시오. `0.3.1`의 안내를 여기서 정정합니다.** 그 릴리스는 `0.1.5` 백필 소요를 "샘플 수에 선형, 실측 약 43,800건에서 약 11초"로 적었는데, **계수를 다른 환경에 곱해 쓸 수 있게 적은 것이 잘못이었습니다.** 도입처 실측이 그것을 보여 줍니다.
 
