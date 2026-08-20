@@ -4,9 +4,9 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
 
 ## 문서
 
-- [아키텍처](https://github.com/int2nexus/cas-server/blob/main/charts/nexus-server/docs/architecture.md)
+- [아키텍처](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.3/charts/nexus-server/docs/architecture.md)
   — 도메인 모델, Version 생명주기, Annotation CoW, 스냅샷·Manifest 구조
-- [사용법](https://github.com/int2nexus/cas-server/blob/main/charts/nexus-server/docs/usage.md)
+- [사용법](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.3/charts/nexus-server/docs/usage.md)
   — 설치, Python SDK 연결, Dataset 적재·검색·seal 워크플로우, API 레퍼런스
 - [변경 이력](CHANGELOG.md)
   — 버전별 동작 변경·마이그레이션·설정 키. 각 항목은 해당 GitHub Release 본문과 동일하다
@@ -23,7 +23,7 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
 
 DB 마이그레이션은 바이너리에 임베드되어 **기동 시 자동 적용**된다(별도 Job 불필요). 마이그레이션이 끝나야 포트가 열리므로 그 시간은 곧 startupProbe 예산(기본 `periodSeconds 10 × failureThreshold 60` = 600초)에서 나간다 — 스키마가 바뀌는 릴리스로 올릴 때는 [CHANGELOG](CHANGELOG.md)의 해당 버전 **마이그레이션** 항목에서 예상 소요를 먼저 확인할 것. **거기 적힌 실측값은 우리 환경의 것이라 행 수로 환산해 그대로 쓸 수 없다** — 소요가 행 수에 선형인 것은 같은 하드웨어 안에서일 뿐이고 계수는 DB마다 다르다. 예산은 넉넉한 쪽으로 잡는다(모자라면 기동 실패가 반복되고, 남으면 아무 일도 일어나지 않는다). 서버는 stateless(파일=CAS, 메타=Postgres)라 PVC가 없다.
 
-> **업그레이드 전에 [CHANGELOG](CHANGELOG.md)를 읽을 것.** 이번 릴리스(차트 0.3.2 / appVersion 0.1.6)는 **소유한 dataset이 남아 있는 계정의 삭제를 409로 거부한다** — 예전에는 삭제가 성공하면서 그 dataset들이 주인 없는(= 인증된 누구나 지울 수 있는) 상태가 됐다. 계정을 지우려면 **소유자 본인이 `PUT /api/v1/datasets/{dataset_id}/owner`로 먼저 넘긴다**(이 경로도 이번에 추가됐다. superuser가 없어도 된다). 바로 앞 0.3.1은 동작이 뒤집히는 변경 둘을 포함하므로 그 버전을 건너뛰고 올라온다면 함께 읽을 것 — 삭제 요청의 **`delete_cas` 기본값이 "삭제"에서 "보존"으로 바뀌고**(예전처럼 지우려면 `delete_cas=true`를 명시해야 한다), **기본 설치에서 ServiceAccount 토큰이 더 이상 마운트되지 않는다**(롤링 재시작 한 번). 그리고 appVersion 0.1.1부터는 조회를 포함한 **모든 API가 인증을 요구**하고 dataset을 바꾸는 요청은 **소유자만** 통과한다(0.2.0 항목 참조).
+> **업그레이드 전에 [CHANGELOG](CHANGELOG.md)를 읽을 것.** 차트 0.3.2 / appVersion 0.1.6부터는 **소유한 dataset이 남아 있는 계정의 삭제를 409로 거부한다** — 예전에는 삭제가 성공하면서 그 dataset들이 주인 없는(= 인증된 누구나 지울 수 있는) 상태가 됐다. 계정을 지우려면 **소유자 본인이 `PUT /api/v1/datasets/{dataset_id}/owner`로 먼저 넘긴다**(이 경로도 이번에 추가됐다. superuser가 없어도 된다). 바로 앞 0.3.1은 동작이 뒤집히는 변경 둘을 포함하므로 그 버전을 건너뛰고 올라온다면 함께 읽을 것 — 삭제 요청의 **`delete_cas` 기본값이 "삭제"에서 "보존"으로 바뀌고**(예전처럼 지우려면 `delete_cas=true`를 명시해야 한다), **기본 설치에서 ServiceAccount 토큰이 더 이상 마운트되지 않는다**(롤링 재시작 한 번). 그리고 appVersion 0.1.1부터는 조회를 포함한 **모든 API가 인증을 요구**하고 dataset을 바꾸는 요청은 **소유자만** 통과한다(0.2.0 항목 참조).
 
 ## 설치
 
@@ -64,7 +64,7 @@ helm install nexus-server int2nexus/nexus-server -n <namespace> \
 
 | 키 | 기본값 | 설명 |
 |---|---|---|
-| `server.port` | `8090` | 컨테이너 포트. **바꿀 때 프로브·`service.targetPort`도 함께 바꿀 것**(아래 참조) |
+| `server.port` | `8090` | 컨테이너 포트. **이 값 하나만 바꾼다** — 프로브와 `service.targetPort`는 숫자가 아니라 컨테이너 포트 이름 `http`를 가리키므로 따라온다. 숫자를 함께 박으면 오히려 어긋난다(아래 참조) |
 | `cas.baseUrl` | `http://cas-server:80` | CAS(cas-server) 주소 |
 | `cas.region` / `cas.defaultBucket` | `cas-default` / `data` | CAS region·기본 버킷. **버킷 이름은 S3 규칙**(소문자·숫자·`-`·`.`, 3~63자)을 따라야 한다 |
 | `database.maxConnections` | `16` | 커넥션 풀 상한. `ingest.batchItemConcurrency`와의 불변식은 [`values.yaml`](values.yaml) 주석 참조 |

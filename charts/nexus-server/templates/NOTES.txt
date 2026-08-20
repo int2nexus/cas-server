@@ -15,5 +15,5 @@ nexus-server 가 배포되었습니다.
   curl localhost:8090/_internal/health
 
 문서:
-  아키텍처: https://github.com/int2nexus/cas-server/blob/main/charts/nexus-server/docs/architecture.md
-  사용법:   https://github.com/int2nexus/cas-server/blob/main/charts/nexus-server/docs/usage.md
+  아키텍처: https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.3/charts/nexus-server/docs/architecture.md
+  사용법:   https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.3/charts/nexus-server/docs/usage.md
