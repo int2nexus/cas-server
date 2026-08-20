@@ -37,6 +37,15 @@ jobs:
           pip install --quiet pyyaml
           python scripts/check-unrendered-values.py
 
+      # docs/ 는 Helm 릴리즈 Secret 1MB 한도 때문에 .helmignore 로 패키지에서 빠진다.
+      # 그래서 패키지 안 README·values·NOTES 가 문서를 밖으로 링크하는데, 그 링크를
+      # 릴리스 태그로 고정하면(nexus-server 0.3.3~) 릴리스마다 손으로 버전을 올려야 한다.
+      # 안 올리면 손에 든 차트와 다른 시점의 문서가 열리고, 조용히 그렇게 된다.
+      #
+      # main 을 가리키는 링크는 오류로 보지 않는다 — 고정하지 않기로 한 차트가 있다.
+      - name: Check doc links match Chart.yaml version
+        run: python scripts/check-doc-links.py
+
       # cr 은 release-notes-file 을 패키징된 tgz 안에서 찾으므로 패키징 전에 만들어야 한다.
       - name: Extract release notes from CHANGELOG
         run: bash scripts/extract-release-notes.sh
