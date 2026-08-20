@@ -540,11 +540,14 @@ gc:
   # 이 CronJob 이 돌릴 GC 단계. 쉼표로 구분: multipart, orphan, purge.
   # 빈 값이면 세 단계 모두 — 이 키가 없던 때와 같은 동작이다.
   #
-  # 세 단계의 비용이 3~4자릿수 다르다. 실측(blobs 200만 / object_versions 358만):
+  # 세 단계의 비용이 크게 다르다. blobs 200만 / object_versions 358만 환경에서 GC 를
+  # 실제로 돌려 완료 로그의 ms_* 로 받은 값이다.
   #
-  #   multipart  무시할 수준   만료된 미완료 멀티파트의 파트 회수
-  #   orphan     4,605 ms      참조가 사라진 blob 물리 삭제
-  #   purge      0.26 ms       보존 기간 지난 soft-delete 레코드 삭제
+  #   multipart  2~5 ms        만료된 미완료 멀티파트의 파트 회수
+  #   orphan     13,729 ms     참조가 사라진 blob 물리 삭제
+  #   purge      213~319 ms    보존 기간 지난 soft-delete 레코드 삭제
+  #
+  # multipart,purge 편성은 324 ms, 전 단계는 13.9 초였다 — 43배다.
   #
   # orphan 만 blobs 전량을 훑으므로 데이터가 늘어나는 만큼 실행 시간이 함께 늘어난다.
   # 나머지 둘은 인덱스로 처리되어 규모의 영향을 받지 않는다.
