@@ -181,7 +181,9 @@ result = client.delete_account("새비번123")          # 완전 삭제 — 되�
 - **비밀번호 변경은 새 로그인부터 적용된다.** 이미 발급된 토큰은 만료까지(기본 24시간, 배포마다 `jwt.ttlHours`로 다를 수 있다 — 아래 참조) 그대로 유효하다. 이 클라이언트 인스턴스는 계속 써도 된다.
 - 설정 파일(`~/.int2nexus/settings.json`)에 비밀번호를 적어두었다면 **그 파일도 함께 고쳐야 한다** — 안 그러면 다음 `nx.connect()`가 실패한다.
 - **`delete_account`는 비활성화가 아니라 삭제다.** 이메일이 풀려 같은 주소로 다시 가입할 수 있다.
-- 삭제 응답의 **`released_datasets`가 0이 아니면**, 그 dataset들은 주인이 없어져 **인증된 누구나 수정·삭제할 수 있게 된다.** 팀이 쓰던 데이터라면 삭제 전에 소유자를 옮기는 편이 낫다 — 차트 0.3.0부터 superuser가 `PUT /api/v1/admin/datasets/{dataset_id}/owner`로 지정할 수 있다(아래 참조).
+- **소유한 dataset이 하나라도 남아 있으면 삭제가 거부된다**(서버 0.1.6+, `NexusError(status_code=409)`). 먼저 [4.4](#44-dataset-소유권-이전-서버-016)의 이관으로 넘기거나 그 dataset을 삭제한 뒤 다시 부른다. 이전 서버에서는 삭제가 그대로 성공했고, 그 dataset들은 **주인이 없어져 인증된 누구나 수정·삭제할 수 있는** 상태로 남았다.
+- 삭제 응답의 **`released_datasets`는 그대로 있지만 이제 항상 `0`이다**(소유가 남아 있으면 삭제 자체가 거부되므로). 값을 읽는 코드는 고치지 않아도 되고, "0이 아닌지"로 판정하던 코드는 이제 409를 잡아야 한다.
+- 비밀번호가 틀리면 소유 여부와 무관하게 403이다 — 소유 검사는 비밀번호 확인을 통과한 뒤에 한다.
 - 비밀번호를 잊어 로그인할 수 없는 계정은 본인이 처리할 수 없다 — 차트 0.3.0부터 superuser가 `POST /api/v1/admin/users/password-reset`으로 임시 비밀번호를 발급한다(아래 참조). superuser를 설정하지 않은 배포에서는 여전히 운영자가 DB에서 처리해야 한다.
 
 #### superuser (차트 0.3.0+, 선택)
@@ -205,7 +207,7 @@ requests.put(f"{base}/api/v1/admin/datasets/{dataset_id}/owner",
 - **임시 비밀번호는 응답에 한 번만 실려 온다.** 서버 어디에도 저장되지 않으니 그 자리에서 전달하고, 받은 사람은 곧바로 `client.change_password(...)`로 바꾼다.
 - **재설정해도 그 사람의 기존 토큰은 만료까지(기본 24시간, 배포마다 `jwt.ttlHours`로 다를 수 있다 — 아래 참조) 유효하다.** "잊어버림"을 푸는 도구지 "탈취 즉시 차단"이 아니다.
 - **소유권 이전은 즉시 적용된다.** 소유자 검사는 요청마다 DB를 보므로 이전 소유자는 그 다음 요청부터 403이다.
-- 주인 없는 dataset은 `GET /datasets`의 `owner_user_id`가 null인 것들이다. 방치해도 잠기지는 않지만 **인증된 누구나 쓸 수 있는** 상태로 남는다.
+- 주인 없는 dataset은 `GET /datasets`의 `owner_user_id`가 null인 것들이다. 방치해도 잠기지는 않지만 **인증된 누구나 쓸 수 있는** 상태로 남는다. **그것을 인수하는 데만 superuser가 필요하다** — 소유자가 있는 dataset을 넘기는 것은 서버 0.1.6부터 소유자 본인이 한다([4.4](#44-dataset-소유권-이전-서버-016)).
 - **superuser 비밀번호를 바꾼 뒤에도 시크릿을 갱신할 필요가 없다.** `NEXUS__AUTH__SUPERUSER_PASSWORD`는 **그 계정이 없을 때 새로 만드는 용도로만** 읽힌다 — 계정이 이미 있으면 기동 시 값을 읽지도, 비교하지도 않는다. 그래서 시크릿의 값과 실제 로그인 비밀번호가 달라도 파드는 정상 기동하고, 반대로 시크릿을 바꿔 재배포해도 비밀번호는 바뀌지 않는다. 이 값을 "현재 비밀번호"가 아니라 **"계정 생성용 씨앗"**으로 보시는 편이 정확하다. 실제로 다시 쓰이는 경우는 하나뿐이다 — `auth.superuserEmail`을 **아직 가입되지 않은** 주소로 바꿔 재배포하면, 그때 이 값으로 새 계정이 만들어진다(이미 누가 쓰는 주소를 넣으면 그 계정을 채택하므로 그 사람이 superuser가 된다).
 - **다만 시크릿 값을 비우지는 마십시오.** 이메일만 있고 비밀번호가 없으면(공백만 있는 경우 포함) **서버가 기동에 실패한다.** 쓰이지 않는 값이라도 8자 이상으로 남겨 두어야 하며, 기능을 끄실 때는 `auth.superuserEmail`과 이 시크릿 키를 **함께** 비우십시오.
 
@@ -734,6 +736,28 @@ ds.delete(confirm="v0", delete_cas=False) # 묻지 않고 카탈로그만 삭제
 ds.delete(confirm="v0", delete_cas=True)  # CAS로 삭제 요청까지 보냄
 ```
 
+### 4.4 Dataset 소유권 이전 (서버 0.1.6+)
+
+Dataset의 소유자는 그것을 만든 계정이다. 적재·annotation 수정·seal·이름 변경·삭제가 전부 소유자 전용이므로, 담당자가 바뀌거나 계정을 정리할 때는 소유권을 넘겨야 한다. **서버 0.1.6부터 소유자 본인이 넘길 수 있다** — 그 전에는 superuser만 할 수 있었고, superuser를 설정하지 않은 배포에서는 방법이 없었다.
+
+SDK 메서드는 아직 없으므로 엔드포인트를 직접 호출한다.
+
+```python
+import requests
+
+h = {"Authorization": f"Bearer {token}"}      # 현재 소유자 계정으로 로그인한 토큰
+r = requests.put(f"{base}/api/v1/datasets/{ds.dataset_id}/owner",
+                 json={"email": "새주인@int2.us"}, headers=h)
+print(r.status_code)                           # 403이면 내가 소유자가 아니다
+```
+
+- **현재 소유자만 넘길 수 있다**(아니면 403). 받는 사람은 이미 가입된 계정이어야 한다(아니면 404).
+- **이전은 즉시 적용된다.** 소유자 검사는 요청마다 DB를 보므로 이전 소유자는 그 다음 요청부터 403이다. 되돌리려면 새 소유자가 다시 넘겨야 한다.
+- **주인이 없는 dataset은 이 경로로 가져올 수 없다.** 소유자가 없다는 것은 인증된 누구나 쓸 수 있다는 뜻이라, 열어 두면 먼저 부르는 사람이 주인이 된다. 그런 dataset의 인수는 superuser의 `PUT /api/v1/admin/datasets/{dataset_id}/owner`로 한다([2.1 superuser](#superuser-차트-030-선택)).
+- **계정을 지우기 전에 소유한 dataset을 정리해야 한다.** 서버 0.1.6부터 소유한 dataset이 남아 있으면 계정 삭제가 409로 거부된다 — 이 이관이 그 거부를 푸는 정규 수단이다(넘길 곳이 없으면 dataset을 먼저 삭제해도 된다).
+
+내가 소유한 dataset은 목록의 `owner_user_id`로 확인한다. `null`인 것은 주인이 없는 dataset이고, 방치해도 잠기지는 않지만 **인증된 누구나 수정·삭제할 수 있는** 상태로 남는다.
+
 ## 5. 데이터셋 버전 관리
 ### 5.1 Draft 버전
 처음 버전 생성 시 Draft 상태이며 자유롭게 수정 가능한 작업 중 상태이다. 
@@ -990,9 +1014,9 @@ except NexusError as e:
 | `401` | 토큰이 없거나 만료됐다 | **SDK 0.1.2+는 자동으로 다시 로그인하고 재시도한다** — 보통 이 예외를 볼 일이 없다. 그래도 401이 올라오면 자격증명 자체가 안 맞는 것이다(비밀번호가 바뀌었거나 서버 JWT 시크릿이 교체됨) |
 | `403` | 로그인은 됐지만 **그 dataset의 소유자가 아니다** | 소유자에게 요청하거나, `clone()`으로 내 dataset을 만들어 작업한다 |
 
-**조회를 포함한 모든 요청에 토큰이 필요하다.** 그리고 dataset을 바꾸는 작업 — 적재(`flush`), annotation 수정, 샘플 추가·삭제, seal, 이름 변경, 삭제 — 은 **소유자만** 할 수 있다. 소유자는 dataset을 만든 계정으로 고정된다 — 본인이 옮길 수는 없고, 차트 0.3.0+에서 superuser가 `PUT /api/v1/admin/datasets/{dataset_id}/owner`로 지정한다. 조회는 소유자가 아니어도 된다.
+**조회를 포함한 모든 요청에 토큰이 필요하다.** 그리고 dataset을 바꾸는 작업 — 적재(`flush`), annotation 수정, 샘플 추가·삭제, seal, 이름 변경, 삭제 — 은 **소유자만** 할 수 있다. 소유자는 dataset을 만든 계정이고, **서버 0.1.6부터 소유자 본인이 다른 계정으로 넘길 수 있다**(`PUT /api/v1/datasets/{dataset_id}/owner`, [4.4](#44-dataset-소유권-이전-서버-016)). 조회는 소유자가 아니어도 된다.
 
-예외가 하나 있다. **소유자가 지정되지 않은 dataset은 누구나 바꿀 수 있다.** 소유권 도입 이전에 만들어졌거나 소유자 계정이 삭제된 경우이며, 이때는 403이 나지 않는다. 남의 dataset인 줄 알았는데 쓰기가 되면 이 경우다. 주인을 붙이려면 superuser가 위 엔드포인트로 지정한다(같은 연산이다).
+예외가 하나 있다. **소유자가 지정되지 않은 dataset은 누구나 바꿀 수 있다.** 소유권 도입 이전에 만들어졌거나, 서버 0.1.6 이전에 소유자 계정이 삭제된 경우다. 이때는 403이 나지 않는다 — 남의 dataset인 줄 알았는데 쓰기가 되면 이 경우다. 주인을 붙이는 것은 superuser의 `PUT /api/v1/admin/datasets/{dataset_id}/owner`로만 할 수 있다(위 소유자 이관 경로는 주인이 없는 dataset을 받아 주지 않는다 — 그랬다면 먼저 부르는 사람이 주인이 된다). **서버 0.1.6부터는 이 상태가 새로 생기지 않는다**: 소유한 dataset이 남아 있는 계정은 삭제가 409로 거부된다.
 
 `flush`는 권한 때문에 거부된 건이 있으면 조용히 넘기지 않고 예외를 던진다. 남의 dataset에 적재를 시도하다 일부만 들어가는 상황을 막기 위해서다.
 
@@ -1050,6 +1074,6 @@ except NexusError as e:
 |---|---|
 |`client.add_tags_bulk(sample_ids, tags)` / `.remove_tags_bulk(...)`|태그 일괄 처리|
 |`client.change_password(current, new)`|본인 비밀번호 변경(현재 비밀번호 재확인)|
-|`client.delete_account(password)` → dict|본인 계정 **완전 삭제** — 되돌릴 수 없다|
+|`client.delete_account(password)` → dict|본인 계정 **완전 삭제** — 되돌릴 수 없다. 소유한 dataset이 남아 있으면 409(서버 0.1.6+, [4.4](#44-dataset-소유권-이전-서버-016))|
 |`NexusError`, `NexusAuthError`, `NexusCasError`, `NexusIngestError`, `NexusBatchError`|	예외 타입(`.status_code`, `.server_message`)|
 |`IngestResult(ok, sample, sample_id, error, status_code)`|	배치 처리 건별 결과|
