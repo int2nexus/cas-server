@@ -49,6 +49,15 @@ data:
     stats_work_mem_mb            = {{ . | int64 }}
     {{- end }}
 
+    # 미완료 멀티파트 만료 기준. cas-server 이미지 0.1.20 이상에서만 동작한다.
+    # with 를 쓰지 않는다 — 0 도 유효한 시험 값이고, with 는 0 을 건너뛰어 서버
+    # 기본값 86400 이 적용되므로 의도와 반대가 된다.
+    multipart_ttl_secs           = {{ .Values.config.multipartTtlSecs | int64 }}
+
+    # 웹 콘솔(/_ui, /_api/*). cas-server 이미지 0.1.20 이상에서만 동작한다.
+    # 그 이하 이미지는 이 키를 무시하고 항상 마운트한다.
+    console_enabled              = {{ .Values.config.consoleEnabled }}
+
     {{- if eq .Values.storage.mode "nfs" }}
     {{- range .Values.storage.nfs.backends }}
 
