@@ -6,11 +6,11 @@
 #
 # ── 문서 ─────────────────────────────────────────────────────────────────────
 #   아키텍처 (스토리지 모델·백엔드·API 명세)
-#     https://github.com/int2nexus/cas-server/blob/main/charts/cas-server/docs/architecture.md
+#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.27/charts/cas-server/docs/architecture.md
 #   사용법 (배포·키 관리·AWS CLI/boto3 예제)
-#     https://github.com/int2nexus/cas-server/blob/main/charts/cas-server/docs/usage.md
+#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.27/charts/cas-server/docs/usage.md
 #   차트 README
-#     https://github.com/int2nexus/cas-server/blob/main/charts/cas-server/README.md
+#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.27/charts/cas-server/README.md
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── 이미지 ────────────────────────────────────────────────────────────────────
