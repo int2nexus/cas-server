@@ -1,15 +1,36 @@
 {{- include "cas-server.validateStorage" . }}
 {{- if .Values.gc.enabled }}
+{{- /*
+  GC CronJob 은 하나 또는 둘이다.
+
+  단계별 비용이 3~4자릿수 다르다(usage.md "단계를 나눠 실행하기" 참고). orphan 스캔만
+  blobs 전량을 훑어 규모를 따라가고, 나머지 둘은 인덱스가 덮는다. fullSweep 을 켜면
+  주 CronJob 에서 비싼 단계를 빼고 별도 주기로 돌릴 수 있다.
+
+  fullSweep 이 꺼져 있고 gc.phases 가 비어 있으면 CronJob 하나가 전 단계를 돈다 —
+  이 값들이 없던 때와 같은 동작이다.
+*/}}
+{{- $jobs := list (dict "suffix" "" "schedule" .Values.gc.schedule "phases" .Values.gc.phases "deadline" .Values.gc.activeDeadlineSeconds) }}
+{{- if .Values.gc.fullSweep.enabled }}
+{{- $jobs = append $jobs (dict "suffix" "-full" "schedule" .Values.gc.fullSweep.schedule "phases" "" "deadline" (default .Values.gc.activeDeadlineSeconds .Values.gc.fullSweep.activeDeadlineSeconds)) }}
+{{- end }}
+{{- range $job := $jobs }}
+---
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: {{ include "cas-server.fullname" . }}-gc
+  name: {{ include "cas-server.fullname" $ }}-gc{{ $job.suffix }}
   labels:
-    {{- include "cas-server.labels" . | nindent 4 }}
+    {{- include "cas-server.labels" $ | nindent 4 }}
 spec:
-  schedule: {{ .Values.gc.schedule | quote }}
+  schedule: {{ $job.schedule | quote }}
   # 이전 GC Job이 아직 실행 중이면 새 Job을 시작하지 않음.
   # GC가 겹쳐서 실행되는 것을 방지하는 핵심 설정.
+  #
+  # 주의: 이것은 **같은 CronJob 안에서만** 겹침을 막는다. fullSweep 을 켜 두 CronJob 이
+  # 같은 시각에 걸리면 서버가 409(GcAlreadyRunning)로 한쪽을 되돌린다 — 아래 스크립트가
+  # 409를 정상 종료로 처리하므로 Job 이 실패로 남지는 않지만, 그 주기의 실행은 건너뛴다.
+  # 두 schedule 이 겹치지 않게 잡을 것.
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
@@ -18,36 +39,36 @@ spec:
       # Job 실패 시 최대 재시도 횟수
       backoffLimit: 2
       # Job이 이 시간 안에 완료되지 않으면 강제 종료
-      activeDeadlineSeconds: {{ .Values.gc.activeDeadlineSeconds }}
+      activeDeadlineSeconds: {{ $job.deadline }}
       template:
         metadata:
           labels:
-            app.kubernetes.io/name: {{ include "cas-server.name" . }}-gc
-            app.kubernetes.io/instance: {{ .Release.Name }}
+            app.kubernetes.io/name: {{ include "cas-server.name" $ }}-gc
+            app.kubernetes.io/instance: {{ $.Release.Name }}
         spec:
           # Deployment와 같은 신원을 쓴다. 여기를 빼면 두 워크로드가 서로 다른 SA로
           # 돌아 IRSA/Workload Identity 애노테이션이 한쪽에만 걸린다.
-          serviceAccountName: {{ include "cas-server.serviceAccountName" . }}
+          serviceAccountName: {{ include "cas-server.serviceAccountName" $ }}
           # 이 Job은 GC 엔드포인트를 curl로 치는 것뿐이다. 쿠버네티스 API를 부르지 않는다.
-          automountServiceAccountToken: {{ .Values.serviceAccount.automountToken }}
+          automountServiceAccountToken: {{ $.Values.serviceAccount.automountToken }}
           restartPolicy: OnFailure
           containers:
           - name: gc-trigger
-            image: "{{ .Values.gc.image.repository }}:{{ .Values.gc.image.tag }}"
-            imagePullPolicy: {{ .Values.gc.image.pullPolicy }}
+            image: "{{ $.Values.gc.image.repository }}:{{ $.Values.gc.image.tag }}"
+            imagePullPolicy: {{ $.Values.gc.image.pullPolicy }}
             command:
             - sh
             - -c
             - |
               set -u
-              BASE="http://{{ include "cas-server.fullname" . }}:{{ .Values.service.port }}"
+              BASE="http://{{ include "cas-server.fullname" $ }}:{{ $.Values.service.port }}"
               POLL_INTERVAL=10
               # activeDeadlineSeconds보다 조금 일찍 끝내, k8s SIGKILL 전에 타임아웃 로그를 남긴다.
-              MAX_WAIT={{ .Values.gc.activeDeadlineSeconds }}
+              MAX_WAIT={{ $job.deadline }}
               [ "$MAX_WAIT" -gt 60 ] && MAX_WAIT=$((MAX_WAIT - 60))
 
               # 인증 헤더를 positional params에 저장 (공백 보존).
-              {{- if .Values.auth.adminToken }}
+              {{- if $.Values.auth.adminToken }}
               set -- -H "Authorization: Bearer ${ADMIN_TOKEN}"
               {{- else }}
               set --
@@ -58,9 +79,14 @@ spec:
               echo "이전 ran_at: ${prev:-<none>}"
 
               # 2) GC 트리거 — 서버는 백그라운드로 실행하고 202를 즉시 반환한다.
-              code=$(curl -sS --max-time 30 -o /tmp/resp -w '%{http_code}' -X POST "$@" "$BASE/_internal/gc?dry_run=false")
+              echo "돌 단계: {{ $job.phases | default "전체" }}"
+              code=$(curl -sS --max-time 30 -o /tmp/resp -w '%{http_code}' -X POST "$@" "$BASE/_internal/gc?dry_run=false{{ if $job.phases }}&phases={{ $job.phases }}{{ end }}")
               echo "트리거 응답: $code $(cat /tmp/resp 2>/dev/null)"
               if [ "$code" = "409" ]; then echo "이미 GC 실행 중 — 스킵"; exit 0; fi
+              # 400은 phases 값이 서버가 모르는 이름이라는 뜻이다. 서버가 조용히 넘기지
+              # 않으므로 여기서도 실패로 남긴다 — 오타 하나로 의도한 단계가 빠진 채
+              # 성공으로 보이면 회수가 멈춘 것을 아무도 모른다.
+              if [ "$code" = "400" ]; then echo "phases 값이 거절됨 — values 의 gc.phases 확인"; exit 1; fi
               if [ "$code" != "202" ] && [ "$code" != "200" ]; then echo "GC 트리거 실패 (HTTP $code)"; exit 1; fi
 
               # 3) last-result의 ran_at이 바뀔 때까지(=이번 GC 완료) 폴링
@@ -77,12 +103,12 @@ spec:
                 fi
               done
               echo "GC 완료 대기 타임아웃 (${MAX_WAIT}s)"; exit 1
-            {{- if .Values.auth.adminToken }}
+            {{- if $.Values.auth.adminToken }}
             env:
             - name: ADMIN_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "cas-server.fullname" . }}
+                  name: {{ include "cas-server.fullname" $ }}
                   key: auth-admin-token
             {{- end }}
             resources:
@@ -92,4 +118,5 @@ spec:
               limits:
                 cpu: "100m"
                 memory: "64Mi"
+{{- end }}
 {{- end }}

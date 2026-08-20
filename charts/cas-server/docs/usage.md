@@ -551,6 +551,41 @@ curl -s -X POST "http://localhost:8080/_internal/gc?dry_run=true" \
 
 GC가 이미 실행 중이면 `409 GcAlreadyRunning`이 반환됩니다.
 
+#### 단계를 나눠 실행하기
+
+GC는 세 단계로 나뉘며 비용이 크게 다릅니다. 실측(blobs 200만 / object_versions 358만):
+
+| 단계 | 하는 일 | 매 실행 소요 |
+|---|---|---|
+| `multipart` | 만료된 미완료 멀티파트 업로드의 파트 회수 | 무시할 수준 |
+| `orphan` | 참조가 사라진 blob 물리 삭제 | **4,605 ms** |
+| `purge` | 보존 기간이 지난 soft-delete 레코드 삭제 | **0.26 ms** |
+
+`orphan`만 blob 테이블 전체를 훑기 때문에 데이터가 늘어나는 만큼 실행 시간이 함께
+늘어납니다. 나머지 두 단계는 인덱스로 처리되어 규모의 영향을 받지 않습니다.
+
+`phases` 파라미터로 이번 실행에서 돌 단계를 고를 수 있습니다. 생략하면 세 단계 모두
+실행합니다.
+
+```bash
+# 주간 작업: 저렴한 단계만
+curl -s -X POST "http://localhost:8080/_internal/gc?phases=multipart,purge" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
+# 월간 작업: 전체
+curl -s -X POST http://localhost:8080/_internal/gc \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+`orphan`을 미루면 회수가 그만큼 늦어질 뿐 데이터가 사라지지는 않습니다. 회수 대상 blob은
+다음 스캔까지 디스크에 남아 있으므로, 주기를 늘린 만큼 용량 여유를 두고 잡으십시오.
+
+정의되지 않은 단계 이름은 `400`으로 거절합니다. 조용히 무시하면 오타 하나로 의도한
+단계가 빠진 채 성공한 것처럼 보이기 때문입니다.
+
+실행된 단계는 완료 로그의 `phases` 필드에 남습니다. `deleted_blobs=0`이 회수할 대상이
+없어서인지 해당 단계를 돌리지 않아서인지 이 필드로 구분할 수 있습니다.
+
 ### GC 이력 조회
 
 ```bash

@@ -507,6 +507,39 @@ gc:
   schedule: "0 2 * * 0" 
   # Job이 이 시간(초) 안에 완료되지 않으면 강제 종료        
   activeDeadlineSeconds: 7200     # 블롭 많을 수 있으니 2시간으로 여유
+
+  # 이 CronJob 이 돌릴 GC 단계. 쉼표로 구분: multipart, orphan, purge.
+  # 빈 값이면 세 단계 모두 — 이 키가 없던 때와 같은 동작이다.
+  #
+  # 세 단계의 비용이 3~4자릿수 다르다. 실측(blobs 200만 / object_versions 358만):
+  #
+  #   multipart  무시할 수준   만료된 미완료 멀티파트의 파트 회수
+  #   orphan     4,605 ms      참조가 사라진 blob 물리 삭제
+  #   purge      0.26 ms       보존 기간 지난 soft-delete 레코드 삭제
+  #
+  # orphan 만 blobs 전량을 훑으므로 데이터가 늘어나는 만큼 실행 시간이 함께 늘어난다.
+  # 나머지 둘은 인덱스로 처리되어 규모의 영향을 받지 않는다.
+  #
+  # 주간 GC 가 오래 걸린다면 여기서 orphan 을 빼고 아래 fullSweep 으로 옮길 것.
+  # 서버가 모르는 이름을 적으면 Job 이 400 으로 실패한다 — 조용히 넘어가지 않는다.
+  #
+  #   phases: "multipart,purge"
+  phases: ""
+
+  # orphan 스캔만 별도 주기로 돌리는 두 번째 CronJob.
+  #
+  # 위 phases 에서 orphan 을 뺐다면 이것을 켜야 한다. 끄고 빼 두면 회수가 아예
+  # 돌지 않아 orphan blob 이 무한히 쌓인다.
+  #
+  # 이 Job 은 항상 전 단계를 돈다. 두 schedule 이 겹치면 뒤에 걸린 쪽이 409 로
+  # 건너뛰어지므로 시각을 벌려 둘 것.
+  fullSweep:
+    enabled: false
+    # 매월 1일 새벽 3시
+    schedule: "0 3 1 * *"
+    # 비우면 위 activeDeadlineSeconds 를 그대로 쓴다. 전수 스캔이 주기당 한 번으로
+    # 몰리므로 주간보다 길게 잡아야 할 수 있다.
+    activeDeadlineSeconds: null
   image:
     repository: curlimages/curl
     tag: "8.7.1"
