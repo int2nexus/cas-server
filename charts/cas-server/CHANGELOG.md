@@ -83,6 +83,58 @@ cas-server 는 기동 시 `CREATE TABLE IF NOT EXISTS` 만 실행하므로 보�
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.1.30
+
+image: `int2jieun/cas-server:0.1.23`
+digest: `sha256:c9b03aafcc80481bd1eb2764018f6a8e8577b360ac2a03482634ad4eb2604e24`
+
+**동작 변경** — GC 단계별 소요가 API 와 콘솔에 나옵니다
+
+`0.1.27` 부터 GC 는 단계별 소요를 로그 한 줄로 남겼습니다.
+
+```
+GC 단계별 소요  phases=... ms_multipart=2 ms_orphan=13729 ms_purge=213
+```
+
+그 줄은 GC CronJob 이 아니라 **서버 파드**에 찍힙니다 — Job 은 서버를 curl 로 칠 뿐입니다.
+적재 부하가 큰 배포에서는 서버 파드의 로그 보존 창이 1분 미만이라(도입하신 쪽 실측 46초 /
+18,372줄), 예정 시각에 맞춰 로그를 붙들고 있어야만 얻는 값이었습니다.
+
+같은 값을 `gc_runs` 에 남깁니다. `GET /_api/gc/last-result` 와 `GET /_api/gc/history` 가
+`ms_multipart` · `ms_orphan` · `ms_purge` 를 함께 돌려줍니다.
+
+GC CronJob 은 완료를 감지한 뒤 그 본문을 통째로 로그에 남기므로(`GC 완료: {...}`) **Job
+로그에도 들어갑니다.** 콘솔 GC 탭과 Dashboard 의 Last GC 에도 표시됩니다.
+
+측정값이 없는 실행은 `null` 입니다 — 이 버전 이전의 실행, 그리고 `running` · `failed` 로
+끝난 실행. `0` 으로 채우지 않습니다: 「0 ms 에 끝났다」와 구분돼야 합니다.
+
+**동작 변경** — `GET /_api/whoami` 의 `can` 이 라우트 기준입니다
+
+`0.1.28` · `0.1.29` 는 정책에 적힌 액션 이름을 그대로 답했습니다. 그래서
+`cas:ManageAccessKeys` 만 준 키가 `read_access_keys: false` 로 나오는데, 그 키로 목록 조회는
+실제로 열립니다. 라우트가 목록 조회를 `[ReadAccessKeys, ManageAccessKeys]` 중 하나로 열기
+때문입니다.
+
+이제 `can` 은 실제로 열리는 것을 답합니다. Manage 만 준 키는 `read_access_keys` 가 `true`,
+`cas:RunGc` 만 준 키는 `read_gc` 가 `true` 입니다. 거꾸로는 성립하지 않습니다 — Read 만 준
+키는 발급·폐기를 못 하고, ReadGc 만 준 키는 GC 를 실행하지 못합니다.
+
+**콘솔 화면은 영향받지 않습니다.** 콘솔은 두 값을 합쳐 판정하고 있었습니다. `whoami` 응답을
+직접 쓰시는 경우에만 해당합니다.
+
+**마이그레이션** — `gc_runs` 에 컬럼 셋 추가
+
+- **영향받는 테이블** — `gc_runs` (`ms_multipart` · `ms_orphan` · `ms_purge`, 셋 다 NULL 허용)
+- **예상 소요시간** — 무시할 수준입니다. NULL 기본값의 가산형 `ADD COLUMN` 이라 테이블
+  재작성이 없고, `gc_runs` 는 오래된 이력을 정리해 수십 행에 머무릅니다.
+- **롤백** — **이 버전은 마이그레이션 `0011` 을 추가하며, 이미지 `0.1.22` 이하로 롤백할 수
+  없습니다.** 스키마 호환성과 무관한 sqlx 부기 검사 때문입니다(문서 앞부분 참조). 롤백
+  가능한 하한은 이미지 `0.1.23` 입니다. 되돌리려면 `_sqlx_migrations` 에서 `0011` 행을 직접
+  지우거나 업그레이드 전 스냅샷을 복원해야 합니다.
+
+**설정 키** — 없음
+
 ## 0.1.29
 
 image: `int2jieun/cas-server:0.1.22`
@@ -395,6 +447,9 @@ root 키는 전부 열립니다. 권한이 없는 화면은 탭이 표시되지 
 **주의** — `cas:ManageAccessKeys` 는 `cas:ReadAccessKeys` 를 함의하지 않습니다. 정책 모델에
 계층이 없습니다. 키 화면과 발급 버튼은 `cas:ManageAccessKeys` 하나로 열리지만
 `GET /_api/whoami` 의 `read_access_keys` 는 `false` 입니다. 둘 다 필요하면 둘 다 붙이십시오.
+
+> `0.1.30` 에서 `whoami` 가 라우트 기준으로 바뀝니다 — Manage 만 준 키의
+> `read_access_keys` 가 `true` 가 됩니다. 이 절의 서술은 `0.1.28`·`0.1.29` 에 해당합니다.
 
 **동작 변경** — `GET /_api/whoami` 가 생겼습니다
 
