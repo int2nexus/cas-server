@@ -448,6 +448,15 @@ GET /_internal/metrics가 인증 없이 열려 있습니다 — auth.metrics_tok
 auth.admin_token이 둘 다 비어 있습니다.
 ```
 
+**`0.1.24` 에서는 이 경로도 함께 닫힙니다.** `adminToken` 을 제거하는 같은 릴리스에서
+metrics 게이트를 `/_admin/*`·GC 와 같은 판정으로 바꿉니다 — **auth 를 켠 배포**에서 두
+토큰이 다 비면 열리는 것이 아니라 `401` 이 됩니다. NoAuth 배포는 지금처럼 열린 채
+둡니다(빈 토큰 폴백의 근거가 실제로 성립하는 쪽입니다).
+
+폐기가 곧 노출이 되지 않도록 두 변경을 같은 릴리스에 넣는 것입니다. 다만 그때
+`auth.metricsToken` 이 비어 있으면 **스크레이프가 `401` 로 끊깁니다** — 그 전에 채워
+두십시오.
+
 **동작 변경** — `auth.adminToken` 게이트를 없앴습니다
 
 GC CronJob 이 Authorization 헤더를 붙일지 정하던 불리언 값입니다. 이제 **Secret 에 값이
