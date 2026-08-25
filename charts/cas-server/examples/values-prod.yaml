@@ -36,14 +36,17 @@ externalDatabase:
   database: ""  # DB 이름
 
 # ── 자격증명 ─────────────────────────────────────────────────────────────────
-# 필수 7개 + 선택 1개(auth-metrics-token)를 sealed-secret.yaml로 관리합니다.
-# 이 파일에 포함하지 마세요.
+# 필수 7개 + 선택 2개(auth-metrics-token · auth-gc-token)를 sealed-secret.yaml로
+# 관리합니다. 이 파일에 포함하지 마세요.
 # 적용 방법: kubectl apply -f sealed-secret.yaml (Helm 배포 전에 실행)
 #
-# auth-metrics-token 은 메트릭 읽기 전용 토큰입니다. 없어도 파드는 정상 기동하고
-# 서버가 admin 토큰으로 폴백합니다. 모니터링 스택에는 admin 토큰이 아니라 이것을
-# 쓰십시오 — admin 토큰은 blob 물리 삭제와 액세스 키 관리까지 여는 자격증명입니다.
-# (cas-server 이미지 0.1.18 이상 필요)
+# auth-metrics-token: 메트릭 읽기 전용. 모니터링 스택에는 이것을 쓰십시오.
+#   (cas-server 이미지 0.1.18 이상)
+# auth-gc-token: GC 경로 전용. 아래 gc 를 켤 때 함께 채우십시오. (0.1.21 이상)
+# auth-root-access-key-id · auth-root-secret-key: auth-secret-master-key 를 채운
+#   배포에서 필수. 비면 기동을 거부하고 replicaCount 가 1 이라 전면 중단입니다.
+# auth-admin-token: 폐기 예정 — 0.1.24 에서 제거. 값은 비우십시오.
+#   (사유와 이행 절차는 차트 CHANGELOG 0.1.28)
 
 # ── 리소스 ────────────────────────────────────────────────────────────────────
 # 차트 기본값이 requests 2Gi / limits 6Gi 다. 그대로 쓰면 되므로 여기서 오버라이드하지 않는다.
@@ -73,6 +76,8 @@ externalDatabase:
 # 이 예시는 대량 이관을 전제로 GC 를 꺼 둔다(차트 기본값은 true).
 # **이관이 끝나면 true 로 되돌릴 것** — 그 전까지 orphan blob 이 회수되지 않아
 # 오브젝트 스토리지 사용량이 조용히 누적된다.
+#
+# 되돌릴 때 sealed-secret 의 auth-gc-token 을 함께 채울 것(위 「자격증명」 절).
 gc:
   enabled: false
   schedule: "0 2 * * 0"   # 활성화 시 실행 주기 (매주 일요일 02:00)

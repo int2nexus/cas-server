@@ -5,9 +5,9 @@ HTTP API를 제공한다.
 
 ## 문서
 
-- [아키텍처](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.27/charts/cas-server/docs/architecture.md)
+- [아키텍처](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.28/charts/cas-server/docs/architecture.md)
   — 스토리지 모델(CAS·dedup·GC), 백엔드 구성, S3 호환 API 명세, 에러 코드
-- [사용법](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.27/charts/cas-server/docs/usage.md)
+- [사용법](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.28/charts/cas-server/docs/usage.md)
   — 배포 절차, 웹 UI 키 관리, AWS CLI/boto3 예제, 내부 API
 - [변경 이력](CHANGELOG.md)
   — 버전별 동작 변경·마이그레이션·설정 키. 각 항목은 해당 GitHub Release 본문과 동일하다
@@ -49,7 +49,7 @@ kubectl apply -f sealed-secret.yaml -n <namespace>
 폴백한다 — 그 키가 없는 기존 Secret 그대로 업그레이드해도 된다. 용도는 [메트릭 스크레이프](#메트릭-스크레이프) 참고.
 
 `secrets.secretMasterKey`를 비우면 NoAuth 모드(인증 없음, 내부망 전용)로 동작한다. 상세 절차와 값 교체
-방법은 [`examples/sealed-secret.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.27/charts/cas-server/examples/sealed-secret.yaml) 참고.
+방법은 [`examples/sealed-secret.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.28/charts/cas-server/examples/sealed-secret.yaml) 참고.
 
 ## 설치
 
@@ -57,7 +57,7 @@ kubectl apply -f sealed-secret.yaml -n <namespace>
 helm install cas-server int2nexus/cas-server -n <namespace> -f values-prod.yaml
 ```
 
-`values-prod.yaml`은 직접 작성하거나 [`examples/values-prod.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.27/charts/cas-server/examples/values-prod.yaml)을
+`values-prod.yaml`은 직접 작성하거나 [`examples/values-prod.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.28/charts/cas-server/examples/values-prod.yaml)을
 내려받아 값을 채운 뒤 사용하세요(이 레포를 clone했다면 `charts/cas-server/examples/values-prod.yaml`).
 
 ### S3 / MinIO 모드 values 예시
@@ -79,20 +79,34 @@ storage:
     allowHttp: true
 ```
 
-## 노출 주의 — `/_ui` 와 `/_api` 는 무인증입니다
+## 노출 주의 — 인증을 켜지 않으면 `/_ui` 와 `/_api` 가 열립니다
 
-**`/_ui` 와 `/_api/*` 는 `/_api/gc/*` 셋을 뺀 전부가 인증을 거치지 않습니다. 그것을 끄는
-설정 키도 없습니다.** 경로 단위 이야기이고, 응답 안의 민감한 필드 하나는 따로 가려집니다
-(아래 `/_api/backends`).
+`auth` 를 켠 배포(`secrets.secretMasterKey` 설정) 기준입니다. **이미지 `0.1.21` 이상이
+필요합니다.**
 
-| 경로 | 인증 |
+| 경로 | 자격증명 |
 |---|---|
-| `/_api/gc/orphan-count` · `last-result` · `history` | admin 토큰 |
-| `/_internal/metrics` | metrics 토큰(없으면 admin 토큰) |
-| `/_api/backends` | **없음.** 다만 백엔드 스토리지 주소(`endpoint_url`)는 admin 토큰이 있을 때만 나갑니다 |
-| **그 밖의 `/_api/*` 전부, `/_ui`** | **없음** |
 | `GET`/`HEAD /{bucket}/{key}` | `auth.anonymousGet: true`(기본값)이면 없음 |
+| 그 밖의 데이터 평면 | 키 정책 |
+| `/_api/stats` · `buckets` · `backends` · `blobs/{hash}` · `config-effective` | 유효한 키의 SigV4 서명 |
+| `/_api/gc/*` | `cas:ReadGc`·`cas:RunGc` 키, root 키, GC·admin 토큰 |
+| `POST /_internal/gc` | `cas:RunGc` 키, root 키, GC·admin 토큰 |
+| `/_admin/*` | `cas:*AccessKeys` 키, root 키, admin 토큰 |
+| `/_internal/metrics` | metrics·admin 토큰 **뿐** |
+| `/_api/auth-mode` · `/_ui` | 없음 |
 
+예외 셋을 알아 두십시오.
+
+- **`/_api/*` 는 인증만 보고 인가는 보지 않습니다.** 대응 액션이 없어 데이터 전용 키로도
+  열립니다. 키별로 좁히는 수단은 없습니다. 자격증명 값은 나가지 않습니다
+  (`<set>`/`<unset>` 과 가려진 `db_url`).
+- **`/_internal/metrics` 는 키로 열리지 않습니다.** 두 토큰이 다 비면 그 경로는 열립니다.
+- **`/_api/backends` 의 `endpoint_url` 은 관리 주체에게만 채웁니다.** root 키,
+  `cas:ManageAccessKeys` 를 가진 키, `Authorization: Bearer <adminToken>` 셋입니다.
+  그 밖의 키에는 `null` 입니다. (이미지 `0.1.21` 이상. 그 전에는 admin 토큰 전용이었고,
+  같은 `Authorization` 헤더를 SigV4 서명이 써서 서명 요청에서는 늘 가려졌습니다.)
+
+`auth` 를 켜지 않으면 데이터 평면까지 포함해 위 전부가 무인증입니다.
 등록되지 않은 `/_api/*` 경로는 `404` 입니다.
 
 `service.type` 기본값이 `NodePort` 이므로 표면은 **클러스터의 모든 노드 x `nodePort`** 입니다 —
@@ -117,6 +131,8 @@ storage:
 | `secrets.useExternalSecret` | `true` | sealed-secret으로 Secret을 미리 주입했는지 여부 |
 | `secrets.secretMasterKey` | (없음) | 설정 시 SigV4 인증 활성화, 비우면 NoAuth |
 | `auth.metricsToken` | `""` | `GET /_internal/metrics` 전용 **읽기 전용** 토큰. 비우면 `admin_token`으로 폴백. 모니터링 스택에는 이것을 쓸 것 (아래 참고). `useExternalSecret: true`(기본)이면 이 값 대신 Secret 의 `auth-metrics-token` 이 쓰입니다 |
+| `secrets.rootAccessKeyId` · `secrets.rootSecretKey` | (없음) | root 키. **`secretMasterKey` 를 설정하면 필수** — 없으면 서버가 기동하지 않습니다 |
+| `secrets.gcToken` | `""` | GC 전용 토큰. GC CronJob 이 `adminToken` 대신 이것을 씁니다 (아래 참고). `useExternalSecret: true`(기본)이면 이 값 대신 Secret 의 `auth-gc-token` 이 쓰입니다 |
 | `ingress.enabled` | `false` | Ingress 활성화 |
 | `config.maxUploadSizeBytes` | `10737418240` | 최대 업로드 크기 (10 GiB) |
 | `config.maxUploadBytesInFlight` | `3221225472` | 동시 업로드 바디의 총 상주 바이트 상한 (3 GiB). 초과분은 `503 SlowDown`. **`0` = 무제한.** `resources.limits.memory` × 0.5 를 기준으로 함께 조정할 것 |
@@ -151,22 +167,24 @@ OOMKilled 되거나(예산 > 한도) 방어선이 실효 없이 낮게 남습니
 
 ## 메트릭 스크레이프
 
-`GET /_internal/metrics`에는 **`auth.metricsToken`을 쓰세요.** `admin_token`은
-`POST /_internal/gc`(blob 물리 삭제)와 `/_admin/*`(액세스 키 관리)까지 여는 자격증명이라,
-스크레이프 용도로 모니터링 스택에 배포하면 삭제 권한을 함께 넘기게 됩니다.
-`metricsToken`은 이 엔드포인트에서만 통하고 다른 경로는 열지 않습니다.
+`GET /_internal/metrics` 에는 **`auth.metricsToken` 을 쓰십시오.** admin 토큰은 GC(blob 물리
+삭제)와 `/_admin/*` 까지 여는 자격증명이라, 스크레이프 용도로 모니터링 스택에 배포하면 삭제
+권한을 함께 넘기게 됩니다. `metricsToken` 은 이 엔드포인트에서만 통합니다.
+
+**이 경로는 액세스 키로 열리지 않습니다** — root 키로도 `401` 입니다. 두 토큰 중 하나가 반드시
+필요하고, 둘 다 비면 그 경로는 열립니다.
 
 `sealed-secret`에 `auth-metrics-token` 키를 추가합니다. 이 키는 **선택 항목**이고
 deployment가 `optional: true`로 참조하므로, 추가하지 않아도 파드는 정상 기동합니다
 (그 경우 서버가 `admin_token`으로 폴백합니다). **cas-server 이미지 `0.1.18` 이상**이
 필요하며, 그 이하 이미지는 이 토큰을 무시하므로 스크레이프가 401이 됩니다.
 
-**`metricsToken`만 채우고 admin 토큰 문자열을 비우지 마세요**(sealed-secret 의
-`auth-admin-token`, 또는 `useExternalSecret: false` 에서는 `secrets.adminToken`.
-불리언 게이트인 `auth.adminToken` 이 아닙니다). 그 조합에서는 서버가 기동을
-거부합니다 — metrics만 잠기고 `POST /_internal/gc`(blob 물리 삭제)가 무인증으로 열려,
-401을 보고 보호된다고 오해하게 되기 때문입니다. `replicaCount: 1`이라 기동 실패는
-곧 전면 중단입니다.
+**auth 가 꺼진 배포(`secrets.secretMasterKey` 가 빔)에서 `metricsToken` 만 채우고 admin·GC
+토큰을 둘 다 비우지 마세요.** 그 조합에서는 서버가 기동을 거부합니다 — metrics 만 잠기고
+`POST /_internal/gc`(blob 물리 삭제)가 무인증으로 열려, 401 을 보고 보호된다고 오해하게 되기
+때문입니다. `replicaCount: 1` 이라 기동 실패는 곧 전면 중단입니다.
+
+auth 를 켠 배포에서는 관리 평면이 토큰 없이도 401 로 닫히므로 해당하지 않습니다.
 
 **Secret을 갱신했으면 파드를 직접 재시작해야 합니다.** `secrets.useExternalSecret: true`
 (기본값)에서는 Helm이 Secret 내용을 볼 수 없어 체크섬을 걸 수 없고, 따라서
@@ -362,14 +380,88 @@ gc:
     schedule: "0 3 1 * *"
 ```
 
-**`orphan` 을 빼면서 `fullSweep` 을 켜지 않으면 회수가 아예 돌지 않습니다.** 그 조합을 막지는
-않지만 CronJob 이 매 실행 경고를 남깁니다.
+**`orphan` 을 빼면서 `fullSweep` 을 켜지 않으면 회수가 아예 돌지 않습니다.** 차트 `0.1.28`
+부터 그 조합은 렌더에서 거부합니다 — `helm install`·`upgrade` 가 사유와 함께 실패합니다.
+회수를 아예 돌리지 않을 의도라면 `gc.enabled: false` 로 두십시오.
 
 주기는 데이터 크기가 아니라 **회수 대상이 쌓이는 속도**로 정하십시오. 스캔 비용은 회수할
 blob 이 0건이든 수천 건이든 같습니다. 판단 기준과 미루는 비용 계산은
 [docs/usage.md](docs/usage.md) 의 "주기를 정하는 기준" 을 참고하십시오.
 
 이미지 `0.1.20` 이상이 필요합니다. 그 이하는 `phases` 를 무시하고 전 단계를 돕니다.
+
+## 관리 API 자격증명 (이미지 `0.1.21` 이상)
+
+관리 평면은 `/_admin/*`(액세스 키·정책 관리)과 GC(`POST /_internal/gc`, `GET /_api/gc/*`)
+둘입니다. 액세스 키로도, Bearer 토큰으로도 열 수 있습니다.
+
+| 자격증명 | `/_admin/*` | GC | 폐기 | 로그의 행위자 |
+|---|---|---|---|---|
+| root 액세스 키 | 열림 | 열림 | 값 교체 + 재배포 | `CASKroot` |
+| 관리 정책 액세스 키 | 정책대로 | 정책대로 | 그 키만 즉시 | `key_id` |
+| admin 토큰 | 열림 | 열림 | 값 교체 + 재배포, 쓰던 전부 끊김 | `<bearer>` |
+| GC 토큰 | 닫힘 | 열림 | 값 교체 + 재배포 | `<bearer>` |
+
+| 액션 | 여는 것 |
+|---|---|
+| `cas:ReadAccessKeys` | 키·정책 목록 조회 |
+| `cas:ManageAccessKeys` | 키 발급·폐기, 정책 추가·삭제 **+ 목록 조회** |
+| `cas:ReadGc` | `GET /_api/gc/*` |
+| `cas:RunGc` | `POST /_internal/gc` **+ GC 조회** |
+
+정책의 `"*"` 는 데이터 평면 액션에만 걸립니다 — 관리 권한은 이름을 적은 정책에만 붙습니다.
+정의되지 않은 액션 이름은 `400` 으로 거절합니다.
+
+**콘솔은 토큰을 받지 않습니다.** 화면은 로그인한 키의 정책으로 열리고, 판정은
+`GET /_api/whoami` 한 번입니다. 권한이 없는 화면은 탭이 표시되지 않습니다.
+
+| 화면 | 필요한 권한 |
+|---|---|
+| Keys 탭 (목록) | `cas:ReadAccessKeys` 또는 `cas:ManageAccessKeys` |
+| 키 발급 · revoke 버튼 | `cas:ManageAccessKeys` |
+| GC 탭 · Dashboard 의 Last GC | `cas:ReadGc` 또는 `cas:RunGc` |
+| GC 실행 · Dry-run 버튼 | `cas:RunGc` |
+
+사람마다 키를 하나씩 주면 관리자를 둘 이상 둘 수 있고, 한 사람을 끊을 때 나머지가 살아
+있습니다. 부트스트랩은 root 키로 합니다.
+
+```bash
+curl -X POST "$BASE/_admin/access-keys" -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" -d '{"description":"alice"}'
+
+curl -X POST "$BASE/_admin/access-keys/$KEY_ID/policies" -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" -d '{"effect":"allow","action":"cas:ManageAccessKeys"}'
+```
+
+> **`cas:ManageAccessKeys` 는 사실상 전권입니다.** 그 키는 아무 정책이나 붙인 새 키를 만들 수
+> 있으므로 데이터 전체에 접근하는 키도 만들 수 있습니다.
+
+### 어느 자격증명을 어디에 주는가
+
+admin 토큰은 두 평면을 다 열고 행위자가 남지 않으므로 최소 권한 쪽을 고르십시오.
+
+| 쓰는 곳 | 주는 것 |
+|---|---|
+| 사람 · 키 관리를 대신하는 외부 시스템 | 관리 정책 액세스 키 |
+| GC CronJob | GC 토큰 (`auth-gc-token`) |
+| 모니터링 스크레이프 | metrics 토큰 (`auth-metrics-token`) |
+| 부트스트랩 · 비상 접근 | root 액세스 키 |
+
+GC 토큰에는 켜기/끄기 값이 없습니다 — Secret 의 `auth-gc-token` 에 값을 넣으면 서버와
+CronJob 이 둘 다 그것을 쓰고, 비면 CronJob 이 admin 토큰으로 돌아갑니다.
+`useExternalSecret: false` 로 차트가 Secret 을 만드는 경우에만 `secrets.gcToken` 에 넣습니다.
+
+**admin 토큰은 폐기 예정입니다 — 이미지 `0.1.24` 에서 제거됩니다.** 위 셋을 갖추면
+`auth-admin-token` 은 빈 문자열로 두면 되고, 그때 자격증명 없는 `/_admin/*` · GC 는 `401`
+입니다. 값이 남아 있으면 auth 를 켠 배포에서 기동 시 경고가 뜹니다(이미지 `0.1.21` 이상).
+단 **키 자체는 제거 시점까지 지우지 마십시오** — deployment 가 필수로 참조하므로 키가 없으면
+파드가 기동하지 못합니다.
+
+제거되면 `gcToken` · `auth.metricsToken` 의 admin 토큰 폴백도 함께 사라집니다. 사유와 이행
+절차는 CHANGELOG `0.1.28` 을 보십시오.
+
+NoAuth 배포(`secretMasterKey` 가 빔)에는 액세스 키가 없으므로 bearer 토큰이 유일한
+자격증명입니다.
 
 ## 대량 적재 중에는 GC를 끄십시오 (모든 이미지 버전)
 
@@ -568,12 +660,17 @@ GC 가 회수하지 못하고 새는 객체가 세 자리에 있습니다. 스�
 | 프리픽스 | 무엇이 들어 있나 | 저장 형태 | 걸 규칙 | 권장 TTL |
 |---|---|---|---|---|
 | `{prefix}objects/` | **살아 있는 blob** | 평범한 객체 + 대용량 쓰기 중의 네이티브 멀티파트 | **`AbortIncompleteMultipartUpload` 만.** `Expiration` 을 걸면 데이터가 지워집니다 | 개시 후 7일 |
-| `{prefix}tmp/` | 업로드 스테이징 | 네이티브 멀티파트 + 완료 후 남은 평범한 객체 | **둘 다** | 7일 |
+| `{prefix}tmp/` | 업로드 스테이징 (아래 조건에서만 생깁니다) | 네이티브 멀티파트 + 완료 후 남은 평범한 객체 | **둘 다** | 7일 |
 | `{prefix}parts/` | 멀티파트 업로드의 파트 | **평범한 객체** | **`Expiration` 만** | 7일 |
 
 **`parts/` 에 `AbortIncompleteMultipartUpload` 를 걸면 아무것도 회수하지 않습니다.** 그 규칙은
 스토리지 자신의 네이티브 멀티파트 상태에만 듣는데, cas-server 는 파트를 **평범한 객체로**
 그 프리픽스 아래 씁니다. 프리픽스로 열거되는 것이 그 증거입니다.
+
+**`tmp/` 는 스트리밍 경로에서만 씁니다.** `Content-Length` 가 `config.inlineHashLimitBytes`
+(기본 256 MiB)를 넘거나 아예 없을 때(chunked)입니다. 그 밖의 `PUT` 은 최종 키에 바로 쓰므로
+이 프리픽스를 거치지 않습니다. **그런 요청이 없는 배포에서는 이 아래에 아무것도 생기지
+않습니다** — 규칙을 걸기 전에 실제로 무엇이 있는지 보십시오.
 
 **`objects/` 에는 절대 `Expiration` 을 걸지 마십시오.** 살아 있는 blob 이 그 아래 있습니다.
 그 프리픽스에 필요한 것은 대용량 쓰기가 중간에 죽었을 때 남는 네이티브 멀티파트 상태를
@@ -582,8 +679,12 @@ GC 가 회수하지 못하고 새는 객체가 세 자리에 있습니다. 스�
 
 ### TTL 을 7일로 두는 이유
 
-서버는 24시간이 지난 미완료 업로드의 파트를 GC 가 정리합니다(코드에 고정된 값입니다).
-lifecycle 은 **그 정리가 실패했을 때의 백스톱**이므로 24시간보다 넉넉해야 합니다. 너무 짧게
+서버는 만료된 미완료 업로드의 파트를 GC 가 정리합니다. 기준은
+`config.multipartTtlSecs`(기본 86400초 = 24시간)이고, 이미지 `0.1.20` 이상에서 설정으로
+바꿀 수 있습니다. 그 이하는 24시간 고정입니다.
+
+lifecycle 은 **그 정리가 실패했을 때의 백스톱**이므로 그 값보다 넉넉해야 합니다.
+`multipartTtlSecs` 를 올리셨다면 여기 TTL 도 함께 올리십시오. 너무 짧게
 잡으면 진행 중인 업로드의 파트가 조립 전에 사라져 **쓰기가 5xx 로 실패합니다** — 읽기에서
 데이터가 비는 형태가 아니라 쓰기 실패로 드러나므로 즉시 눈에 띕니다.
 

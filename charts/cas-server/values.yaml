@@ -6,11 +6,11 @@
 #
 # ── 문서 ─────────────────────────────────────────────────────────────────────
 #   아키텍처 (스토리지 모델·백엔드·API 명세)
-#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.27/charts/cas-server/docs/architecture.md
+#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.28/charts/cas-server/docs/architecture.md
 #   사용법 (배포·키 관리·AWS CLI/boto3 예제)
-#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.27/charts/cas-server/docs/usage.md
+#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.28/charts/cas-server/docs/usage.md
 #   차트 README
-#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.27/charts/cas-server/README.md
+#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.28/charts/cas-server/README.md
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── 이미지 ────────────────────────────────────────────────────────────────────
@@ -23,7 +23,16 @@ image:
   #  - 해시별 쓰기 락 테이블의 즉시 회수. GC 실행 시에만 회수되므로,
   #    gc.enabled: false 배포에서는 유휴 바닥값이 상승한다 (gc 섹션 주석 참고)
   #  - auth.metricsToken. 그 토큰으로 스크레이프하면 401 이 된다
-  tag: "0.1.20"
+  tag: "0.1.21"
+  # digest 로 핀하려면 여기에 넣으십시오 (`sha256:...`). 값이 있으면 tag 대신 이것이
+  # 쓰이고, 렌더 결과가 `repository@sha256:...` 가 됩니다.
+  #
+  # 태그는 같은 이름으로 다시 밀릴 수 있어 "지금 무엇을 돌리고 있는가" 를 확정하지
+  # 못합니다. digest 는 내용 주소라 그 문제가 없습니다. 각 버전의 digest 는 그 버전의
+  # CHANGELOG 절 맨 위에 image 와 함께 적혀 있습니다.
+  #
+  # 비워 두면 지금까지와 같이 tag 로 참조합니다.
+  digest: ""
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -234,33 +243,42 @@ externalDatabase:
   # 비밀번호는 secrets.dbPassword 에서 가져옴
 
 # ── 자격증명 ─────────────────────────────────────────────────────────────────
-# 아래 7개 시크릿은 useExternalSecret: true(기본값)이면 values.yaml 의 값을 쓰지 않고,
-# kubeseal로 암호화한 sealed-secret.yaml을 통해 클러스터에 주입합니다.
-#   db-password, s3-access-key-id, s3-secret-access-key
-#   auth-secret-master-key, auth-admin-token
-#   auth-root-access-key-id, auth-root-secret-key
+# Secret 키 목록. useExternalSecret: true(기본값)면 아래 값들은 쓰이지 않고,
+# kubeseal 로 만든 sealed-secret 이 클러스터에 이미 있는 것을 전제로 합니다.
 #
-# 선택 항목 1개(있으면 쓰고, 없어도 파드는 정상 기동):
-#   auth-metrics-token — 메트릭 읽기 전용 토큰. auth.metricsToken 주석 참고
-# kubeseal 로 생성된 Secret 이 클러스터에 이미 존재하므로
-# helm 은 Secret 생성을 건너뜁니다.
+#   필수  db-password, auth-secret-master-key, auth-admin-token,
+#         auth-root-access-key-id, auth-root-secret-key
+#         (storage.mode: s3 면 s3-access-key-id, s3-secret-access-key 도)
+#   선택  auth-gc-token, auth-metrics-token  — 없어도 파드는 기동합니다
+#
+# auth-admin-token 은 폐기 예정입니다(0.1.24 제거). 키는 그때까지 필수, 값은 비우십시오.
+#
+# 필수 키는 값이 비어 있어도 되지만 **키 자체는 있어야 합니다** — deployment 가
+# optional 없이 참조하므로 없으면 파드가 기동하지 못합니다.
 secrets:
   useExternalSecret: true
 
   # 아래 값들은 useExternalSecret: false 일 때만 쓰입니다(차트가 Secret 을 만드는 경우).
-  # 기본값 true 에서는 무시됩니다 — sealed-secret 에 넣으십시오.
-  #
   # 프로덕션 값을 여기에 넣고 커밋하지 마십시오.
   dbPassword: ""
   s3AccessKeyId: ""
   s3SecretAccessKey: ""
-  # Admin API 토큰 **문자열**입니다. 아래 auth.adminToken 은 불리언 게이트로,
-  # 여기와 역할이 다릅니다 — auth.adminToken 주석을 읽으십시오.
-  adminToken: ""
-  # 비우면 서버가 NoAuth 모드로 동작합니다(SigV4 검증 없음).
+
+  # 비우면 NoAuth 모드입니다(SigV4 검증 없음).
   secretMasterKey: ""
+  # secretMasterKey 를 설정하면 필수입니다. 관리 평면 전권이며 부트스트랩 신원입니다.
   rootAccessKeyId: ""
   rootSecretKey: ""
+
+  # 폐기 예정 — 이미지 0.1.24 에서 제거됩니다. 이 토큰은 /_admin/*·GC·메트릭 셋을 모두
+  # 열고, gcToken·metricsToken 을 채워도 빠지지 않습니다. 셋 다 더 좁은 수단이 있어
+  # 대체 불가능한 자리가 없으면서 그 분리만 되돌립니다. auth 를 켠 배포에서 값이 있으면
+  # 기동 시 경고가 뜹니다. 사유와 이행 절차는 CHANGELOG 0.1.28 참고.
+  adminToken: ""
+  # GC(POST /_internal/gc, GET /_api/gc/*) 전용 Bearer 토큰. 이 토큰으로 /_admin/* 은
+  # 열리지 않으므로 GC CronJob 에는 이것을 쓰십시오. 켜기/끄기 값은 없습니다 —
+  # Secret 에 auth-gc-token 이 있는지가 그대로 스위치입니다.
+  gcToken: ""
 
 # ── 인증 설정 ─────────────────────────────────────────────────────────────────
 auth:
@@ -269,32 +287,15 @@ auth:
   # 노출 범위는 아래 service 절 주의도 함께 볼 것.
   anonymousGet: true
 
-  # **불리언 게이트다. 토큰 값이 아니다.** 실제 토큰 문자열은 sealed-secret(기본) 또는
-  # 위 secrets.adminToken(useExternalSecret: false)에 넣는다.
+  # GET /_internal/metrics 전용 읽기 토큰. 모니터링 스택에는 adminToken 이 아니라
+  # 이것을 쓸 것 — adminToken 은 GC 와 /_admin/* 까지 여는 자격증명이다.
   #
-  # 참이면 gc-cronjob 이 Secret 의 auth-admin-token 을 읽어 Authorization 헤더를 붙인다.
-  # 서버의 admin 토큰 설정 여부와 **반드시 일치**시킬 것 — 어긋나면 GC 트리거가 401 이다.
-  adminToken: true
-
-  # GET /_internal/metrics 전용 읽기 토큰 (cas-server 이미지 0.1.18 이상).
+  # **metrics 는 액세스 키로 열리지 않는다.** 그 경로에만 SigV4 분기가 없어 root 키로도
+  # 401 이다. 두 토큰 중 하나가 반드시 필요하다. 둘 다 비면 이 경로는 열린다 —
+  # /_admin/* 과 GC 는 401 로 닫히지만 metrics 는 닫지 않는다.
   #
-  # 모니터링 스택에는 admin 토큰이 아니라 이것을 쓸 것. admin 토큰은
-  # POST /_internal/gc(blob 물리 삭제)와 /_admin/*(액세스 키 관리)까지 여는
-  # 자격증명이라, 스크레이프 용도로 배포하면 삭제 권한을 함께 넘기게 된다.
-  # 이 토큰은 metrics 엔드포인트에서만 통하고 다른 경로는 열지 않는다.
-  #
-  # 비워 두면 서버가 admin 토큰으로 폴백한다(기존 배포 동작 유지).
-  #
-  # 주의: 이 값만 채우고 **admin 토큰을 비우면 서버가 기동을 거부한다.**
-  # 그 조합에서는 metrics 만 잠기고 POST /_internal/gc(blob 물리 삭제)가 무인증으로
-  # 열려, 401 을 보고 보호된다고 오해하게 되기 때문이다. replicaCount 가 1 이라
-  # 기동 실패는 곧 전면 중단이므로, 둘을 함께 설정하거나 이 값을 비워 둘 것.
-  #
-  # secrets.useExternalSecret: true(기본값)면 이 값은 쓰이지 않는다 —
-  # sealed-secret 의 `auth-metrics-token` 키에 넣을 것. 그 키가 없어도
-  # 파드는 정상 기동한다(deployment 에서 optional 로 참조한다).
-  # 주의: 이 키만 예외적으로 auth.* 아래의 **자격증명 문자열**이다.
-  # 나머지 자격증명은 전부 secrets.* 에 있고, auth.adminToken 은 불리언 게이트다.
+  # 다른 자격증명은 전부 secrets.* 에 있다. 이 키만 예외다.
+  # useExternalSecret: true(기본값)면 sealed-secret 의 auth-metrics-token 이 쓰인다.
   metricsToken: ""
 
   # 자격증명 캐시 TTL (초). 서버 기본값 10.
@@ -305,13 +306,15 @@ auth:
 
 # ── 서비스 ────────────────────────────────────────────────────────────────────
 #
-# **노출 주의.** /_ui 와 /_api/* 는 /_api/gc/* 셋을 뺀 전부가 무인증이고, 그것을 끄는
-# 설정 키가 없다. 경로 단위 이야기다 — /_api/backends 는 무인증이지만 응답 안의 백엔드
-# 스토리지 주소(endpoint_url)만은 admin 토큰 뒤에 있다. NodePort 는 **클러스터의 모든 노드 x nodePort** 를 표면으로 만든다 —
+# **노출 주의.** NodePort 는 **클러스터의 모든 노드 x nodePort** 를 표면으로 만든다 —
 # 파드가 없는 노드 IP 에서도 응답한다.
 #
-# 그 표면에 /_api/stats 같은 전 테이블 집계가 포함된다. 상한(config.statsStatementTimeoutSecs,
-# 기본 30초)에 걸리기 전까지는 DB 부하를 만들므로, 아무나 호출할 수 있는 상태를 피할 것.
+# auth 를 켠 배포에서 무인증으로 남는 것은 /_ui 와 /_api/auth-mode 둘이고, 그것을 끄는
+# 설정 키는 config.consoleEnabled 다. 나머지 /_api/* 는 SigV4 서명을 요구한다.
+# auth 를 켜지 않으면 그 전부가 무인증이다.
+#
+# /_api/stats 같은 전 테이블 집계가 그 표면에 있다. 상한
+# (config.statsStatementTimeoutSecs, 기본 30초)에 걸리기 전까지는 DB 부하를 만든다.
 # 신뢰 네트워크 밖이라면 type: ClusterIP 로 두고 인증 프록시나 NetworkPolicy 뒤에 놓는다.
 service:
   type: NodePort

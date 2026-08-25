@@ -48,12 +48,11 @@ secrets:
 
   # DB 내부 시크릿 암호화용 마스터 키. 비우면 인증이 꺼진 NoAuth 모드로 뜬다.
   secretMasterKey: "<openssl rand -hex 32 의 출력(64자 Hex)>"
-  adminToken: "<Admin API 인증용 Bearer 토큰>" # 비우면 Admin API 가 무인증으로 열린다
-  rootAccessKeyId: "int2cas-root"             # 최고 관리자(Superuser) Access Key ID
-  rootSecretKey: "<최고 관리자 Secret Key>"
+  adminToken: ""                              # 폐기 예정(0.1.24 제거). 비워 둘 것
+  rootAccessKeyId: "int2cas-root"             # 최고 관리자 Access Key ID. auth 를 켜면 필수
+  rootSecretKey: "<최고 관리자 Secret Key>"    # auth 를 켜면 필수
 
-# CAS 서버 인증 동작 설정. auth.adminToken 은 **불리언 게이트이고 토큰 값이 아니다**
-# (기본 true) — 토큰 문자열은 위 secrets.adminToken 에 넣는다.
+# CAS 서버 인증 동작 설정.
 auth:
   anonymousGet: true # GET/HEAD 를 인증 없이 허용. 신뢰 네트워크가 아니면 false
 ```
@@ -95,12 +94,15 @@ API 호출 없이 브라우저에서 액세스 키를 발급하고 정책을 관
 
 브라우저에서 열려면 접근 경로를 하나 만들어야 합니다.
 
-> **먼저 읽으십시오.** `/_ui` 와 `/_api/*` 는 `/_api/gc/*` 셋을 뺀 전부가 **무인증**이고
-> 끄는 설정 키가 없습니다(이미지 `0.1.18` 기준). Service 기본값 `NodePort` 는 표면을
-> **클러스터의 모든 노드 x 30080** 으로 만들고, 파드가 없는 노드 IP 에서도 응답합니다.
-> 그 표면에는 `/_api/stats` 집계가 함께 있습니다.
-> **신뢰 네트워크 밖이라면 `service.type: ClusterIP` 로 두고 포트포워드나 인증 프록시를
-> 쓰십시오.** 차트 README 의 "노출 주의" 절에 자세히 적었습니다.
+> **먼저 읽으십시오.** `/_api/*` 는 SigV4 인증을 요구합니다(이미지 `0.1.21` 기준).
+> 무인증으로 열려 있는 것은 `/_ui` 와 `/_api/auth-mode` 둘뿐이고, `config.consoleEnabled:
+> false` 로 콘솔 전체를 끌 수 있습니다. `auth.anonymousGet: true` 여도 예약 경로 넷
+> (`_api`·`_ui`·`_internal`·`_admin`)은 익명 대상이 아닙니다 — 익명 허용은 데이터 평면
+> `GET`/`HEAD /{bucket}/{key}` 뿐입니다.
+>
+> Service 기본값 `NodePort` 는 표면을 **클러스터의 모든 노드 x 30080** 으로 만들고, 파드가
+> 없는 노드 IP 에서도 응답합니다. **신뢰 네트워크 밖이라면 `service.type: ClusterIP` 로 두고
+> 포트포워드나 인증 프록시를 쓰십시오.** 차트 README 의 "노출 주의" 절에 자세히 적었습니다.
 
 포트포워드가 가장 안전합니다. `NodePort` 를 그대로 쓰는 경우에는
 `http://<노드IP>:30080/_ui` 입니다.
@@ -118,12 +120,21 @@ kubectl port-forward -n <namespace> svc/cas-server 8080:http
 <!-- 이미지: Dashboard 탭 전체 화면 -->
 ![UI Dashboard](./images/ui-01-dashboard.png)
 
-### 2. Admin token 입력
+### 2. 관리 화면 활성화
 
-상단 입력창에 `secrets.adminToken` 값을 입력하고 확인하면 **GC 탭**과 **Keys 탭**이 활성화됩니다. Dashboard의 **Last GC** 섹션도 Admin Token이 있어야 표시됩니다.
+토큰 입력 단계가 없습니다. 화면은 로그인한 키의 정책으로 열립니다.
 
-<!-- 이미지: admin token 입력창 및 확인 버튼 -->
-![Admin token 입력](./images/ui-02-admin-token.png)
+| 화면 | 필요한 권한 |
+|---|---|
+| Keys 탭 (목록) | `cas:ReadAccessKeys` 또는 `cas:ManageAccessKeys` |
+| 키 발급 · revoke 버튼 | `cas:ManageAccessKeys` |
+| GC 탭 · Dashboard 의 Last GC | `cas:ReadGc` 또는 `cas:RunGc` |
+| GC 실행 · Dry-run 버튼 | `cas:RunGc` |
+
+root 키는 전부 열립니다. 권한이 없는 화면은 탭이 표시되지 않습니다.
+
+`secrets.adminToken` 과 GC 토큰은 서버에서 그대로 동작합니다. GC CronJob·`curl` 용이고
+콘솔에서는 쓰지 않습니다.
 
 ### 3. 새 키 발급
 
@@ -143,6 +154,21 @@ Keys 탭에서 설명(description)과 선택적 만료일을 입력하고 발급
 
 <!-- 이미지: 정책 추가 폼 및 적용된 정책 태그 목록 -->
 ![정책 추가](./images/ui-05-add-policy.png)
+
+정책을 줄 때 알아 두실 것 셋입니다.
+
+- **`action` 이름을 검증합니다.** 정의되지 않은 이름은 `400` 으로 거절합니다. 예전에는 자유
+  문자열이라 `PutObjekt` 같은 오타가 아무것에도 걸리지 않는 정책을 만들었고, 만든 쪽은 권한을
+  준 줄 알았습니다. `cas:*` 처럼 관리 액션에 와일드카드를 적는 것도 거절합니다.
+- **`action: "*"` 는 데이터 평면에만 걸립니다.** `cas:ReadAccessKeys`·`cas:ManageAccessKeys`·
+  `cas:ReadGc`·`cas:RunGc` 는 이름을 명시한 정책에만 붙습니다. 그러지 않으면 `*` 로 발급된
+  기존 키 전부가 키 발급·GC 실행 권한을 얻게 됩니다.
+- **`cas:ManageAccessKeys` 는 `cas:ReadAccessKeys` 를 함의하지 않습니다.** 둘 다 필요하면 둘 다
+  붙이십시오. 다만 목록 조회 라우트는 둘 중 하나로 열립니다.
+
+**root 키는 폐기할 수 없습니다** — `DELETE /_admin/access-keys/<root>` 는 `403` 입니다.
+auth 를 켠 배포에서 root 는 필수 부트스트랩 신원이라, 비활성으로 만들면 관리 평면 접근 수단이
+통째로 사라질 수 있기 때문입니다.
 
 ---
 
@@ -185,15 +211,23 @@ s3 = boto3.client(
 
 ## Admin API로 키 관리
 
-웹 UI 대신 curl로 직접 발급할 수도 있습니다. 모든 Admin API 요청에는 `Authorization: Bearer <admin_token>` 헤더가 필요합니다.
+웹 UI 대신 curl로 직접 발급할 수도 있습니다. `/_admin/*` 을 여는 자격증명은 셋입니다.
+
+| 자격증명 | 형태 | 비고 |
+|---|---|---|
+| root 키 | SigV4 서명 | 관리 평면 전권. 조작이 `key_id=<root>` 로 기록됨 |
+| `cas:ManageAccessKeys` · `cas:ReadAccessKeys` 정책 키 | SigV4 서명 | 사람마다 하나씩. 조작이 그 `key_id` 로 기록됨 |
+| `adminToken` | `Authorization: Bearer <admin_token>` | **폐기 예정 — 이미지 `0.1.24` 에서 제거.** 조작이 `<bearer>` 로만 남음 |
+
+발급·폐기·정책 변경에는 `cas:ManageAccessKeys` 가, 목록 조회에는 `cas:ReadAccessKeys` 또는
+`cas:ManageAccessKeys` 가 필요합니다. `gcToken` 으로는 이 경로가 열리지 않습니다.
 
 ```bash
-ADMIN_TOKEN="values-prod.yaml의 secrets.adminToken 값"
 CAS="http://cas-server:80"
 
-# 키 발급
-curl -s -X POST $CAS/_admin/access-keys \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
+# 키 발급 — root 키 또는 cas:ManageAccessKeys 를 가진 키로 서명
+curl -s -X POST --aws-sigv4 "aws:amz:cas-default:s3" --user "$KEY_ID:$SECRET" \
+  $CAS/_admin/access-keys \
   -H "Content-Type: application/json" \
   -d '{"description": "my-service-key"}'
 ```
@@ -540,14 +574,32 @@ curl http://localhost:8080/_internal/health
 
 ### GC 수동 트리거
 
+GC 경로(`POST /_internal/gc`, `GET /_api/gc/*`)를 여는 자격증명은 셋입니다.
+
+| 자격증명 | 형태 | 비고 |
+|---|---|---|
+| `secrets.gcToken` | `Authorization: Bearer <gc_token>` | GC 전용. `/_admin/*`·메트릭은 열리지 않음 |
+| `cas:RunGc` · `cas:ReadGc` 정책 키 (또는 root) | SigV4 서명 | 조작이 `key_id` 로 기록됨 |
+| `adminToken` | `Authorization: Bearer <admin_token>` | **폐기 예정 — 이미지 `0.1.24` 에서 제거** |
+
+GC CronJob 처럼 blob 회수만 필요한 주체에는 `gcToken` 을 주십시오. Secret 의 `auth-gc-token`
+키에 값이 있는지가 그대로 스위치이고, 서버와 CronJob 이 같은 키를 읽습니다.
+
 ```bash
+# GC 전용 토큰 (권장)
 curl -s -X POST http://localhost:8080/_internal/gc \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
+  -H "Authorization: Bearer $GC_TOKEN"
+
+# 또는 cas:RunGc 를 가진 키 / root 키의 SigV4 서명
+curl -s -X POST --aws-sigv4 "aws:amz:cas-default:s3" --user "$KEY_ID:$SECRET" \
+  http://localhost:8080/_internal/gc
 
 # dry_run: 실제 삭제 없이 대상만 집계
-curl -s -X POST "http://localhost:8080/_internal/gc?dry_run=true" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
+curl -s -X POST --aws-sigv4 "aws:amz:cas-default:s3" --user "$KEY_ID:$SECRET" \
+  "http://localhost:8080/_internal/gc?dry_run=true"
 ```
+
+조회(`GET /_api/gc/*`)에는 `cas:ReadGc` 로 충분하고, 실행에는 `cas:RunGc` 가 필요합니다.
 
 GC가 이미 실행 중이면 `409 GcAlreadyRunning`이 반환됩니다.
 
@@ -576,11 +628,11 @@ GC는 세 단계로 나뉘며 비용이 크게 다릅니다. 아래는 blobs 200
 ```bash
 # 주간 작업: 저렴한 단계만
 curl -s -X POST "http://localhost:8080/_internal/gc?phases=multipart,purge" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
+  -H "Authorization: Bearer $GC_TOKEN"
 
 # 월간 작업: 전체
 curl -s -X POST http://localhost:8080/_internal/gc \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
+  -H "Authorization: Bearer $GC_TOKEN"
 ```
 
 `orphan`을 미루면 회수가 그만큼 늦어질 뿐 데이터가 사라지지는 않습니다. 회수 대상 blob은
@@ -600,7 +652,7 @@ curl -s -X POST http://localhost:8080/_internal/gc \
 과거 실행 이력으로 판단하십시오.
 
 ```bash
-curl -s "http://localhost:8080/_api/gc/history"   -H "Authorization: Bearer $ADMIN_TOKEN"
+curl -s "http://localhost:8080/_api/gc/history"   -H "Authorization: Bearer $GC_TOKEN"
 ```
 
 `deleted_blobs`가 매번 한 자릿수라면 전수 스캔을 그 빈도로 돌릴 이유가 없습니다. 월 1회
@@ -628,6 +680,67 @@ curl -s "http://localhost:8080/_api/gc/history"   -H "Authorization: Bearer $ADM
 
 Helm으로 배포하셨다면 `gc.phases`와 `gc.fullSweep`으로 두 개의 CronJob을 나눌 수 있습니다.
 설정 방법은 차트 README의 "GC가 오래 걸린다면 단계를 나누십시오"를 참고하십시오.
+
+#### `GET /_api/whoami`
+
+호출한 자격증명이 관리 평면에서 무엇을 할 수 있는지 돌려줍니다. 콘솔이 화면을 구성하는
+근거이고, 서버 인가 미들웨어와 같은 판정기로 계산합니다.
+
+```bash
+curl -s --aws-sigv4 "aws:amz:cas-default:s3" --user "$KEY_ID:$SECRET" \
+  "$BASE/_api/whoami"
+```
+
+```json
+{
+  "key_id": "CASKroot",
+  "is_root": true,
+  "can": {
+    "read_access_keys": true,
+    "manage_access_keys": true,
+    "read_gc": true,
+    "run_gc": true
+  }
+}
+```
+
+각 값은 그 이름을 명시한 정책에만 `true` 입니다. `action: "*"` 정책은 관리 평면에 걸리지
+않아 전부 `false` 이고, NoAuth 배포도 전부 `false` 입니다.
+
+`cas:ManageAccessKeys` 는 `cas:ReadAccessKeys` 를 함의하지 **않습니다**. 다만 목록 조회
+라우트(`GET /_admin/access-keys`)는 둘 중 하나로 열리므로, Manage 만 가진 키도 목록은 봅니다.
+
+#### `GET /_api/config-effective`
+
+지금 이 프로세스에 적용된 설정을 돌려줍니다. 기동 첫 줄 로그와 같은 내용이지만, **로그 보존
+창이 짧은 배포에서는 그 줄을 나중에 볼 수 없습니다.** 차트 렌더 결과가 아니라 프로세스가 읽은
+값이라 `extraEnv` 오버라이드도 여기 드러납니다.
+
+```bash
+curl -s "$BASE/_api/config-effective" -H "$SIGV4"
+```
+
+```json
+{
+  "db_url": "postgresql://postgres:***@pg/cas",
+  "multipart_ttl_secs": 86400,
+  "console_enabled": true,
+  "auth": { "admin_token": "<set>", "secret_master_key": "<set>", "anonymous_get": true },
+  "storage_backends": [
+    { "id": "s3-1", "backend_type": "s3", "endpoint": null,
+      "access_key_id": "<set>", "secret_access_key": "<set>" }
+  ]
+}
+```
+
+**자격증명은 값으로 나가지 않습니다.** `<set>`/`<unset>` 만 나가고, `db_url` 의 비밀번호는
+가려집니다.
+
+**백엔드 스토리지 주소(`endpoint`)는 관리 주체에게만 채웁니다.** root 키,
+`cas:ManageAccessKeys` 를 가진 키, `Authorization: Bearer <adminToken>` 셋입니다.
+`/_api/backends` 와 같은 기준이고, 그 밖의 키에는 `null` 로 나갑니다.
+
+이미지 `0.1.21` 이상입니다.
 
 ### 미완료 멀티파트 만료 기준
 
@@ -662,15 +775,15 @@ GC가 미완료 멀티파트 업로드를 만료로 보는 기준은 `config.mul
 ```bash
 # 마지막 GC 결과
 curl -s http://localhost:8080/_api/gc/last-result \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
+  -H "Authorization: Bearer $GC_TOKEN"
 
 # 최근 20건 이력
 curl -s "http://localhost:8080/_api/gc/history?limit=20" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
+  -H "Authorization: Bearer $GC_TOKEN"
 
 # 고아 블롭 수
 curl -s http://localhost:8080/_api/gc/orphan-count \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
+  -H "Authorization: Bearer $GC_TOKEN"
 ```
 
 ### 메트릭 (Prometheus)
@@ -685,8 +798,18 @@ curl -s http://localhost:8080/_internal/metrics \
 `/_admin/*`(액세스 키 관리)까지 여는 자격증명입니다 — 스크레이프 용도로 배포하면
 삭제 권한을 함께 넘기게 됩니다. `metricsToken`은 이 엔드포인트에서만 통합니다.
 
-`metricsToken`을 설정하지 않으면 서버가 `ADMIN_TOKEN`으로 폴백하므로, 위 명령을
-`$ADMIN_TOKEN`으로 바꿔도 동작합니다(기존 배포 동작 유지).
+`metricsToken`을 설정하지 않으면 서버가 `adminToken`으로 폴백하므로, 위 명령을
+그 토큰으로 바꿔도 동작합니다(기존 배포 동작 유지).
+
+**이 경로에는 SigV4 분기가 없습니다.** 액세스 키로는 열리지 않고 root 키로도 `401`입니다.
+관리 평면에서 유일한 예외입니다.
+
+**두 토큰이 다 비면 닫히는 것이 아니라 무인증으로 열립니다.** `/_admin/*`·GC는 auth를 켜면
+토큰이 비어도 `401`로 닫히는데, 이 경로만 빈 토큰 폴백이 통과시킵니다. 그 상태면 기동 시
+경고가 뜹니다(이미지 `0.1.21` 이상).
+
+`adminToken`은 폐기 예정이므로(이미지 `0.1.24` 제거), 그 값을 비울 때 `auth.metricsToken`을
+반드시 함께 채우십시오.
 
 **노출되는 지표는 `cas_*` 12종입니다.** 타입·단위와 각 값이 무엇을 보는지(특히 `cas_db_pool_*`
 가 어느 풀을 보고하는지)는 차트 README 의 "메트릭 스크레이프" 절에 표로 정리했습니다.

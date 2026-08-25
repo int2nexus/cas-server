@@ -1,4 +1,5 @@
 {{- include "cas-server.validateStorage" . }}
+{{- include "cas-server.validateAuth" . }}
 {{- if .Values.gc.enabled }}
 {{- /*
   GC CronJob 은 하나 또는 둘이다.
@@ -23,6 +24,16 @@
 {{- fail (printf "gc.phases 에 알 수 없는 단계 %q 가 있습니다. multipart, orphan, purge 중에서 고르십시오 (예: \"multipart,purge\"). 비워 두면 세 단계 모두 실행합니다." $p) }}
 {{- end }}
 {{- end }}
+{{- end }}
+{{- /*
+  orphan 이 어느 Job 에서도 돌지 않는 조합을 막는다.
+  전에는 매 실행 경고만 남겼는데, 로그 보존 창이 짧은 환경에서 경고 한 줄은 없는 것과 같다.
+  그리고 오타(`orphn`)는 렌더가 거부하는데 의미상 더 위험한 이 조합은 통과해서, 가드가
+  일관되지 않았다(2026-08-21 고객 리포트 §2-3).
+  "성공했는데 아무 일도 안 한 상태" 가 가장 비싼 실패다 — 회수가 영영 돌지 않는다.
+*/}}
+{{- if and $phases (not (contains "orphan" $phases)) (not .Values.gc.fullSweep.enabled) }}
+{{- fail "gc.phases 에서 orphan 을 빼면 gc.fullSweep.enabled 를 켜야 합니다. 둘 다 아니면 참조가 사라진 blob 이 회수되지 않고 계속 쌓입니다. 회수를 아예 돌리지 않으실 의도라면 gc.enabled: false 로 두십시오." }}
 {{- end }}
 {{- $jobs := list (dict "suffix" "" "schedule" .Values.gc.schedule "phases" $phases "deadline" .Values.gc.activeDeadlineSeconds) }}
 {{- if .Values.gc.fullSweep.enabled }}
@@ -82,17 +93,20 @@ spec:
               [ "$MAX_WAIT" -gt 60 ] && MAX_WAIT=$((MAX_WAIT - 60))
 
               # 인증 헤더를 positional params에 저장 (공백 보존).
-              {{- if $.Values.auth.adminToken }}
-              set -- -H "Authorization: Bearer ${ADMIN_TOKEN}"
-              {{- else }}
-              set --
-              {{- end }}
-
-              {{- if and $.Values.gc.phases (not (contains "orphan" (nospace $.Values.gc.phases))) (not $.Values.gc.fullSweep.enabled) }}
-              # 이 배포에는 orphan 스캔을 도는 Job 이 하나도 없다. values 를 그렇게
-              # 쓴 것이 의도일 수 있어 막지는 않지만, 매 실행에 남겨 드러나게 한다.
-              echo "경고: gc.phases 에 orphan 이 없고 gc.fullSweep 도 꺼져 있습니다 — 참조가 사라진 blob 이 회수되지 않고 계속 쌓입니다."
-              {{- end }}
+              #
+              # Secret 에 auth-gc-token 이 있으면 그것을, 없으면 admin 토큰을 쓴다.
+              # 둘 다 비면 헤더를 붙이지 않는다. values 쪽 스위치를 두지 않는 이유는 두 키가
+              # optional 참조라 **Secret 에 값이 있는지가 그대로 스위치**이기 때문이다 —
+              # 스위치를 따로 두면 그 둘이 어긋날 수 있다.
+              #
+              # ADMIN_TOKEN 폴백은 폐기 예정이다 — 이미지 0.1.24 에서 제거되면 이 Job 은
+              # auth-gc-token 없이는 401 이 된다. 그 전에 그 키를 채울 것.
+              TOKEN="${GC_TOKEN:-${ADMIN_TOKEN:-}}"
+              if [ -n "$TOKEN" ]; then
+                set -- -H "Authorization: Bearer ${TOKEN}"
+              else
+                set --
+              fi
 
               # 1) 트리거 전 마지막 ran_at 기록 (이번 실행 완료 감지 기준)
               prev=$(curl -sS --max-time 30 "$@" "$BASE/_api/gc/last-result" | grep -o '"ran_at":"[^"]*"' || true)
@@ -103,6 +117,8 @@ spec:
               code=$(curl -sS --max-time 30 -o /tmp/resp -w '%{http_code}' -X POST "$@" "$BASE/_internal/gc?dry_run=false{{ if $job.phases }}&phases={{ $job.phases }}{{ end }}")
               echo "트리거 응답: $code $(cat /tmp/resp 2>/dev/null)"
               if [ "$code" = "409" ]; then echo "이미 GC 실행 중 — 스킵"; exit 0; fi
+              # 401은 자격증명 문제다 — 비었든 틀렸든 회전 뒤 어긋났든 여기서 잡힌다.
+              if [ "$code" = "401" ]; then echo "인증 실패 — Secret 의 auth-gc-token / auth-admin-token 을 확인하십시오"; exit 1; fi
               # 400은 phases 값이 서버가 모르는 이름이라는 뜻이다. 서버가 조용히 넘기지
               # 않으므로 여기서도 실패로 남긴다 — 오타 하나로 의도한 단계가 빠진 채
               # 성공으로 보이면 회수가 멈춘 것을 아무도 모른다.
@@ -123,14 +139,21 @@ spec:
                 fi
               done
               echo "GC 완료 대기 타임아웃 (${MAX_WAIT}s)"; exit 1
-            {{- if $.Values.auth.adminToken }}
+            # 둘 다 optional 이다. 키가 없으면 unset 이 되고 위 스크립트가 넘어간다.
             env:
+            # 폐기 예정 — 이미지 0.1.24 에서 제거 시 이 블록도 함께 지운다.
             - name: ADMIN_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ include "cas-server.fullname" $ }}
                   key: auth-admin-token
-            {{- end }}
+                  optional: true
+            - name: GC_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cas-server.fullname" $ }}
+                  key: auth-gc-token
+                  optional: true
             resources:
               requests:
                 cpu: "10m"

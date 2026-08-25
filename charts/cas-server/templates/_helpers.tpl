@@ -29,6 +29,23 @@ updateStrategy: Recreate 조합에서는 전면 장애가 된다. 클러스터�
 {{/*
 앱 이름 (nameOverride 지원)
 */}}
+{{/*
+auth 를 켜면 root 키가 필수다. 서버도 이 조합에서 기동을 거부하지만, replicaCount 가 1 이라
+기동 실패는 곧 전면 중단이므로 렌더에서 먼저 막는다.
+
+useExternalSecret: true(기본값)에서는 값이 sealed-secret 안에 있어 검사할 수 없다.
+그 구성에서는 서버의 기동 검사가 유일한 그물이다.
+*/}}
+{{- define "cas-server.validateAuth" -}}
+{{- if not .Values.secrets.useExternalSecret }}
+{{- if .Values.secrets.secretMasterKey }}
+{{- if or (not .Values.secrets.rootAccessKeyId) (not .Values.secrets.rootSecretKey) }}
+{{- fail "secrets.secretMasterKey 를 설정하면(=auth 켬) secrets.rootAccessKeyId 와 secrets.rootSecretKey 도 필요합니다. root 키가 첫 액세스 키를 발급할 부트스트랩 신원입니다. 서버도 이 조합에서 기동을 거부합니다." }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+
 {{- define "cas-server.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
 {{- end }}

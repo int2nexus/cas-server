@@ -13,6 +13,7 @@
 ## <version>
 
 image: `int2jieun/cas-server:<tag>` (변경 없음이면 그렇게 적기)
+digest: `sha256:...` (이미지가 바뀐 버전에만. 태그는 다시 밀릴 수 있어 digest 가 유일한 고정점)
 
 **동작 변경** — 없음
 **마이그레이션** — 없음
@@ -81,6 +82,421 @@ cas-server 는 기동 시 `CREATE TABLE IF NOT EXISTS` 만 실행하므로 보�
   > 그 규칙대로 적힌 라벨을 신뢰해 롤백을 시도하면 복구 압박이 큰 순간에 파드가 뜨지 않습니다.
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
+
+## 0.1.28
+
+image: `int2jieun/cas-server:0.1.21`
+digest: `sha256:56fbf6a55550a63d95fcdf38f392dcdc3142424d95c2c8bc586a1a757a550892`
+
+**동작 변경** — `/_api/*` 가 실제로 인증을 요구합니다
+
+`0.1.20` 의 CHANGELOG 에 이 경로들이 인증 뒤로 갔다고 적었으나, **`auth.anonymousGet: true`
+인 배포에서는 성립하지 않았습니다.** 그 값이 이 차트의 기본값이므로 기본 설치가 전부
+해당됐습니다.
+
+익명 GET 판정이 경로를 보지 않고 세그먼트 수만 세어, `/_api/stats` 를 `_api`·`stats` 2개짜리
+`/{bucket}/{key}` 로 보고 인증 미들웨어 앞에서 통과시켰습니다. `/_api/blobs/{hash}` 가 `403`
+이 아니라 `404` 였던 것도 같은 이유입니다.
+
+`0.1.21` 에서 `_` 로 시작하는 최상위 경로를 익명 판정에서 제외했습니다. 자격증명 없이 친
+결과입니다(`anonymousGet: true`, auth 켬).
+
+| 경로 | `0.1.20` | `0.1.21` |
+|---|---|---|
+| `/_api/stats` · `buckets` · `backends` | `200` | `403` |
+| `/_api/blobs/{hash}` | `404` | `403` |
+| `/_api/gc/*` | `401` | `401` |
+| `/_api/auth-mode` · `/_ui` | `200` | `200` |
+| `GET`/`HEAD /{bucket}/{key}` | 익명 허용 | 익명 허용 |
+
+**데이터 평면은 바뀌지 않습니다.** 제외 대상은 예약 경로 넷(`_api`·`_ui`·`_internal`·`_admin`)
+뿐입니다. `_` 로 시작하는 이름 전체를 막지 않습니다 — 서버가 버킷 이름을 검증하지 않아
+`_foo` 같은 버킷이 실제로 만들어지고, 넓게 막으면 그런 버킷의 익명 읽기가 이 버전에서 조용히
+끊깁니다.
+
+**운영 조치** — `/_api/*` 를 자격증명 없이 호출하는 곳이 있으면 이 버전에서 `403` 이 됩니다.
+`0.1.20` 에서 이미 끊겼을 것으로 보셨다면 실제로는 아직 동작 중이었을 수 있습니다.
+
+같은 tgz 의 README「노출 주의」절이 `0.1.20` 때 갱신되지 않아 CHANGELOG 와 반대로 적혀
+있었습니다. 이 버전에서 맞췄습니다.
+
+**동작 변경** — `GET /_api/config-effective` 가 생겼습니다
+
+지금 그 프로세스에 적용된 설정을 돌려줍니다. 기동 첫 줄 로그와 같은 내용이지만, **로그 보존
+창이 짧은 배포에서는 그 줄을 나중에 볼 수 없습니다.** 차트 렌더 결과가 아니라 프로세스가 읽은
+값이라 `extraEnv` 오버라이드도 여기 드러납니다.
+
+```json
+{
+  "db_url": "postgresql://postgres:***@pg/cas",
+  "multipart_ttl_secs": 86400,
+  "console_enabled": true,
+  "auth": { "admin_token": "<set>", "secret_master_key": "<set>", "anonymous_get": true },
+  "storage_backends": [
+    { "id": "s3-1", "backend_type": "s3", "endpoint": null,
+      "access_key_id": "<set>", "secret_access_key": "<set>" }
+  ]
+}
+```
+
+**자격증명은 값으로 나가지 않습니다.** `<set>`/`<unset>` 만 나가고 `db_url` 의 비밀번호는
+가려집니다.
+
+백엔드 스토리지 주소(`endpoint`)는 `/_api/backends` 와 같은 기준으로 채웁니다 — root 키,
+`cas:ManageAccessKeys` 를 가진 키, `Authorization: Bearer <adminToken>` 셋입니다. 그 밖의
+키에는 `null` 입니다.
+
+다른 `/_api/*` 와 같이 SigV4 인증이 필요합니다.
+
+**동작 변경** — `gc.phases` 에서 `orphan` 을 빼고 `fullSweep` 을 끄면 렌더가 실패합니다
+
+`0.1.27` 은 그 조합을 경고 한 줄로만 알렸습니다. 로그 보존 창이 짧은 환경에서 경고는 없는
+것과 같고, 오타(`orphn`)는 렌더가 거부하는데 의미상 더 위험한 이 조합은 통과해 가드가
+일관되지 않았습니다.
+
+이제 `helm install`·`upgrade` 가 사유와 함께 실패합니다. 회수를 아예 돌리지 않으실 의도라면
+`gc.enabled: false` 로 두십시오.
+
+**주의** — 그 조합으로 배포 중이셨다면 이 버전으로 올릴 때 렌더가 실패합니다. `gc.phases` 를
+비우거나 `gc.fullSweep.enabled: true` 로 두십시오.
+
+**동작 변경** — `config.multipartTtlSecs` · `config.consoleEnabled` 가 `null` 이면 렌더가 실패합니다
+
+키를 **생략**하는 것은 지금도 정상입니다 — Helm 이 차트 기본값을 병합합니다. 다만 명시적으로
+`null` 을 쓰면 `multipart_ttl_secs = 0` 과 `console_enabled = `(빈 값)이 렌더됐습니다.
+앞은 진행 중인 업로드의 파트를 조립 전에 회수하고, 뒤는 유효한 TOML 이 아니라 파드가 기동에
+실패합니다.
+
+`null` 을 기본값으로 조용히 바꾸지 않고 렌더에서 거부합니다. `false` 와 `0` 은 유효한 값이므로
+그대로 통과합니다.
+
+**동작 변경** — 관리 API 조작이 로그에 남습니다
+
+`0.1.20` 까지는 액세스 키 발급·폐기와 정책 추가·삭제가 서버에 아무 흔적도 남기지
+않았습니다. 접근 로그에 `POST /_admin/access-keys` 는 찍혔지만, **어떤 키가 만들어졌는지는
+응답 본문에만 있어 로그로는 알 수 없었습니다.**
+
+이제 네 조작이 기존 `request_id` 스팬 안에 남습니다.
+
+```
+관리: 액세스 키 발급  key_id=CASK… description=… expires_at=…
+관리: 액세스 키 폐기  key_id=CASK…
+관리: 정책 추가       key_id=CASK… policy_id=… effect=… action=… bucket=… prefix=…
+관리: 정책 삭제       key_id=CASK… policy_id=…
+```
+
+**비밀키는 남기지 않습니다.** 발급 응답이 평문을 내주는 유일한 자리이고, 로그에 한 번 새면
+열람자가 그대로 쓸 수 있습니다.
+
+`RUST_LOG=info` 가 필요하며 차트 기본값이 그것입니다.
+
+**동작 변경** — 없는 대상에 대한 삭제 요청이 `WARN` 으로 남습니다
+
+```
+관리: 없는 액세스 키에 폐기 요청 — 부르는 쪽 목록이 실제와 어긋났을 수 있다
+관리: 없는 정책에 삭제 요청
+```
+
+**HTTP 응답은 `204` 그대로입니다.** 폐기는 멱등이어야 하고, 이미 없는 것을 없애 달라는
+요청은 결과적으로 만족되기 때문입니다. 다만 그 요청이 왔다는 것은 **부르는 쪽이 가진 키
+목록이 실제와 어긋났다는 신호**이므로 조용히 넘기지 않습니다.
+
+키 관리를 외부 시스템이 대신하는 배포에서는 이 줄이 곧 "회수됐어야 할 키가 남아 있을 수
+있다" 는 뜻이 됩니다.
+
+**주의** — 로그 기반 알림을 쓰신다면 규칙을 확인하십시오
+
+위 `WARN` 두 줄이 새로 생깁니다. `WARN` 수준 전체에 알림을 걸어 두셨다면 이 줄들이 함께
+걸립니다. 정상 운영에서는 나오지 않는 줄이지만, 대사(對査) 작업 중에는 반복해서 나올 수
+있습니다.
+
+**동작 변경** — 관리 API 를 액세스 키로 열 수 있습니다
+
+`0.1.20` 까지 `/_admin/*`(액세스 키 발급·폐기, 정책 관리)는 `secrets.adminToken` 하나만
+받았습니다. 그 토큰은 사람별이 아니라 공용 고정 문자열이라 **관리 조작에 누가 했는지가 남지
+않고, 회수하려면 값을 바꿔 재배포해야 하며 그러면 그 토큰을 쓰던 모두가 함께 끊깁니다.**
+
+이제 액세스 키에 관리 정책을 붙여 쓸 수 있습니다.
+
+| 액션 | 대상 |
+|---|---|
+| `cas:ReadAccessKeys` | 키·정책 목록 조회 |
+| `cas:ManageAccessKeys` | 키 발급·폐기, 정책 추가·삭제 **+ 목록 조회** |
+
+`cas:ManageAccessKeys` 하나면 콘솔의 키 화면이 열립니다. `cas:ReadAccessKeys` 는 발급·폐기
+없이 목록만 여는 감사·대조 전용 자격증명을 만들 때 씁니다.
+
+사람마다 키를 하나씩 주면 관리자를 둘 이상 둘 수 있고, 한 사람을 끊을 때 나머지가 살아
+있습니다. 조작은 그 `key_id` 와 함께 로그에 남습니다.
+
+```
+관리: 액세스 키 발급 actor="CASKalice…" key_id=CASKnew…
+관리: 액세스 키 발급 actor="<bearer>"    key_id=CASKnew…
+```
+
+`adminToken` 은 그대로 받습니다. 그 토큰으로 한 조작은 행위자를 특정할 수 없어 `<bearer>` 로
+남습니다. 부트스트랩은 이제 root 키가 맡고, GC CronJob 은 GC 토큰을 쓸 수 있습니다
+(아래 두 절).
+
+설정 방법은 차트 README 의 "관리 API 자격증명" 을 참고하십시오.
+
+> **키 관리를 대신하는 외부 시스템에는 `adminToken` 이 아니라 액세스 키를 주십시오.**
+> 토큰을 주면 그 시스템이 `POST /_internal/gc`(blob 물리 삭제)까지 여는 자격증명을 상시
+> 보유하게 됩니다.
+
+**주의** — 기존 키의 권한은 넓어지지 않습니다
+
+정책의 `"*"` 는 **데이터 평면 액션에만** 걸립니다. 관리 권한은 이름을 명시적으로 적은
+정책에만 붙습니다. 그러지 않으면 `action: "*"` 로 발급하신 기존 키 전부가 이 버전에서 키
+발급·폐기 권한을 얻게 됩니다.
+
+정책이 붙지 않은 기존 키는 관리 권한을 얻지 않습니다. **root 키는 예외입니다** — 아래
+「root 키가 관리 평면 전권을 갖습니다」를 보십시오.
+
+**동작 변경** — 정책의 `action` 이름을 검증합니다
+
+`0.1.20` 까지는 자유 문자열이라 `PutObjekt` 같은 오타가 **영원히 아무것에도 걸리지 않는
+정책**을 만들었습니다. 만든 쪽은 권한을 준 줄 압니다.
+
+이제 정의되지 않은 이름은 `400` 입니다. `cas:*` 처럼 관리 액션에 와일드카드를 적는 것도
+거절합니다 — 그렇게 적으면 아무것도 매치하지 않아, 관리자를 만들었다고 생각한 배포에
+관리자가 없는 상태가 됩니다.
+
+**이미 저장된 정책은 그대로 둡니다.** 지금도 아무것에도 걸리지 않으므로 동작이 바뀌지
+않습니다. 다만 그런 정책이 있는지 한 번 확인해 보시는 편이 좋습니다 —
+`GET /_admin/access-keys/{key_id}/policies` 로 볼 수 있습니다.
+
+**동작 변경** — root 키가 관리 평면 전권을 갖습니다
+
+`0.1.20` 까지 root 키로 `/_admin/*` 을 부르면 `403` 이었습니다. 이제 `200` 입니다.
+
+권한이 넓어진 것이 아니라 **자격증명 하나를 없앤 것**입니다. 그 전에는 관리자가 되려면
+`adminToken` 이 있어야 했고, 그래서 운영자는 root 키와 admin 토큰 둘을 유지해야 했습니다.
+root 는 이미 데이터 전체를 지울 수 있으므로 관리 평면을 막아 얻는 것이 없고, root 는 SigV4
+신원이라 조작이 `key_id=CASKroot` 로 기록됩니다 — `<bearer>` 보다 낫습니다.
+
+**동작 변경** — auth 를 켜면 root 키가 필수입니다
+
+`secrets.secretMasterKey` 를 설정했는데 `secrets.rootAccessKeyId` 또는
+`secrets.rootSecretKey` 가 비어 있으면 **서버가 기동하지 않습니다.**
+
+auth 를 켜면 첫 액세스 키를 만들 부트스트랩 신원이 필요한데, 그 자리를 `adminToken` 이
+대신하면 관리 조작이 `<bearer>` 로만 남습니다. root 를 요구하면 불변식이 하나가 됩니다 —
+**auth 가 켜져 있으면 귀속 가능한 비상 신원이 언제나 하나 존재합니다.**
+
+`secrets.useExternalSecret: false` 인 경우에는 `helm install`·`upgrade` 가 먼저 막습니다.
+기본값(`true`)에서는 실제 값이 sealed-secret 안에 있어 차트가 볼 수 없으므로 검사하지
+않습니다 — 그 구성에서는 서버의 기동 검사가 유일한 그물입니다.
+
+NoAuth 배포(`secretMasterKey` 가 빔)는 해당하지 않습니다.
+
+**주의** — sealed-secret 에 root 키가 비어 있지 않은지 이 버전으로 올리기 전에 확인하십시오.
+`replicaCount` 가 1 이라 기동 거부는 곧 전면 중단입니다.
+
+**동작 변경** — `adminToken` 이 비면 관리 평면이 `401` 로 닫힙니다
+
+`0.1.20` 까지 **auth 를 켜고 `adminToken` 만 비워 두면 `/_admin/*` 이 자격증명 없이
+열렸습니다.** 액세스 키 발급까지 됐습니다. 게이트가 "허용 토큰이 하나도 없으면 내부망
+전용 환경으로 보고 통과" 라는 규칙이었기 때문입니다 — 그 가정은 auth 자체가 꺼진 배포를
+상정한 것인데, `/_admin/*` 은 auth 를 켰을 때만 붙습니다.
+
+root 키를 설정했으니 그것이 관리자겠거니 하고 토큰을 비워 두는 것이 그 구성에 이르는
+자연스러운 경로입니다. 위의 "root 키 필수" 와 함께, 그 경로가 이제 안전합니다.
+
+자격증명 없이 친 결과입니다 (auth 켬, `adminToken` 빔).
+
+| 경로 | `0.1.20` | `0.1.21` |
+|---|---|---|
+| `GET /_admin/access-keys` | `200` | `401` |
+| `POST /_admin/access-keys` | `201` (키가 발급됨) | `401` |
+| `POST /_internal/gc` | `200` | `401` |
+
+`GET /_internal/metrics` 는 그대로입니다. 읽기 전용이고, 빈 토큰 폴백은 기존 스크레이프
+배선을 위한 것입니다.
+
+**동작 변경** — GC 전용 토큰과 GC 액션이 생겼습니다
+
+GC 경로가 `/_admin/*` 과 같은 자격증명을 쓰고 있었습니다. GC 를 도는 주체는 보통 사람이
+아니라 CronJob 인데, 주기 실행을 붙이는 순간 **그 Job 의 시크릿이 액세스 키 발급·폐기
+권한까지 들게 됩니다.** GC 에 필요한 것은 blob 물리 삭제 하나뿐입니다.
+
+GC 토큰을 설정하면 GC CronJob 이 그것을 씁니다. 그 토큰으로는 `/_admin/*` 이 열리지
+않습니다. 켜지 않으면 `adminToken` 으로 돌아가므로 **기존 배포는 그대로 동작합니다.**
+
+**설정은 한 곳입니다.** Secret 의 `auth-gc-token` 키에 값을 넣으면 서버와 CronJob 이 둘 다
+그것을 씁니다. 켜기/끄기 값은 없습니다 — 키가 있는지가 그대로 스위치입니다.
+`useExternalSecret: false` 로 차트가 Secret 을 만드는 경우에만 `secrets.gcToken` 에 넣으십시오.
+
+SigV4 쪽으로는 액션 둘이 늘었습니다.
+
+| 액션 | 여는 것 |
+|---|---|
+| `cas:ReadGc` | `GET /_api/gc/*` |
+| `cas:RunGc` | `POST /_internal/gc` **+ GC 조회** |
+
+정책의 `"*"` 는 이 둘도 열지 않습니다 — 관리 평면 액션이기 때문입니다. 콘솔 GC 탭은
+`cas:ReadGc` 를 가진 키로 로그인하면 그대로 열립니다(`0.1.20` 까지는 `adminToken` 전용이라
+키로 로그인한 사람에게는 잠겨 있었습니다).
+
+**운영 조치** — GC CronJob 에서 키 관리 권한을 떼시려면 sealed-secret 에 `auth-gc-token` 키를
+추가하십시오. 그것으로 끝입니다 — 서버와 CronJob 이 같은 키를 읽습니다.
+하지 않으셔도 됩니다 — 그러면 `adminToken` 을 계속 씁니다.
+
+**동작 변경** — 콘솔에서 Admin Token 입력창이 사라졌습니다
+
+`0.1.20` 까지 콘솔의 GC 탭과 Keys 탭은 상단 입력창에 `adminToken` 을 넣어야 열렸습니다.
+위의 세 절로 관리 평면이 모두 정책으로 열리므로 입력창을 없앴습니다. 화면은 로그인한 키의
+정책으로 열립니다.
+
+| 화면 | 필요한 권한 |
+|---|---|
+| Keys 탭 (목록) | `cas:ReadAccessKeys` 또는 `cas:ManageAccessKeys` |
+| 키 발급 · revoke 버튼 | `cas:ManageAccessKeys` |
+| GC 탭 · Dashboard 의 Last GC | `cas:ReadGc` 또는 `cas:RunGc` |
+| GC 실행 · Dry-run 버튼 | `cas:RunGc` |
+
+root 키는 전부 열립니다. 권한이 없는 화면은 탭이 표시되지 않습니다.
+
+같은 변경으로 버튼 노출이 권한과 맞춰집니다. `0.1.20` 의 콘솔은 `GET /_admin/access-keys` 를
+호출해 `200` 이면 화면을 열었는데, 그 경로가 `cas:ReadAccessKeys` 와 `cas:ManageAccessKeys`
+양쪽으로 열려 둘이 구분되지 않았습니다. `cas:ReadAccessKeys` 만 가진 키에도 발급·revoke
+버튼이 표시됐고, 호출하면 `403` 이었습니다. 이제 그 키에는 버튼이 표시되지 않습니다.
+
+`adminToken` 과 GC 토큰은 서버에서 그대로 동작합니다. 콘솔 입력창만 없앴습니다.
+
+**운영 조치** — 콘솔로 GC·키 관리를 하던 계정에는 해당 권한을 가진 액세스 키가 필요합니다.
+`adminToken` 으로는 콘솔에서 열리지 않습니다(`curl` 은 그대로입니다). root 키로 로그인하거나
+위 표의 정책을 키에 붙이십시오.
+
+**주의** — `cas:ManageAccessKeys` 는 `cas:ReadAccessKeys` 를 함의하지 않습니다. 정책 모델에
+계층이 없습니다. 키 화면과 발급 버튼은 `cas:ManageAccessKeys` 하나로 열리지만
+`GET /_api/whoami` 의 `read_access_keys` 는 `false` 입니다. 둘 다 필요하면 둘 다 붙이십시오.
+
+**동작 변경** — `GET /_api/whoami` 가 생겼습니다
+
+호출한 자격증명의 관리 평면 권한을 반환합니다. 콘솔이 화면 구성에 씁니다. 값은 서버 인가
+미들웨어와 같은 판정기로 계산합니다.
+
+```json
+{
+  "key_id": "CASKroot",
+  "is_root": true,
+  "can": {
+    "read_access_keys": true,
+    "manage_access_keys": true,
+    "read_gc": true,
+    "run_gc": true
+  }
+}
+```
+
+각 값은 그 이름을 명시한 정책에만 `true` 입니다. `action: "*"` 정책은 관리 평면에 걸리지
+않아 전부 `false` 이고, NoAuth 배포도 전부 `false` 입니다(신원이 없고 관리 라우터가 붙지
+않습니다).
+
+다른 `/_api/*` 와 같이 SigV4 인증이 필요합니다.
+
+**동작 변경** — `secrets.adminToken` 을 폐기 예정으로 표시합니다
+
+이 토큰은 `/_admin/*` · GC · 메트릭 셋을 **모두 엽니다.** 좁은 토큰을 설정해도 빠지지
+않습니다 — `secrets.gcToken` 을 채워도 `adminToken` 은 GC 를 계속 엽니다. 게이트는 빈 토큰만
+후보에서 거를 뿐이고, 둘 다 값이 있으면 둘 다 받습니다.
+
+폐기하는 이유는 무력해서가 아니라 **셋 다 더 좁은 수단이 있는데 이 토큰만 그 셋을 한꺼번에
+열기 때문**입니다. `/_admin/*` 은 root 키와 `cas:ReadAccessKeys`·`cas:ManageAccessKeys` 정책
+키가, GC 는 `gcToken` 과 `cas:ReadGc`·`cas:RunGc` 가, 메트릭은 `auth.metricsToken` 이 엽니다.
+부트스트랩도 위의 「auth 를 켜면 root 키가 필수」로 root 키가 맡습니다. 그래서 이 토큰은
+대체 불가능한 자리를 갖지 않으면서 `gcToken`·`metricsToken` 으로 좁혀 둔 분리만 되돌립니다 —
+GC CronJob 에 `gcToken` 만 주더라도 `adminToken` 을 쥔 쪽은 키 발급·폐기까지 할 수 있습니다.
+
+**동작은 이 버전에서 바뀌지 않습니다.** 토큰은 그대로 받고 `gcToken`·`metricsToken` 의
+폴백도 그대로입니다. 달라지는 것은 auth 를 켠 배포에서 값이 설정돼 있으면 기동 시 경고가
+한 줄 뜨는 것뿐입니다.
+
+```
+auth.admin_token이 /_admin/*·GC·메트릭 셋을 모두 엽니다. 좁은 토큰을 설정해도 빠지지
+않습니다 — auth.gc_token을 채워도 admin_token은 GC를 계속 엽니다.
+...
+이미지 0.1.24에서 제거됩니다. 그 전에 auth.gc_token과 auth.metrics_token을 채우고
+auth.admin_token을 비우십시오.
+```
+
+NoAuth 배포에서는 경고하지 않습니다. 그 모드에는 SigV4 신원이 없어 `adminToken` 이 아직
+GC·메트릭을 여는 실제 수단입니다.
+
+**운영 조치** — 제거는 **이미지 `0.1.24`** 입니다. 그 전에 `secrets.gcToken` 과
+`auth.metricsToken` 을 채우고 `secrets.adminToken` 을 비우십시오. Secret 키
+`auth-admin-token` 자체는 제거 시점까지 필수로 남습니다(`deployment` 가 `optional` 없이
+참조합니다) — 값만 비우면 됩니다.
+
+**주의** — 제거되면 `secrets.gcToken` · `auth.metricsToken` 의 `adminToken` 폴백도 함께
+사라집니다. 두 값이 비어 있으면 **결과가 서로 다릅니다.**
+
+| 경로 | `gcToken`/`metricsToken` 이 빈 채로 `adminToken` 이 사라지면 |
+|---|---|
+| `POST /_internal/gc` · `GET /_api/gc/*` | `401` — GC CronJob 이 실패합니다 |
+| `GET /_internal/metrics` | **열립니다.** 무인증으로 `200` 입니다 |
+
+메트릭 경로에는 SigV4 분기가 없어 액세스 키로 열리지 않고, 두 토큰이 다 비면 닫히는 것이
+아니라 통과시킵니다(기존 스크레이프 배선을 위한 폴백입니다). `/_admin/*` · GC 와 다릅니다.
+
+`auth.metricsToken` 을 반드시 함께 채우십시오. 두 토큰이 다 비면 이미지 `0.1.21` 부터 기동
+시 경고가 뜹니다.
+
+```
+GET /_internal/metrics가 인증 없이 열려 있습니다 — auth.metrics_token과
+auth.admin_token이 둘 다 비어 있습니다.
+```
+
+**동작 변경** — `auth.adminToken` 게이트를 없앴습니다
+
+GC CronJob 이 Authorization 헤더를 붙일지 정하던 불리언 값입니다. 이제 **Secret 에 값이
+있는지가 그대로 스위치**이므로 지웠습니다.
+
+그 게이트는 Secret 과 어긋날 수 있었고, 어긋난 한쪽은 잘못된 상태였습니다.
+
+| Secret `auth-admin-token` | `auth.adminToken` | `0.1.27` | 이 버전 |
+|---|---|---|---|
+| 값 있음 | `true` | 헤더 붙음 | 같음 |
+| 값 있음 | `false` | **헤더 없음 → GC 트리거가 401, 회수가 영영 안 돎** | 헤더 붙음 |
+| 빈 값 | 무엇이든 | 헤더 없음 | 같음 |
+
+둘째 줄이 고쳐집니다. `deployment` 는 `auth-admin-token` 을 필수로 참조하므로 그 키에 값이
+있으면 **서버는 그 토큰을 요구합니다** — CronJob 만 안 보내는 상태였습니다.
+
+**values 에 `auth.adminToken` 이 남아 있어도 렌더는 실패하지 않습니다**(Helm 이 안 읽는 키를
+무시합니다). 정리하실 때 지우시면 됩니다.
+
+트리거가 `401` 이면 Job 이 사유를 적고 실패합니다. 전에는 토큰이 비었는지를 미리 검사했는데,
+그 검사는 "비었다" 만 잡고 "틀렸다"·"회전 뒤 어긋났다" 는 놓쳤습니다.
+
+**마이그레이션** — 없음
+
+**설정 키**
+
+| 키 | 기본값 | 뜻 |
+|---|---|---|
+| `secrets.gcToken` | `""` | GC 토큰 문자열. `useExternalSecret: false` 일 때만 쓰입니다 |
+| `image.digest` | `""` | 값이 있으면 `tag` 대신 이것으로 핀합니다 (`repository@sha256:...`) |
+
+Secret 키 `auth-gc-token` 이 늘었습니다(`optional` — 없어도 파드는 기동합니다).
+
+제거: `auth.adminToken` (위 참고).
+
+**동작 변경** — 이미지를 digest 로 핀할 수 있습니다
+
+태그는 같은 이름으로 다시 밀릴 수 있어 "지금 무엇을 돌리고 있는가" 를 확정하지 못합니다
+(2026-08-21 리포트 4-5 ⑵). 이 버전부터 각 릴리스의 digest 를 **CHANGELOG 절 맨 위에 `image`
+와 함께** 싣고, `image.digest` 로 그 값을 핀할 수 있습니다.
+
+```yaml
+image:
+  repository: int2jieun/cas-server
+  digest: "sha256:..."   # 이 값이 있으면 tag 는 무시됩니다
+```
+
+렌더 결과가 `int2jieun/cas-server@sha256:...` 가 됩니다. 비워 두면 지금까지와 같이 `tag` 로
+참조하므로 **기존 배포는 그대로입니다.**
 
 ## 0.1.27
 
