@@ -163,8 +163,9 @@ Keys 탭에서 설명(description)과 선택적 만료일을 입력하고 발급
 - **`action: "*"` 는 데이터 평면에만 걸립니다.** `cas:ReadAccessKeys`·`cas:ManageAccessKeys`·
   `cas:ReadGc`·`cas:RunGc` 는 이름을 명시한 정책에만 붙습니다. 그러지 않으면 `*` 로 발급된
   기존 키 전부가 키 발급·GC 실행 권한을 얻게 됩니다.
-- **`cas:ManageAccessKeys` 는 `cas:ReadAccessKeys` 를 함의하지 않습니다.** 둘 다 필요하면 둘 다
-  붙이십시오. 다만 목록 조회 라우트는 둘 중 하나로 열립니다.
+- **목록 조회는 둘 중 하나로 열립니다.** `cas:ManageAccessKeys` 만 준 키도 목록이 보입니다.
+  거꾸로 `cas:ReadAccessKeys` 만 준 키는 발급·폐기를 못 합니다 — 감사·대조 전용 자격증명이
+  그래서 성립합니다. GC 도 같아서 `cas:RunGc` 는 GC 조회를 포함합니다.
 
 **root 키는 폐기할 수 없습니다** — `DELETE /_admin/access-keys/<root>` 는 `403` 입니다.
 auth 를 켠 배포에서 root 는 필수 부트스트랩 신원이라, 비활성으로 만들면 관리 평면 접근 수단이
@@ -704,11 +705,12 @@ curl -s --aws-sigv4 "aws:amz:cas-default:s3" --user "$KEY_ID:$SECRET" \
 }
 ```
 
-각 값은 그 이름을 명시한 정책에만 `true` 입니다. `action: "*"` 정책은 관리 평면에 걸리지
-않아 전부 `false` 이고, NoAuth 배포도 전부 `false` 입니다.
+**각 값은 정책 원장이 아니라 실제로 열리는 것을 답합니다.** 목록 조회 라우트가 두 액션 중
+하나로 열리므로 Manage 만 가진 키도 `read_access_keys` 가 `true` 이고, GC 조회도 같아서
+`cas:RunGc` 만 가진 키는 `read_gc` 가 `true` 입니다. 거꾸로는 성립하지 않습니다.
 
-`cas:ManageAccessKeys` 는 `cas:ReadAccessKeys` 를 함의하지 **않습니다**. 다만 목록 조회
-라우트(`GET /_admin/access-keys`)는 둘 중 하나로 열리므로, Manage 만 가진 키도 목록은 봅니다.
+`action: "*"` 정책은 관리 평면에 걸리지 않아 전부 `false` 이고, NoAuth 배포도 전부
+`false` 입니다.
 
 #### `GET /_api/config-effective`
 

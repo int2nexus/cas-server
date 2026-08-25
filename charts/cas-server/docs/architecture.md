@@ -309,9 +309,10 @@ GC 경로는 `/_admin/*` 과 **별도 라우터**입니다. 위 두 액션 외�
 **root 키는 관리 평면 전권입니다** — 정책 없이 위 넷을 모두 통과합니다. 그리고 auth 를 켜면
 (`secrets.secretMasterKey` 설정) root 키가 **필수**입니다. 없으면 서버가 기동을 거부합니다.
 
-`cas:ManageAccessKeys` 는 `cas:ReadAccessKeys` 를 함의하지 **않습니다**. 다만 목록 조회
-라우트는 둘 중 하나로 열립니다 — 위 표의 "+ 목록 조회" 가 그것이고, `GET /_api/whoami` 의
-`read_access_keys` 는 그 경우에도 `false` 입니다.
+목록 조회 라우트는 `cas:ReadAccessKeys`·`cas:ManageAccessKeys` 중 하나로 열립니다 — 위 표의
+"+ 목록 조회" 가 그것이고, `GET /_api/whoami` 도 같은 기준으로 답합니다(Manage 만 가진 키도
+`read_access_keys` 가 `true`). 인가기 자체에는 계층이 없고, 그 포함 관계는 라우트가 어느
+액션들로 열리는지에서 나옵니다.
 
 정책의 `"*"` 는 데이터 평면 액션에만 걸립니다. 관리 권한은 이름을 명시적으로 적은 정책에만
 붙으므로, 기존에 `"*"` 로 발급된 키의 권한이 이 버전에서 넓어지지 않습니다.

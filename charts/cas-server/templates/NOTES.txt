@@ -42,5 +42,5 @@ cas-server 배포 완료
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 문서
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  아키텍처: https://github.com/int2nexus/cas-server/blob/cas-server-0.1.29/charts/cas-server/docs/architecture.md
-  사용법:   https://github.com/int2nexus/cas-server/blob/cas-server-0.1.29/charts/cas-server/docs/usage.md
+  아키텍처: https://github.com/int2nexus/cas-server/blob/cas-server-0.1.30/charts/cas-server/docs/architecture.md
+  사용법:   https://github.com/int2nexus/cas-server/blob/cas-server-0.1.30/charts/cas-server/docs/usage.md
