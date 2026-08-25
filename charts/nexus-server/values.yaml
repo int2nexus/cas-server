@@ -5,16 +5,25 @@
 #
 # ── 문서 ─────────────────────────────────────────────────────────────────────
 #   아키텍처 (도메인 모델·버전 관리·스냅샷 구조)
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.3/charts/nexus-server/docs/architecture.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.4/charts/nexus-server/docs/architecture.md
 #   사용법 (설치·SDK 연결·Dataset 워크플로우)
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.3/charts/nexus-server/docs/usage.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.4/charts/nexus-server/docs/usage.md
 #   차트 README
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.3/charts/nexus-server/README.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.4/charts/nexus-server/README.md
 # ─────────────────────────────────────────────────────────────────────────────
 
 image:
   repository: int2jieun/nexus-server
-  tag: "0.1.6"
+  tag: "0.1.7"
+  # digest 로 핀하려면 여기에 넣으십시오 (`sha256:...`). 값이 있으면 tag 대신 이것이
+  # 쓰이고, 렌더 결과가 `repository@sha256:...` 가 됩니다.
+  #
+  # 태그는 같은 이름으로 다시 밀릴 수 있어 "지금 무엇을 돌리고 있는가" 를 확정하지
+  # 못합니다. digest 는 내용 주소라 그 문제가 없습니다. 각 버전의 digest 는 그 버전의
+  # CHANGELOG 절 맨 위에 image 와 함께 적혀 있습니다.
+  #
+  # 비워 두면 지금까지와 같이 tag 로 참조합니다.
+  digest: ""
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -100,13 +109,40 @@ auth:
   # 끄기 전에 **필요한 계정을 먼저 만들어 둘 것** — 끈 뒤에는 superuser도 새 계정을
   # 만들 수 없다(계정 생성 API가 register 하나뿐이다).
   registrationEnabled: true
+  # 가입 승인 게이트. true로 하면 가입은 열려 있되 승인 전까지 아무것도 할 수 없다.
+  #
+  # 켜면 `POST /api/v1/auth/register`가 토큰 없이 202와 `{"status": "pending"}`을
+  # 반환한다. 승인 전에는 로그인·토큰갱신이 403이다. 승인은
+  # `POST /api/v1/admin/users/approve`, 대기 목록은 `GET /api/v1/admin/users/pending`
+  # — 둘 다 관리자 전용이므로 auth.superuserEmail을 함께 설정해야 한다.
+  #
+  # 켜기 전에 가입한 계정은 영향받지 않는다.
+  #
+  # 주의: 켜면 가입 화면이 202를 처리해야 한다. nexus-client 쪽 대응이 먼저 필요하다.
+  #
+  # 호환성: appVersion 0.1.7 이상. 그 이전 이미지는 이 env를 무시한다.
+  approvalRequired: false
+  # 인증이 사용자 행(역할·승인 상태·활성 상태)을 읽고 캐시하는 시간(초). 기본 5.
+  #
+  # 권한 회수·계정 정지·계정 삭제가 듣기까지의 상한이다. 0이면 매 요청 조회로 즉시 반영되지만
+  # 적재 부하에서 처리량이 20~33% 떨어진다(측정치, 인프라에 따라 다름). 조회 자체는
+  # 끌 수 없다 — 이 키는 얼마나 자주 다시 읽는지만 조절한다.
+  #
+  # "설정 안 함"은 빈 문자열(`""`)뿐이다.
+  #
+  # 호환성: appVersion 0.1.7 이상. 그 이전 이미지는 이 env를 무시한다.
+  revocationCacheTtlSecs: ""
   # OpenAPI 스펙(/api-docs/openapi.json)과 Swagger UI(/swagger-ui, /swagger-ui/).
   # false로 하면 세 경로가 **404**가 된다(403이 아니다).
   # 스펙 자체는 이미 전 경로에 인증이 걸려 있어 노출되는 것은 경로 목록뿐이다.
   docsEnabled: true
   # ── superuser (선택) ───────────────────────────────────────────────
-  # 비밀번호를 잊어 로그인할 수 없는 계정을 풀어주고, dataset 소유자를 지정하는 단일 관리
-  # 계정이다. **비우면 기능이 꺼지고** `/api/v1/admin/*` 는 누구에게나 403이다.
+  # 설정으로 지정하는 관리 계정이다. **비우면 관리자를 만들 부트스트랩 수단이 없다** —
+  # users.role = admin 은 마이그레이션이 백필하지 않으므로, 최초 한 명을 이 계정으로
+  # 만들어야 한다. 한 명이라도 생긴 뒤에는 이 값을 비워도 그 계정들이 관리 권한을 유지한다.
+  #
+  # 관리 권한의 출처는 둘이다 — 이 설정 계정(재배포로 즉시 회수)과 users.role = admin
+  # (운영 중 부여·회수, 캐시 수명만큼 늦게 듣는다).
   #
   # 켜려면 **두 곳을 함께** 채워야 한다 — 이메일은 여기, 비밀번호는 Secret의
   # NEXUS__AUTH__SUPERUSER_PASSWORD. **한쪽만 있으면 서버가 기동에 실패한다.** 일부러

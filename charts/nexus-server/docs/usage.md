@@ -180,46 +180,68 @@ result = client.delete_account("새비번123")          # 완전 삭제 — 되�
 
 - **비밀번호 변경은 새 로그인부터 적용된다.** 이미 발급된 토큰은 만료까지(기본 24시간, 배포마다 `jwt.ttlHours`로 다를 수 있다 — 아래 참조) 그대로 유효하다. 이 클라이언트 인스턴스는 계속 써도 된다.
 - 설정 파일(`~/.int2nexus/settings.json`)에 비밀번호를 적어두었다면 **그 파일도 함께 고쳐야 한다** — 안 그러면 다음 `nx.connect()`가 실패한다.
-- **`delete_account`는 비활성화가 아니라 삭제다.** 이메일이 풀려 같은 주소로 다시 가입할 수 있다.
-- **소유한 dataset이 하나라도 남아 있으면 삭제가 거부된다**(서버 0.1.6+, `NexusError(status_code=409)`). 먼저 [4.4](#44-dataset-소유권-이전-서버-016)의 이관으로 넘기거나 그 dataset을 삭제한 뒤 다시 부른다. 이전 서버에서는 삭제가 그대로 성공했고, 그 dataset들은 **주인이 없어져 인증된 누구나 수정·삭제할 수 있는** 상태로 남았다.
-- 삭제 응답의 **`released_datasets`는 그대로 있지만 이제 항상 `0`이다**(소유가 남아 있으면 삭제 자체가 거부되므로). 값을 읽는 코드는 고치지 않아도 되고, "0이 아닌지"로 판정하던 코드는 이제 409를 잡아야 한다.
-- 비밀번호가 틀리면 소유 여부와 무관하게 403이다 — 소유 검사는 비밀번호 확인을 통과한 뒤에 한다.
-- 비밀번호를 잊어 로그인할 수 없는 계정은 본인이 처리할 수 없다 — 차트 0.3.0부터 superuser가 `POST /api/v1/admin/users/password-reset`으로 임시 비밀번호를 발급한다(아래 참조). superuser를 설정하지 않은 배포에서는 여전히 운영자가 DB에서 처리해야 한다.
+- **`delete_account`는 비활성화가 아니라 삭제다.** 이메일이 풀려 같은 주소로 다시 가입할 수 있다. 되돌릴 필요가 있다면 삭제 대신 관리자가 계정을 정지할 수 있다(차트 0.3.4+, [2.1 superuser](#superuser-차트-030-선택)).
+- **소유한 dataset이 남아 있어도 삭제된다**(차트 0.3.4 / 서버 0.1.7). 0.3.2가 넣었던 409 거부는 철회됐다 — 그 근거는 "담당자가 비면 누구나 수정·삭제할 수 있게 된다"였는데, 담당자가 비어도 권한이 생기지 않게 되면서 사라졌다. 담당하던 dataset은 삭제되지 않고 **담당자만 해제**되며, 그 상태는 `GET /datasets?unowned=true`로 관측된다.
+- 삭제 응답의 **`released_datasets`는 해제된 dataset 수다.** 0.3.2~0.3.3에서는 항상 `0`이었지만(삭제 자체가 거부되었으므로) 이제 다시 실제 개수가 온다.
+- 비밀번호가 틀리면 403이다.
+- 비밀번호를 잊어 로그인할 수 없는 계정은 본인이 처리할 수 없다 — 차트 0.3.0부터 관리자가 `POST /api/v1/admin/users/password-reset`으로 임시 비밀번호를 발급한다(아래 참조).
 
 #### superuser (차트 0.3.0+, 선택)
 
-운영자가 `auth.superuserEmail`과 시크릿의 `NEXUS__AUTH__SUPERUSER_PASSWORD`로 지정한 **단일 관리 계정**이다. 설정하지 않은 배포에서는 `/api/v1/admin/*`가 누구에게나 403이다. 능력은 둘뿐이고, 사용자 목록·계정 비활성화·감사 로그는 없다.
+운영자가 `auth.superuserEmail`과 시크릿의 `NEXUS__AUTH__SUPERUSER_PASSWORD`로 지정한 관리 계정이다.
+
+**관리자는 둘 이상 둘 수 있다**(차트 0.3.4+). 관리 권한의 출처가 둘이기 때문이다 — 이 설정 계정과 `users.role = admin`. 후자는 이 계정이 `POST /api/v1/admin/users/role`로 부여한다. `admin`은 마이그레이션이 백필하지 않으므로 **최초 한 명을 만들려면 이 설정이 필요하고**, 한 명이라도 생긴 뒤에는 설정을 비워도 그 계정들이 관리 권한을 유지한다. 감사 로그는 없다.
 
 ```python
 import requests
-h = {"Authorization": f"Bearer {su_token}"}   # superuser 계정으로 로그인한 토큰
+h = {"Authorization": f"Bearer {admin_token}"}   # superuser 또는 role=admin 계정의 토큰
 
 # 1) 비밀번호를 잊은 계정 풀어주기 — 임시 비밀번호가 응답에 한 번만 실려 온다
 r = requests.post(f"{base}/api/v1/admin/users/password-reset",
                   json={"email": "잠긴사람@int2.us"}, headers=h)
 print(r.json()["password"])   # 어디에도 저장되지 않는다. 지금 전달할 것
 
-# 2) dataset 소유자 지정 — 양도와 인수(주인 없는 dataset)가 같은 연산이다
+# 2) 회원 목록 — 역할을 바꿀 대상을 찾는다
+r = requests.get(f"{base}/api/v1/admin/users",
+                 params={"email": "kim", "limit": 100}, headers=h)
+
+# 3) 역할 변경 / 계정 정지·해제
+requests.post(f"{base}/api/v1/admin/users/role",
+              json={"email": "동료@int2.us", "role": "admin"}, headers=h)
+requests.post(f"{base}/api/v1/admin/users/active",
+              json={"email": "떠난사람@int2.us", "active": False}, headers=h)
+
+# 4) 담당자 지정 — 담당자가 없는 dataset의 인수
 requests.put(f"{base}/api/v1/admin/datasets/{dataset_id}/owner",
-             json={"email": "새주인@int2.us"}, headers=h)
+             json={"email": "새담당자@int2.us"}, headers=h)
+
+# 5) 담당 일괄 이관 — A가 담당하던 전부를 B에게
+requests.post(f"{base}/api/v1/admin/datasets/transfer-owner",
+              json={"from_email": "떠난사람@int2.us", "to_email": "새담당자@int2.us"}, headers=h)
 ```
+
+- **계정 정지는 삭제가 아니다.** 이메일을 계속 점유하므로 그 주소로 재가입할 수 없고, `active: true`로 해제하면 그대로 돌아온다. 정지하면 로그인이 `403 forbidden`이 되고, **이미 발급된 토큰도 캐시 수명(`auth.revocationCacheTtlSecs`, 기본 5초) 안에 막힌다.**
+- **설정 superuser 계정은 역할 변경·정지의 대상이 될 수 없다**(403). 유일한 부트스트랩 수단이 스스로 잠기는 것을 막기 위해서다.
+- `GET /api/v1/admin/users`는 `?email=`(부분검색)·`?role=`로 좁히고 `?cursor=<마지막 user_id>`·`?limit=`(기본 100, 최대 1000)으로 페이지를 넘긴다. 각 행의 `is_superuser`가 `true`이면 위 제한이 걸리는 계정이다.
 
 - **임시 비밀번호는 응답에 한 번만 실려 온다.** 서버 어디에도 저장되지 않으니 그 자리에서 전달하고, 받은 사람은 곧바로 `client.change_password(...)`로 바꾼다.
 - **재설정해도 그 사람의 기존 토큰은 만료까지(기본 24시간, 배포마다 `jwt.ttlHours`로 다를 수 있다 — 아래 참조) 유효하다.** "잊어버림"을 푸는 도구지 "탈취 즉시 차단"이 아니다.
-- **소유권 이전은 즉시 적용된다.** 소유자 검사는 요청마다 DB를 보므로 이전 소유자는 그 다음 요청부터 403이다.
-- 주인 없는 dataset은 `GET /datasets`의 `owner_user_id`가 null인 것들이다. 방치해도 잠기지는 않지만 **인증된 누구나 쓸 수 있는** 상태로 남는다. **그것을 인수하는 데만 superuser가 필요하다** — 소유자가 있는 dataset을 넘기는 것은 서버 0.1.6부터 소유자 본인이 한다([4.4](#44-dataset-소유권-이전-서버-016)).
+- **담당자 이전은 캐시 수명 안에 적용된다.** 삭제 권한이 그 다음 요청부터 새 담당자에게 간다.
+- 담당자가 없는 dataset은 `GET /datasets?unowned=true`로 조회한다. 담당자가 비어도 권한이 생기지 않으므로 위험한 상태가 아니라 **인수 대기**다. 다만 그런 dataset은 `admin`만 지울 수 있다. 담당자가 있는 dataset을 넘기는 것은 담당자 본인이 한다([4.4](#44-dataset-담당자-이전-서버-016)).
 - **superuser 비밀번호를 바꾼 뒤에도 시크릿을 갱신할 필요가 없다.** `NEXUS__AUTH__SUPERUSER_PASSWORD`는 **그 계정이 없을 때 새로 만드는 용도로만** 읽힌다 — 계정이 이미 있으면 기동 시 값을 읽지도, 비교하지도 않는다. 그래서 시크릿의 값과 실제 로그인 비밀번호가 달라도 파드는 정상 기동하고, 반대로 시크릿을 바꿔 재배포해도 비밀번호는 바뀌지 않는다. 이 값을 "현재 비밀번호"가 아니라 **"계정 생성용 씨앗"**으로 보시는 편이 정확하다. 실제로 다시 쓰이는 경우는 하나뿐이다 — `auth.superuserEmail`을 **아직 가입되지 않은** 주소로 바꿔 재배포하면, 그때 이 값으로 새 계정이 만들어진다(이미 누가 쓰는 주소를 넣으면 그 계정을 채택하므로 그 사람이 superuser가 된다).
 - **다만 시크릿 값을 비우지는 마십시오.** 이메일만 있고 비밀번호가 없으면(공백만 있는 경우 포함) **서버가 기동에 실패한다.** 쓰이지 않는 값이라도 8자 이상으로 남겨 두어야 하며, 기능을 끄실 때는 `auth.superuserEmail`과 이 시크릿 키를 **함께** 비우십시오.
 
 #### 인증 관련 설정 (차트 0.3.0+)
 
-superuser 외에도 차트 0.3.0부터 인증 관련 설정 세 가지를 helm 값으로 조정할 수 있다.
+superuser 외에 인증 관련 설정을 helm 값으로 조정할 수 있다.
 
 | values 키 | 기본값 | 설명 |
 |---|---|---|
 | `jwt.ttlHours` | 빈 값 (서버 기본 **24**) | 발급 토큰의 수명(시간). 허용 범위 **1~8760**. 이 서버는 토큰을 무효화할 수 없으므로(위 계정 관리·superuser 항목 참조) 이 값이 곧 탈취·비밀번호변경·계정삭제 이후에도 토큰이 살아있는 최대 시간이다. **범위를 벗어난 값(`0` 포함)을 주면 서버가 기동에 실패한다** — DB 연결보다 먼저 검사하므로 "0을 줬는데 조용히 24시간으로 되돌아갔다"처럼 잘못 설정한 채 넘어가는 일이 없다. 줄이면 노출 시간은 줄지만 `POST /api/v1/auth/refresh` 호출이 그만큼 잦아진다. |
 | `auth.registrationEnabled` | `true` | `false`로 하면 `POST /api/v1/auth/register`만 403이 되고, 로그인·토큰 갱신·기존 계정은 영향을 받지 않는다. **끄기 전에 필요한 계정을 모두 만들어 둘 것** — 끈 뒤에는 계정을 새로 만들 방법이 없다(계정 생성 API가 register 하나뿐이라 superuser도 새 계정을 만들 수 없다). |
 | `auth.docsEnabled` | `true` | `false`로 하면 `/api-docs/openapi.json`, `/swagger-ui`, `/swagger-ui/` 세 경로가 **404**가 된다(라우트 자체가 등록되지 않아서다 — 403이 아니다). 스펙은 이미 전 경로가 인증 뒤에 있으므로, 이걸로 감추는 것은 API 경로 목록뿐이다. |
+| `auth.approvalRequired` (0.3.4+) | `false` | `true`로 하면 가입은 열어 둔 채 **승인 전까지 아무것도 할 수 없다.** 가입 요청은 계정을 만들되 **토큰을 주지 않고** `202`와 `{"status": "pending"}`을 반환하며, 승인 전에는 로그인·토큰 갱신이 `403`이다(본문 `pending_approval`). 승인은 `POST /api/v1/admin/users/approve`(본문에 `email`·`role` 필수), 대기 목록은 `GET /api/v1/admin/users/pending`. **켜기 전에 가입 화면이 `202`를 처리해야 하고**, 승인 엔드포인트가 관리자 전용이라 `auth.superuserEmail`도 함께 설정해야 한다. 켜기 전에 가입한 계정은 영향받지 않는다. |
+| `auth.revocationCacheTtlSecs` (0.3.4+) | 빈 값 (서버 기본 **5**초) | 인증이 사용자 행(역할·승인·활성 상태)을 읽고 캐시하는 시간. **이 값이 곧 권한 회수·계정 정지·계정 삭제가 듣기까지의 상한이다.** `0`이면 매 요청 조회가 되어 즉시 반영되지만 적재 처리량이 20~33% 떨어진다(측정치). 조회 자체를 끄는 옵션은 없다 — 쓰기가 역할로 막히므로 요청마다 역할을 알아야 한다. |
 
 ```bash
 helm upgrade --install nexus-server int2nexus/nexus-server -n <namespace> \
@@ -693,6 +715,40 @@ ds.seal()
 df = ds.to_df()
 ```
 
+## 3.9 태그 제외 필터 · 결과 개수 · 필터 스코프 일괄 태그 (서버 0.1.7+)
+
+세 기능은 **같은 필터 객체**를 쓴다. 화면이나 스크립트가 필터를 하나만 들고 있으면 그대로 세 곳에 보낼 수 있다.
+
+**태그 제외** — `exclude_tags`에 적은 태그를 하나라도 가진 샘플을 뺀다. `tags`(포함)와 함께 주면 AND다. 태그가 하나도 없는 샘플은 제외되지 않는다.
+
+```python
+ds.samples(tags=["train"], exclude_tags=["blurry"])   # train 이면서 blurry 가 아닌 것
+ds.fork("v1", tags=["train"], exclude_tags=["blurry"])
+```
+
+**결과 개수** — 필터에 걸리는 샘플 수를 센다. SDK 메서드는 아직 없고 저수준으로 호출한다.
+
+```python
+r = client._post(f"/datasets/{ds.dataset_id}/versions/{ds.version}/samples/explorer/count",
+                 json={"tags": ["train"], "include_annotations": False})
+print(r.json())    # {"count": 1204, "exact": true}
+```
+
+기본은 10,000에서 세기를 멈추고 `exact: false`를 돌려준다 — 그때 실제 개수는 `count` **이상**이므로 화면에는 "10,000+"로 적으면 된다. 정확한 값이 필요하면 `?exact=true`를 붙인다(비용이 결과 크기에 비례하므로 필요한 곳에만 쓴다).
+
+**필터 스코프 일괄 태그** — 필터에 걸리는 **전부**의 태그를 한 번에 고친다. `client.add_tags_bulk(sample_ids, tags)`가 넘긴 id만 다루는 것과 다르고, 둘 다 남는다.
+
+```python
+r = client._post(f"/datasets/{ds.dataset_id}/versions/{ds.version}/samples/tags",
+                 json={"tags": ["reviewed"],
+                       "filter": {"tags": ["train"], "include_annotations": False}})
+print(r.json())    # {"updated": 1204}
+```
+
+- **대상이 10,000건을 넘으면 `?confirm=<건수>`가 필수다.** 없으면 `409`이고, 값이 실제와 다르면 역시 `409`이며 **아무것도 바뀌지 않는다.** `409` 본문의 건수는 구조화된 필드가 아니라 메시지 문장 안에 있으므로, 파싱하지 말고 위 개수 조회를 다시 부르는 편이 안전하다.
+- 응답은 갱신된 행 수만 준다. 대상이 수십만이면 샘플 목록 응답이 수백 MB가 되기 때문이다.
+- **`DELETE`로 떼면 원래부터 그 태그를 갖고 있던 샘플에서도 지워진다** — 이번에 붙은 것과 구분하지 않는다. 일괄 부여는 새 태그 이름으로 하면 되돌리기가 안전하다.
+
 ## 4. 데이터셋 관리
 ### 4.1 데이터셋 목록 조회
 ```python
@@ -704,6 +760,9 @@ nx.list_datasets(sort="name", order="asc")       # 정렬
 ```
 - `q`는 `name/description/tags` 중 하나라도 부분일치하는 데이터셋을 반환한다. `name=/description=`은 개별 필드 검색
 - 즐겨찾기는 `ds.favorite() / ds.unfavorite()`(멱등)로 켜고 끄고, favorite=True로 목록을 필터링한다.
+- **서버 0.1.7부터 이 목록은 한 응답에 기본 100개까지만 실린다.** SDK `0.1.7+`의 `nx.list_datasets()`는 커서를 자동으로 순회해 전체를 모으므로 호출부는 그대로 두면 된다. 한 페이지만 받으려면 `limit=`을 준다(그때는 자동 순회하지 않는다). **SDK를 올리지 않고 서버만 올리면 100개에서 잘린다.**
+- 담당자로 좁히려면 `nx.list_datasets(mine=True)`(내가 담당), `unowned=True`(담당자 없음). 둘 다 **기본 뷰용 필터이지 권한이 아니다** — 걸지 않으면 전부 보인다. 함께 주면 400이다.
+- `GET /datasets/{id}/versions`와 `.../subsets`에도 같은 상한이 생겼고, SDK의 `client.list_versions()`·`client.list_subsets()`도 같은 방식으로 자동 순회한다.
 
 ### 4.2 데이터셋 정보 수정
 ```python
@@ -714,11 +773,11 @@ ds.update(name="new-name", description="새 설명")
 - 제공한 필드만 수정된다(둘 다 생략하면 아무 것도 안 함).  
 이름을 바꾸면 이 `ds` 핸들의 내부 이름도 자동으로 같이 갱신된다.
 - 다른 dataset이 이미 쓰고 있는 이름으로는 바꿀 수 없다(충돌 시 에러).
-- Dataset의 소유자(생성자) 계정만 이름/설명을 바꿀 수 있다.
+- `editor` 이상이면 다른 사람이 담당인 dataset도 이름/설명을 바꿀 수 있다(서버 0.1.7). `viewer`는 403이다.
 
 ### 4.3 데이터셋 삭제 정책
 Dataset 삭제는 버전 단위로 수행한다. `ds.delete()`로 버전을 삭제하고, 남은 버전이 하나도 없으면 Dataset도 자동으로 삭제된다. 이때 Dataset에 속한 잔여 Sample도 모두 정리되며, CAS로 Asset 삭제 요청을 보낼지는 아래 `delete_cas`가 정한다.
-Dataset의 소유자(생성자)만 삭제 가능하며, sealed 버전은 삭제할 수 없다(409, 예외 없음 — 그 버전이 Dataset의 마지막 버전이어도 마찬가지다).
+삭제는 **`editor` 이상이면서 담당자 본인이거나 `admin`**이어야 한다(서버 0.1.7). `viewer`는 자기가 담당인 dataset도 지울 수 없고, 담당자가 비어 있으면 `admin`만 지울 수 있다. sealed 버전은 삭제할 수 없다(409, 예외 없음 — 그 버전이 Dataset의 마지막 버전이어도 마찬가지다).
 
 **CAS 원본 삭제(`delete_cas`)는 층마다 기본값이 다르다.**
 
@@ -736,9 +795,9 @@ ds.delete(confirm="v0", delete_cas=False) # 묻지 않고 카탈로그만 삭제
 ds.delete(confirm="v0", delete_cas=True)  # CAS로 삭제 요청까지 보냄
 ```
 
-### 4.4 Dataset 소유권 이전 (서버 0.1.6+)
+### 4.4 Dataset 담당자 이전 (서버 0.1.6+)
 
-Dataset의 소유자는 그것을 만든 계정이다. 적재·annotation 수정·seal·이름 변경·삭제가 전부 소유자 전용이므로, 담당자가 바뀌거나 계정을 정리할 때는 소유권을 넘겨야 한다. **서버 0.1.6부터 소유자 본인이 넘길 수 있다** — 그 전에는 superuser만 할 수 있었고, superuser를 설정하지 않은 배포에서는 방법이 없었다.
+`owner_user_id`는 **담당자**이며, 서버 0.1.7부터 **삭제에만** 관여한다. 적재·annotation 수정·seal·이름 변경은 `editor` 이상이면 담당자가 아니어도 할 수 있다. 담당자를 넘기는 것은 "이 dataset을 지울 수 있는 사람"을 넘기는 일이다.
 
 SDK `0.1.6`부터 메서드가 있다.
 
@@ -746,7 +805,7 @@ SDK `0.1.6`부터 메서드가 있다.
 ds = nx.Dataset.load_or_create("my-dataset", "v0")
 
 updated = ds.transfer_owner("새주인@int2.us")
-print(updated["owner_user_id"])                # 새 소유자의 user_id
+print(updated["owner_user_id"])                # 새 담당자의 user_id
 ```
 
 저수준은 `client.transfer_dataset_owner(dataset_id, email)`이고, SDK 없이 부를 때는 이렇다.
@@ -757,14 +816,14 @@ curl -X PUT "$BASE/api/v1/datasets/$DATASET_ID/owner" \
   -d '{"email":"새주인@int2.us"}'
 ```
 
-- **현재 소유자만 넘길 수 있다**(아니면 403). 받는 사람은 이미 가입된 계정이어야 한다(아니면 404).
+- **현재 담당자만 넘길 수 있다**(아니면 403). 받는 사람은 이미 가입된 계정이어야 한다(아니면 404).
 - **자기 자신에게 넘기면 400이다.** 아무 일도 일어나지 않은 것을 200으로 돌려주면 넘긴 것으로 읽히기 때문이다.
-- **소유권은 dataset 단위다** — 어느 버전에서 부르든 그 dataset의 모든 버전이 함께 넘어간다.
-- **이전은 즉시 적용된다.** 소유자 검사는 요청마다 DB를 보므로 이전 소유자는 그 다음 요청부터 403이다. 되돌리려면 새 소유자가 다시 넘겨야 한다.
-- **주인이 없는 dataset은 이 경로로 가져올 수 없다.** 소유자가 없다는 것은 인증된 누구나 쓸 수 있다는 뜻이라, 열어 두면 먼저 부르는 사람이 주인이 된다. 그런 dataset의 인수는 superuser의 `PUT /api/v1/admin/datasets/{dataset_id}/owner`로 한다([2.1 superuser](#superuser-차트-030-선택)).
-- **계정을 지우기 전에 소유한 dataset을 정리해야 한다.** 서버 0.1.6부터 소유한 dataset이 남아 있으면 계정 삭제가 409로 거부되고, **이 이관이 그 거부를 푸는 사실상 유일한 수단이다.** 따라서 **받을 계정이 최소 하나는 있어야 한다** — 본인 말고 가입된 계정이 하나도 없으면 넘길 곳이 없다(superuser를 설정해 둔 배포라면 그 계정이 이 조건을 만족한다). **dataset을 지워서 빠져나가는 길은 일반적으로 없다** — 삭제는 [4.3](#43-데이터셋-삭제-정책)에서 보듯 버전 단위인데 sealed 버전은 예외 없이 삭제되지 않으므로, sealed 버전을 하나라도 가진 dataset은 소유자도 없앨 수 없다. 즉 **sealed 데이터를 소유한 채 넘길 상대가 없는 계정은 삭제되지 않는다.** 이는 결함이 아니라 의도된 결과다 — sealed는 영구 보존이고, 영구 보존되는 데이터에는 주인이 있어야 한다. 남는 선택지는 주인을 비우거나(= 인증된 누구나 수정·삭제할 수 있는 상태) sealed를 지우는 것뿐인데, 그 둘이 각각 이 거부와 seal 불변식이 막으려는 바로 그 일이다.
+- **담당은 dataset 단위다** — 어느 버전에서 부르든 그 dataset의 모든 버전이 함께 넘어간다.
+- **담당자가 없는 dataset은 이 경로로 가져올 수 없다**(403). 그런 dataset의 인수는 관리자의 `PUT /api/v1/admin/datasets/{dataset_id}/owner`로 한다([2.1 superuser](#superuser-차트-030-선택)).
+- **이미 떠난 사람의 담당분은 관리자가 일괄로 넘긴다** — `POST /api/v1/admin/datasets/transfer-owner`(본문 `from_email`·`to_email`). 자가 이관은 현재 담당자만 호출할 수 있는데 정리는 대개 그 사람이 떠난 뒤에 하기 때문이다.
+- **계정 삭제 전에 정리할 필요는 없다**(서버 0.1.7). 0.3.2가 넣었던 409 거부는 철회됐다 — 담당하던 dataset은 담당자만 해제되고 남는다. 다만 그 dataset은 `admin`만 지울 수 있게 되므로, 계속 쓸 것이라면 넘겨 두는 편이 낫다.
 
-내가 소유한 dataset은 목록의 `owner_user_id`로 확인한다. `null`인 것은 주인이 없는 dataset이고, 방치해도 잠기지는 않지만 **인증된 누구나 수정·삭제할 수 있는** 상태로 남는다.
+내가 담당인 dataset은 `GET /datasets?mine=true`로, 담당자가 없는 것은 `?unowned=true`로 조회한다. 둘 다 **기본 뷰용 필터이지 권한이 아니다** — 걸지 않으면 전부 보인다.
 
 ## 5. 데이터셋 버전 관리
 ### 5.1 Draft 버전
@@ -834,14 +893,12 @@ Draft 버전의 샘플을 **CVAT으로 보내 사람이 편집**하고, 그 결�
 | 항목 | 확인하지 않으면 |
 |---|---|
 | 대상 버전이 **draft** | sealed면 `NexusError(409)` |
-| 내가 그 dataset의 **소유자** | `NexusError(403)` - 세션 생성은 소유자만 가능하다 |
+| 내 역할이 **`editor` 이상** | `NexusError(403)` - 세션 생성은 쓰기다 |
 | 서버에 CVAT 연동 구성 | `NexusError(503)` |
 | CVAT이 CAS 이미지를 받을 수 있는 네트워크 | 세션이 `failed`가 되고 사유가 예외에 실린다 |
 | 그 샘플을 잡고 있는 다른 세션 없음 | `NexusError(409)` - 어느 세션이 잡고 있는지 메시지에 담긴다 |
 
-**세션 관련 작업은 모두 dataset 소유자만 할 수 있다.** 세션 생성 자체가 소유자 전용이라, 실질적으로 세션을 만든 사람과 소유자는 같은 계정이다.
-
-`close`와 `pull`은 예외적으로 "세션을 만든 사람"에게도 열려 있는데, 이건 **소유자가 없던 시절에 만들어진 세션**이 나중에 소유자를 갖게 된 경우를 위한 안전장치다. 그런 세션을 만든 사람이 스스로 닫을 수 있게 하려는 것이고, 정상적으로 만든 세션에서는 차이가 없다.
+**세션 관련 작업은 모두 `editor` 이상이면 할 수 있다**(서버 0.1.7). 담당자가 아니어도 되고, 세션을 만든 사람이 아니어도 된다.
 
 ### 6.2 세션 생성
 
@@ -939,7 +996,7 @@ ses.delete()                # CVAT project까지 완전 삭제 - 되돌릴 수 �
 |---|---|---|
 | 샘플 잠금 | 해제 | 해제 |
 | CVAT project | **보존** | **삭제**(이미지 사본·미반영 편집까지) |
-| 권한 | dataset 소유자 (+ 그 세션을 만든 사람) | **dataset 소유자만** |
+| 권한 | `editor` 이상 | `editor` 이상 |
 | CVAT 연결 | 없어도 동작 | 없어도 동작(project 삭제만 건너뜀) |
 
 `close()`는 아직 당겨오지 않은 편집이 있으면 `NexusError(409)`로 막는다. 먼저 `pull()`을 부르거나, 그 작업을 버릴 생각이면 `force=True`를 준다. CVAT을 조회할 수 없으면 "미반영 여부를 모름"으로 보고 막지 않는다 — CVAT이 죽었을 때 세션을 못 닫으면 샘플이 영구히 잠기기 때문이다.
@@ -1007,7 +1064,7 @@ except NexusError as e:
     if e.status_code == 409:
         print("sealed 버전이라 삭제 못 함:", e.server_message)
     elif e.status_code == 403:
-        print("소유자 아님:", e.server_message)
+        print("권한 없음:", e.server_message)
     else:
         raise
 ```
@@ -1020,11 +1077,18 @@ except NexusError as e:
 | 코드 | 뜻 | 대응 |
 |---|---|---|
 | `401` | 토큰이 없거나 만료됐다 | **SDK 0.1.2+는 자동으로 다시 로그인하고 재시도한다** — 보통 이 예외를 볼 일이 없다. 그래도 401이 올라오면 자격증명 자체가 안 맞는 것이다(비밀번호가 바뀌었거나 서버 JWT 시크릿이 교체됨) |
-| `403` | 로그인은 됐지만 **그 dataset의 소유자가 아니다** | 소유자에게 요청하거나, `clone()`으로 내 dataset을 만들어 작업한다 |
+| `403` | 로그인은 됐지만 권한이 모자라다 | 본문으로 갈린다 — 아래 표 참조 |
 
-**조회를 포함한 모든 요청에 토큰이 필요하다.** 그리고 dataset을 바꾸는 작업 — 적재(`flush`), annotation 수정, 샘플 추가·삭제, seal, 이름 변경, 삭제 — 은 **소유자만** 할 수 있다. 소유자는 dataset을 만든 계정이고, **서버 0.1.6부터 소유자 본인이 다른 계정으로 넘길 수 있다**(`PUT /api/v1/datasets/{dataset_id}/owner`, [4.4](#44-dataset-소유권-이전-서버-016)). 조회는 소유자가 아니어도 된다.
+**조회를 포함한 모든 요청에 토큰이 필요하다.** 쓰기는 역할이 가른다(서버 0.1.7) — 적재(`flush`), annotation 수정, 샘플 추가, seal, 이름 변경은 **`editor` 이상이면 다른 사람이 담당인 dataset에도** 된다. 삭제만 담당자 검사가 남는다.
 
-예외가 하나 있다. **소유자가 지정되지 않은 dataset은 누구나 바꿀 수 있다.** 소유권 도입 이전에 만들어졌거나, 서버 0.1.6 이전에 소유자 계정이 삭제된 경우다. 이때는 403이 나지 않는다 — 남의 dataset인 줄 알았는데 쓰기가 되면 이 경우다. 주인을 붙이는 것은 superuser의 `PUT /api/v1/admin/datasets/{dataset_id}/owner`로만 할 수 있다(위 소유자 이관 경로는 주인이 없는 dataset을 받아 주지 않는다 — 그랬다면 먼저 부르는 사람이 주인이 된다). **서버 0.1.6부터는 이 상태가 새로 생기지 않는다**: 소유한 dataset이 남아 있는 계정은 삭제가 409로 거부된다.
+`403` 본문은 셋으로 갈린다.
+
+| 본문 `error` | 뜻 |
+|---|---|
+| `forbidden` | 역할이 모자라거나(`viewer`가 쓰기 시도), 담당자가 아닌데 삭제를 시도했거나, 계정이 정지됐다 |
+| `pending_approval` | 승인 게이트가 켜진 배포에서 아직 승인되지 않은 계정이다 |
+
+**정상 동작 중에 갑자기 403이 날 수 있다.** 관리자가 역할을 낮추거나 계정을 정지하면 이미 발급된 토큰도 캐시 수명(기본 5초) 안에 막히기 때문이다. 오래 도는 적재 스크립트라면 이 경우를 잡아 중단하는 편이 낫다 — SDK는 401만 재시도하고 403은 그대로 올린다.
 
 `flush`는 권한 때문에 거부된 건이 있으면 조용히 넘기지 않고 예외를 던진다. 남의 dataset에 적재를 시도하다 일부만 들어가는 상황을 막기 위해서다.
 
@@ -1049,12 +1113,12 @@ except NexusError as e:
 |`Dataset.load_or_create(name, version, tags=, description=, fork_from=, sample_ids=)`|dataset/버전 생성 또는 조회|
 |`.add(sample)` / `.flush()`|	샘플 등록|
 |`.list_samples()` / `.get_sample(id)`|	조회|
-|`.samples(sample_ids=, group_key=, label=, confidence_min=, confidence_max=, track_id=, split=, tags=, meta=, include_annotations=True, limit=, after=)`|	조건 조회(기본 전체, limit=주면 한 페이지). `include_annotations=False`면 annotation 없는 경량 코어만|
+|`.samples(sample_ids=, group_key=, label=, confidence_min=, confidence_max=, track_id=, split=, tags=, exclude_tags=, meta=, include_annotations=True, limit=, after=)`|	조건 조회(기본 전체, limit=주면 한 페이지). `exclude_tags`는 그 태그를 하나라도 가진 샘플을 뺀다(SDK 0.1.7+). `include_annotations=False`면 annotation 없는 경량 코어만|
 |`.patch_annotations(sample_id, data)`|	annotation 수정|
 |`.backfill_dims(workers=8, chunk_size=500, dry_run=False)` → dict|	`meta.width/height`가 빈 샘플을 실측값으로 보정(빈칸만 채움)|
 |`.sample_history(sample_id)` / `.diff(against=)`|	이력 / 비교|
 |`.link_samples(ids)` / `.unlink_samples(ids)` / `.import_samples(src_dataset, src_version, ids)`|	샘플 재사용|
-|`.fork(new_version, sample_ids=, group_key=, label=, ...)`|	필터링된 fork(같은 dataset)|
+|`.fork(new_version, sample_ids=, group_key=, label=, tags=, exclude_tags=, ...)`|	필터링된 fork(같은 dataset)|
 |`.clone(new_name, new_version)`|	통째 복제|
 |`.update(name=, description=)`|	이름/설명 수정|
 |`.seal()`|	버전 확정|
@@ -1075,13 +1139,13 @@ except NexusError as e:
 |`.refresh()`|	서버에서 다시 읽어 상태 갱신|
 |`.pull()`|	CVAT 결과를 draft에 반영(멱등) → 요약 dict|
 |`.close(force=False)`|	작업 종료(CVAT project 보존)|
-|`.delete()`|	세션 + CVAT project 완전 삭제(소유자만)|
+|`.delete()`|	세션 + CVAT project 완전 삭제(`editor` 이상)|
 
 ### 그 외
 |||
 |---|---|
 |`client.add_tags_bulk(sample_ids, tags)` / `.remove_tags_bulk(...)`|태그 일괄 처리|
 |`client.change_password(current, new)`|본인 비밀번호 변경(현재 비밀번호 재확인)|
-|`client.delete_account(password)` → dict|본인 계정 **완전 삭제** — 되돌릴 수 없다. 소유한 dataset이 남아 있으면 409(서버 0.1.6+, [4.4](#44-dataset-소유권-이전-서버-016))|
+|`client.delete_account(password)` → dict|본인 계정 **완전 삭제** — 되돌릴 수 없다. 담당하던 dataset은 담당자만 해제되고 남는다([4.4](#44-dataset-담당자-이전-서버-016))|
 |`NexusError`, `NexusAuthError`, `NexusCasError`, `NexusIngestError`, `NexusBatchError`|	예외 타입(`.status_code`, `.server_message`)|
 |`IngestResult(ok, sample, sample_id, error, status_code)`|	배치 처리 건별 결과|
