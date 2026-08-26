@@ -4,9 +4,9 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
 
 ## 문서
 
-- [아키텍처](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.4/charts/nexus-server/docs/architecture.md)
+- [아키텍처](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.5/charts/nexus-server/docs/architecture.md)
   — 도메인 모델, Version 생명주기, Annotation CoW, 스냅샷·Manifest 구조
-- [사용법](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.4/charts/nexus-server/docs/usage.md)
+- [사용법](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.5/charts/nexus-server/docs/usage.md)
   — 설치, Python SDK 연결, Dataset 적재·검색·seal 워크플로우, API 레퍼런스
 - [변경 이력](CHANGELOG.md)
   — 버전별 동작 변경·마이그레이션·설정 키. 각 항목은 해당 GitHub Release 본문과 동일하다
@@ -23,7 +23,7 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
 
 DB 마이그레이션은 바이너리에 임베드되어 **기동 시 자동 적용**된다(별도 Job 불필요). 마이그레이션이 끝나야 포트가 열리므로 그 시간은 곧 startupProbe 예산(기본 `periodSeconds 10 × failureThreshold 60` = 600초)에서 나간다 — 스키마가 바뀌는 릴리스로 올릴 때는 [CHANGELOG](CHANGELOG.md)의 해당 버전 **마이그레이션** 항목에서 예상 소요를 먼저 확인할 것. **거기 적힌 실측값은 우리 환경의 것이라 행 수로 환산해 그대로 쓸 수 없다** — 소요가 행 수에 선형인 것은 같은 하드웨어 안에서일 뿐이고 계수는 DB마다 다르다. 예산은 넉넉한 쪽으로 잡는다(모자라면 기동 실패가 반복되고, 남으면 아무 일도 일어나지 않는다). 서버는 stateless(파일=CAS, 메타=Postgres)라 PVC가 없다.
 
-> **업그레이드 전에 [CHANGELOG](CHANGELOG.md)를 읽을 것.** 차트 0.3.4 / appVersion 0.1.7은 **인가 모델을 바꾼다** — 쓰기는 `users.role`(`admin`/`editor`/`viewer`)이 가르고, 삭제만 담당자 검사가 남는다. 기존 계정은 전부 `editor`로 들어가므로 업그레이드만으로 쓰기를 잃는 사람은 없다. 함께 조이는 변경 셋이 있다: **담당자가 비어 있는 dataset은 `admin`만 지울 수 있고**(예전에는 인증된 누구나 지울 수 있었다), **`viewer`는 자기가 담당인 dataset도 지울 수 없으며**, **`POST /api/v1/buckets/ensure`도 `editor` 이상**이다. `GET /datasets`를 비롯한 목록 셋은 **기본 100개로 잘린다**(`?limit=`·`?cursor=`). 0.3.2의 "소유 dataset이 남으면 계정 삭제 409"는 **철회됐다** — 담당자가 비어도 권한이 생기지 않게 되어 그 근거가 사라졌다. 0.3.1을 건너뛰고 올라온다면 그 버전의 변경 둘도 함께 읽을 것 — 삭제 요청의 **`delete_cas` 기본값이 "삭제"에서 "보존"으로 바뀌고**(예전처럼 지우려면 `delete_cas=true`를 명시해야 한다), **기본 설치에서 ServiceAccount 토큰이 더 이상 마운트되지 않는다**(롤링 재시작 한 번). appVersion 0.1.1부터 조회를 포함한 **모든 API가 인증을 요구**하는 것은 그대로다.
+> **업그레이드 전에 [CHANGELOG](CHANGELOG.md)를 읽을 것.** 차트 0.3.5 / appVersion 0.1.8은 읽기 엔드포인트 하나(태그 후보 목록)만 더하며 동작 변경도 마이그레이션도 없다. 아래는 **0.3.3 이하에서 올라오는 경우**에 해당한다. 차트 0.3.4 / appVersion 0.1.7은 **인가 모델을 바꾼다** — 쓰기는 `users.role`(`admin`/`editor`/`viewer`)이 가르고, 삭제만 담당자 검사가 남는다. 기존 계정은 전부 `editor`로 들어가므로 업그레이드만으로 쓰기를 잃는 사람은 없다. 함께 조이는 변경 셋이 있다: **담당자가 비어 있는 dataset은 `admin`만 지울 수 있고**(예전에는 인증된 누구나 지울 수 있었다), **`viewer`는 자기가 담당인 dataset도 지울 수 없으며**, **`POST /api/v1/buckets/ensure`도 `editor` 이상**이다. `GET /datasets`를 비롯한 목록 셋은 **기본 100개로 잘린다**(`?limit=`·`?cursor=`). 0.3.2의 "소유 dataset이 남으면 계정 삭제 409"는 **철회됐다** — 담당자가 비어도 권한이 생기지 않게 되어 그 근거가 사라졌다. 0.3.1을 건너뛰고 올라온다면 그 버전의 변경 둘도 함께 읽을 것 — 삭제 요청의 **`delete_cas` 기본값이 "삭제"에서 "보존"으로 바뀌고**(예전처럼 지우려면 `delete_cas=true`를 명시해야 한다), **기본 설치에서 ServiceAccount 토큰이 더 이상 마운트되지 않는다**(롤링 재시작 한 번). appVersion 0.1.1부터 조회를 포함한 **모든 API가 인증을 요구**하는 것은 그대로다.
 
 ## 설치
 

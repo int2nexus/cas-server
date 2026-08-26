@@ -53,6 +53,66 @@ nexus-server 는 마이그레이션이 바이너리에 임베드되어 **기동 
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.3.5
+
+image: `int2jieun/nexus-server:0.1.8`
+digest: `sha256:b657beaaffcb0c9946463fdb2af582d0947369dc7ab9374c368a2ffb34e99e72`
+
+**동작 변경** — 서버는 없습니다(읽기 엔드포인트가 둘 늘어납니다). Python SDK 는 `0.1.7` 의 결함을 고쳤습니다(아래).
+**마이그레이션** — 없음
+**설정 키** — 없음
+
+### 샘플 태그 후보 목록 — `facets` 에 `field=tags`
+
+버전에 실제로 붙어 있는 태그를 모아 줍니다. 0.3.4 의 태그 제외 필터(`exclude_tags`)를 화면에 붙일 때, 사용자가 태그 이름을 외워 타이핑하지 않아도 됩니다.
+
+```
+GET /datasets/{id}/versions/{v}/facets?field=tags
+GET /datasets/{id}/versions/{v}/facets?field=tags&q=trai    # 타입어헤드
+```
+
+응답 모양은 기존 facet 과 같습니다.
+
+```json
+{"field": "tags", "values": ["blurry", "night", "train"], "truncated": false}
+```
+
+- `q` 는 대소문자를 구분하지 않는 부분일치입니다(다른 facet 과 같습니다).
+- 값은 **500개에서 잘리고** 그때 `truncated` 가 `true` 입니다. 그 이상은 `q` 로 좁혀 받으십시오.
+- 삭제된 샘플의 태그는 포함되지 않고, 다른 dataset·다른 버전의 태그는 섞이지 않습니다.
+- `label` 과 달리 관측 사이드 테이블이 없어 매 호출이 그 버전의 샘플을 훑습니다. 화면의 자동완성처럼 자주 부르는 자리라면 `q` 를 함께 보내십시오.
+
+**호환성** — appVersion 0.1.8 이상. 그 이전 이미지에 `field=tags` 를 보내면 `400` 입니다.
+
+### 적용된 설정 조회 — `GET /api/v1/admin/config-effective` (superuser 전용)
+
+지금 그 프로세스가 **읽은 설정**을 돌려줍니다. 차트 렌더 결과가 아니므로 `extraEnv` 오버라이드도 드러납니다.
+
+**이것을 넣은 이유는 오타가 조용히 삼켜지기 때문입니다.** 서버는 모르는 설정 키를 오류로 만들지 않습니다 — `NEXUS__JWT__TTLHOURS` 처럼 한 글자 틀린 env 는 무시되고 기본값으로 기동합니다. 경고도 없고 기동도 정상이라, 의도한 값이 실제로 걸렸는지 확인할 방법이 없었습니다. `jwt.ttlHours` 는 토큰을 디코드하면 알 수 있지만 `auth.revocationCacheTtlSecs`(권한 회수 상한)는 그마저도 없습니다.
+
+```json
+{"database": {"url": "postgres://nexus:<redacted>@db-host:5432/nexus", "max_connections": 16},
+ "jwt": {"secret": "<set>", "ttl_hours": 24},
+ "auth": {"superuser_email": "<set>", "approval_required": false, "revocation_cache_ttl_secs": 5},
+ "cvat": null}
+```
+
+- 비밀값은 값이 아니라 `<set>`/`<unset>` 으로만 나오고, `database.url` 은 비밀번호만 가려집니다(호스트·DB 명은 남습니다).
+- **`superuser_email` 도 주소가 아니라 `<set>`/`<unset>` 입니다.** 이 서버는 이메일이 곧 권한이라 주소를 아는 것이 표적을 아는 것과 같습니다. 값이 필요하시면 기동 로그에 남습니다.
+- `cvat` 이 `null` 이 아니면서 `usable: false` 면 반쯤 채운 설정입니다 — `missing_fields` 가 빠진 항목을 알려줍니다. 그 상태에서 annotation session 라우트는 503 입니다.
+- superuser 를 지정하지 않은 배포에서는 누구에게나 403 입니다.
+
+### Python SDK `0.1.8` — `0.1.7` 의 결함을 고쳤습니다
+
+**`int2nexus-sdk 0.1.7` 에서 `ds.samples()` 가 인자와 무관하게 실패합니다** — `TypeError: explore_samples() got an unexpected keyword argument 'exclude_tags'`. 0.3.4 의 태그 제외 필터를 SDK 에 반영하면서 내부 호출부만 고치고 클라이언트 메서드의 인자를 빠뜨렸습니다. 같은 경로를 지나는 `ds.fork()` 와 `ds.backfill_dims()` 도 함께 실패합니다. 적재(`flush`)·업로드·목록 조회는 영향이 없습니다.
+
+**0.3.4 절의 「SDK 는 … `int2nexus-sdk 0.1.7` 부터입니다」를 정정합니다 — `0.1.8` 부터입니다.** 서버는 무관하며, HTTP 로 직접 부르는 경우 `exclude_tags` 는 appVersion 0.1.7 부터 정상입니다.
+
+0.3.4 의 인가 모델 변경이 반영되지 않았던 SDK 문서와 오류 메시지도 함께 고쳤습니다. `flush` 가 `403` 을 받았을 때 "소유자만 가능"이라며 운영자 DB 절차를 안내하던 것이 대표적입니다 — 지금은 역할(`editor` 이상)이 필요하다고 안내합니다.
+
+**운영 조치** — SDK 를 쓰신다면 `0.1.8` 로 올리십시오. 서버만 올려도 동작하지만 `0.1.7` 의 위 결함은 남습니다.
+
+
 ## 0.3.4
 
 image: `int2jieun/nexus-server:0.1.7`

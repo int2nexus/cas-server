@@ -229,6 +229,22 @@ requests.post(f"{base}/api/v1/admin/datasets/transfer-owner",
 - **담당자 이전은 캐시 수명 안에 적용된다.** 삭제 권한이 그 다음 요청부터 새 담당자에게 간다.
 - 담당자가 없는 dataset은 `GET /datasets?unowned=true`로 조회한다. 담당자가 비어도 권한이 생기지 않으므로 위험한 상태가 아니라 **인수 대기**다. 다만 그런 dataset은 `admin`만 지울 수 있다. 담당자가 있는 dataset을 넘기는 것은 담당자 본인이 한다([4.4](#44-dataset-담당자-이전-서버-016)).
 - **superuser 비밀번호를 바꾼 뒤에도 시크릿을 갱신할 필요가 없다.** `NEXUS__AUTH__SUPERUSER_PASSWORD`는 **그 계정이 없을 때 새로 만드는 용도로만** 읽힌다 — 계정이 이미 있으면 기동 시 값을 읽지도, 비교하지도 않는다. 그래서 시크릿의 값과 실제 로그인 비밀번호가 달라도 파드는 정상 기동하고, 반대로 시크릿을 바꿔 재배포해도 비밀번호는 바뀌지 않는다. 이 값을 "현재 비밀번호"가 아니라 **"계정 생성용 씨앗"**으로 보시는 편이 정확하다. 실제로 다시 쓰이는 경우는 하나뿐이다 — `auth.superuserEmail`을 **아직 가입되지 않은** 주소로 바꿔 재배포하면, 그때 이 값으로 새 계정이 만들어진다(이미 누가 쓰는 주소를 넣으면 그 계정을 채택하므로 그 사람이 superuser가 된다).
+- **적용된 설정을 확인하려면 `GET /api/v1/admin/config-effective`**(차트 0.3.5+, superuser 전용). 지금 그 프로세스가 **읽은 값**을 돌려준다 — 차트 렌더 결과가 아니므로 `extraEnv` 오버라이드도 드러난다.
+
+  ```python
+  requests.get(f"{base}/api/v1/admin/config-effective", headers=h).json()
+  # {"server": {...},
+  #  "database": {"url": "postgres://nexus:<redacted>@db-host:5432/nexus", "max_connections": 16},
+  #  "jwt": {"secret": "<set>", "ttl_hours": 24},
+  #  "auth": {"superuser_email": "<set>", "approval_required": false,
+  #           "revocation_cache_ttl_secs": 5, ...},
+  #  "cvat": null}
+  ```
+
+  **이것이 필요한 이유는 오타가 조용히 삼켜지기 때문이다.** 서버는 모르는 설정 키를 오류로 만들지 않는다 — `NEXUS__JWT__TTLHOURS`처럼 한 글자 틀린 env는 무시되고 기본값으로 기동한다. 경고도 없고 기동도 정상이라, 의도한 값이 실제로 걸렸는지 확인할 방법이 이 응답뿐이다. `jwt.ttlHours`는 토큰을 디코드하면 알 수 있지만 `auth.revocationCacheTtlSecs`(권한 회수 상한)는 그마저도 없다.
+
+  비밀값은 값이 아니라 `<set>`/`<unset>`으로만 나오고 `database.url`은 비밀번호만 가려진다(호스트·DB명은 남는다 — "어느 DB에 붙었나"가 진단의 절반이다). **`superuser_email`도 주소가 아니라 `<set>`/`<unset>`이다** — 이 서버는 이메일이 곧 권한이라 주소를 아는 것이 표적을 아는 것과 같다. 그 값이 필요하면 기동 로그를 보면 된다.
+
 - **다만 시크릿 값을 비우지는 마십시오.** 이메일만 있고 비밀번호가 없으면(공백만 있는 경우 포함) **서버가 기동에 실패한다.** 쓰이지 않는 값이라도 8자 이상으로 남겨 두어야 하며, 기능을 끄실 때는 `auth.superuserEmail`과 이 시크릿 키를 **함께** 비우십시오.
 
 #### 인증 관련 설정 (차트 0.3.0+)
@@ -726,6 +742,10 @@ ds.samples(tags=["train"], exclude_tags=["blurry"])   # train 이면서 blurry �
 ds.fork("v1", tags=["train"], exclude_tags=["blurry"])
 ```
 
+> **SDK는 0.1.8 이상이어야 한다.** 0.1.7에는 결함이 있어 `ds.samples()`가 인자와 무관하게
+> `TypeError`로 실패하고, 같은 경로를 지나는 `ds.fork()`·`ds.backfill_dims()`도 함께
+> 실패한다. 서버는 무관하다 — HTTP로 직접 부르면 `exclude_tags`는 서버 0.1.7부터 정상이다.
+
 **결과 개수** — 필터에 걸리는 샘플 수를 센다. SDK 메서드는 아직 없고 저수준으로 호출한다.
 
 ```python
@@ -748,6 +768,26 @@ print(r.json())    # {"updated": 1204}
 - **대상이 10,000건을 넘으면 `?confirm=<건수>`가 필수다.** 없으면 `409`이고, 값이 실제와 다르면 역시 `409`이며 **아무것도 바뀌지 않는다.** `409` 본문의 건수는 구조화된 필드가 아니라 메시지 문장 안에 있으므로, 파싱하지 말고 위 개수 조회를 다시 부르는 편이 안전하다.
 - 응답은 갱신된 행 수만 준다. 대상이 수십만이면 샘플 목록 응답이 수백 MB가 되기 때문이다.
 - **`DELETE`로 떼면 원래부터 그 태그를 갖고 있던 샘플에서도 지워진다** — 이번에 붙은 것과 구분하지 않는다. 일괄 부여는 새 태그 이름으로 하면 되돌리기가 안전하다.
+
+## 3.10 태그 후보 목록 (서버 0.1.8+)
+
+3.9의 `exclude_tags`를 화면에 붙이려면 **어떤 태그가 있는지** 먼저 알아야 한다. `id`·`label` 같은 문자열 필드는 facet으로 후보를 고를 수 있는데 샘플 태그만 그 수단이 없었다. 같은 자리에 얹었다.
+
+SDK 메서드는 아직 없고 저수준으로 호출한다.
+
+```python
+r = client._get(f"/datasets/{ds.dataset_id}/versions/{ds.version}/facets", params={"field": "tags"})
+print(r.json())    # {"field": "tags", "values": ["blurry", "night", "train"], "truncated": false}
+
+# 타입어헤드 — 대소문자를 구분하지 않는 부분일치
+client._get(f"/datasets/{ds.dataset_id}/versions/{ds.version}/facets",
+            params={"field": "tags", "q": "trai"})
+```
+
+- **그 버전에 실제로 붙어 있는 태그만** 나온다. 삭제된 샘플의 태그는 빠지고, 다른 dataset·다른 버전의 태그는 섞이지 않는다.
+- 값은 **500개에서 잘리고** 그때 `truncated`가 `true`다. 그 이상이면 `q`로 좁혀 받는다.
+- `label` 후보와 달리 관측 사이드 테이블이 없어 **매 호출이 그 버전의 샘플을 훑는다.** 자동완성처럼 자주 부르는 자리라면 `q`를 함께 보낸다.
+- 여기서 받은 값을 3.9의 `tags=`/`exclude_tags=`에 그대로 넣으면 된다.
 
 ## 4. 데이터셋 관리
 ### 4.1 데이터셋 목록 조회
@@ -1113,7 +1153,7 @@ except NexusError as e:
 |`Dataset.load_or_create(name, version, tags=, description=, fork_from=, sample_ids=)`|dataset/버전 생성 또는 조회|
 |`.add(sample)` / `.flush()`|	샘플 등록|
 |`.list_samples()` / `.get_sample(id)`|	조회|
-|`.samples(sample_ids=, group_key=, label=, confidence_min=, confidence_max=, track_id=, split=, tags=, exclude_tags=, meta=, include_annotations=True, limit=, after=)`|	조건 조회(기본 전체, limit=주면 한 페이지). `exclude_tags`는 그 태그를 하나라도 가진 샘플을 뺀다(SDK 0.1.7+). `include_annotations=False`면 annotation 없는 경량 코어만|
+|`.samples(sample_ids=, group_key=, label=, confidence_min=, confidence_max=, track_id=, split=, tags=, exclude_tags=, meta=, include_annotations=True, limit=, after=)`|	조건 조회(기본 전체, limit=주면 한 페이지). `exclude_tags`는 그 태그를 하나라도 가진 샘플을 뺀다(SDK 0.1.8+ — 0.1.7은 결함으로 `samples()` 자체가 실패한다). `include_annotations=False`면 annotation 없는 경량 코어만|
 |`.patch_annotations(sample_id, data)`|	annotation 수정|
 |`.backfill_dims(workers=8, chunk_size=500, dry_run=False)` → dict|	`meta.width/height`가 빈 샘플을 실측값으로 보정(빈칸만 채움)|
 |`.sample_history(sample_id)` / `.diff(against=)`|	이력 / 비교|
