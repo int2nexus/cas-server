@@ -5,9 +5,9 @@ HTTP API를 제공한다.
 
 ## 문서
 
-- [아키텍처](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.30/charts/cas-server/docs/architecture.md)
+- [아키텍처](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.31/charts/cas-server/docs/architecture.md)
   — 스토리지 모델(CAS·dedup·GC), 백엔드 구성, S3 호환 API 명세, 에러 코드
-- [사용법](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.30/charts/cas-server/docs/usage.md)
+- [사용법](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.31/charts/cas-server/docs/usage.md)
   — 배포 절차, 웹 UI 키 관리, AWS CLI/boto3 예제, 내부 API
 - [변경 이력](CHANGELOG.md)
   — 버전별 동작 변경·마이그레이션·설정 키. 각 항목은 해당 GitHub Release 본문과 동일하다
@@ -31,8 +31,8 @@ kubectl create secret generic cas-server \
   --from-literal=s3-access-key-id='...' \
   --from-literal=s3-secret-access-key='...' \
   --from-literal=auth-secret-master-key='...' \
-  --from-literal=auth-admin-token='...' \
   --from-literal=auth-metrics-token='...' \
+  --from-literal=auth-gc-token='...' \
   --from-literal=auth-root-access-key-id='...' \
   --from-literal=auth-root-secret-key='...' \
   --dry-run=client -o yaml > /tmp/secret-plain.yaml
@@ -45,11 +45,11 @@ kubectl apply -f sealed-secret.yaml -n <namespace>
 위 8개 중 `s3-access-key-id` / `s3-secret-access-key` 는 **`storage.mode: "s3"` 에서만
 쓰인다** — `nfs` 모드에서는 어떤 템플릿도 참조하지 않으므로 넣지 않아도 된다(넣어도 무해).
 
-`auth-metrics-token`은 선택 항목이다. 없으면 파드는 정상 기동하고 서버가 `admin_token`으로
-폴백한다 — 그 키가 없는 기존 Secret 그대로 업그레이드해도 된다. 용도는 [메트릭 스크레이프](#메트릭-스크레이프) 참고.
+`auth-metrics-token`은 Secret 키로는 선택이다 — 없어도 파드는 기동한다. 다만 **auth 를 켠
+배포에서 그 값이 없으면 스크레이프가 `401`** 이다. 용도는 [메트릭 스크레이프](#메트릭-스크레이프) 참고.
 
 `secrets.secretMasterKey`를 비우면 NoAuth 모드(인증 없음, 내부망 전용)로 동작한다. 상세 절차와 값 교체
-방법은 [`examples/sealed-secret.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.30/charts/cas-server/examples/sealed-secret.yaml) 참고.
+방법은 [`examples/sealed-secret.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.31/charts/cas-server/examples/sealed-secret.yaml) 참고.
 
 ## 설치
 
@@ -57,7 +57,7 @@ kubectl apply -f sealed-secret.yaml -n <namespace>
 helm install cas-server int2nexus/cas-server -n <namespace> -f values-prod.yaml
 ```
 
-`values-prod.yaml`은 직접 작성하거나 [`examples/values-prod.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.30/charts/cas-server/examples/values-prod.yaml)을
+`values-prod.yaml`은 직접 작성하거나 [`examples/values-prod.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.31/charts/cas-server/examples/values-prod.yaml)을
 내려받아 값을 채운 뒤 사용하세요(이 레포를 clone했다면 `charts/cas-server/examples/values-prod.yaml`).
 
 ### S3 / MinIO 모드 values 예시
@@ -89,10 +89,10 @@ storage:
 | `GET`/`HEAD /{bucket}/{key}` | `auth.anonymousGet: true`(기본값)이면 없음 |
 | 그 밖의 데이터 평면 | 키 정책 |
 | `/_api/stats` · `buckets` · `backends` · `blobs/{hash}` · `config-effective` | 유효한 키의 SigV4 서명 |
-| `/_api/gc/*` | `cas:ReadGc`·`cas:RunGc` 키, root 키, GC·admin 토큰 |
-| `POST /_internal/gc` | `cas:RunGc` 키, root 키, GC·admin 토큰 |
-| `/_admin/*` | `cas:*AccessKeys` 키, root 키, admin 토큰 |
-| `/_internal/metrics` | metrics·admin 토큰 **뿐** |
+| `/_api/gc/*` | `cas:ReadGc`·`cas:RunGc` 키, root 키, GC 토큰 |
+| `POST /_internal/gc` | `cas:RunGc` 키, root 키, GC 토큰 |
+| `/_admin/*` | `cas:*AccessKeys` 키, root 키 |
+| `/_internal/metrics` | metrics 토큰 **뿐** |
 | `/_api/auth-mode` · `/_ui` | 없음 |
 
 예외 셋을 알아 두십시오.
@@ -100,11 +100,10 @@ storage:
 - **`/_api/*` 는 인증만 보고 인가는 보지 않습니다.** 대응 액션이 없어 데이터 전용 키로도
   열립니다. 키별로 좁히는 수단은 없습니다. 자격증명 값은 나가지 않습니다
   (`<set>`/`<unset>` 과 가려진 `db_url`).
-- **`/_internal/metrics` 는 키로 열리지 않습니다.** 두 토큰이 다 비면 그 경로는 열립니다.
-- **`/_api/backends` 의 `endpoint_url` 은 관리 주체에게만 채웁니다.** root 키,
-  `cas:ManageAccessKeys` 를 가진 키, `Authorization: Bearer <adminToken>` 셋입니다.
-  그 밖의 키에는 `null` 입니다. (이미지 `0.1.21` 이상. 그 전에는 admin 토큰 전용이었고,
-  같은 `Authorization` 헤더를 SigV4 서명이 써서 서명 요청에서는 늘 가려졌습니다.)
+- **`/_internal/metrics` 는 키로 열리지 않습니다.** `auth.metricsToken` 하나만 받고,
+  그 값이 비면 auth 를 켠 배포에서는 `401`, NoAuth 배포에서는 무인증으로 열립니다.
+- **`/_api/backends` 의 `endpoint_url` 은 관리 주체에게만 채웁니다** — root 키 또는
+  `cas:ManageAccessKeys` 를 가진 키. 그 밖의 키에는 `null` 입니다.
 
 `auth` 를 켜지 않으면 데이터 평면까지 포함해 위 전부가 무인증입니다.
 등록되지 않은 `/_api/*` 경로는 `404` 입니다.
@@ -130,9 +129,9 @@ storage:
 | `externalDatabase.port` | `5432` | PostgreSQL 포트 |
 | `secrets.useExternalSecret` | `true` | sealed-secret으로 Secret을 미리 주입했는지 여부 |
 | `secrets.secretMasterKey` | (없음) | 설정 시 SigV4 인증 활성화, 비우면 NoAuth |
-| `auth.metricsToken` | `""` | `GET /_internal/metrics` 전용 **읽기 전용** 토큰. 비우면 `admin_token`으로 폴백. 모니터링 스택에는 이것을 쓸 것 (아래 참고). `useExternalSecret: true`(기본)이면 이 값 대신 Secret 의 `auth-metrics-token` 이 쓰입니다 |
+| `auth.metricsToken` | `""` | `GET /_internal/metrics` 전용 **읽기 전용** 토큰. **이 경로를 여는 유일한 수단입니다** — 비우면 auth 를 켠 배포에서 `401` 입니다 (아래 참고). `useExternalSecret: true`(기본)이면 이 값 대신 Secret 의 `auth-metrics-token` 이 쓰입니다 |
 | `secrets.rootAccessKeyId` · `secrets.rootSecretKey` | (없음) | root 키. **`secretMasterKey` 를 설정하면 필수** — 없으면 서버가 기동하지 않습니다 |
-| `secrets.gcToken` | `""` | GC 전용 토큰. GC CronJob 이 `adminToken` 대신 이것을 씁니다 (아래 참고). `useExternalSecret: true`(기본)이면 이 값 대신 Secret 의 `auth-gc-token` 이 쓰입니다 |
+| `secrets.gcToken` | `""` | GC 전용 토큰. GC CronJob 이 이것을 씁니다 (아래 참고). `useExternalSecret: true`(기본)이면 이 값 대신 Secret 의 `auth-gc-token` 이 쓰입니다 |
 | `ingress.enabled` | `false` | Ingress 활성화 |
 | `config.maxUploadSizeBytes` | `10737418240` | 최대 업로드 크기 (10 GiB) |
 | `config.maxUploadBytesInFlight` | `3221225472` | 동시 업로드 바디의 총 상주 바이트 상한 (3 GiB). 초과분은 `503 SlowDown`. **`0` = 무제한.** `resources.limits.memory` × 0.5 를 기준으로 함께 조정할 것 |
@@ -167,17 +166,15 @@ OOMKilled 되거나(예산 > 한도) 방어선이 실효 없이 낮게 남습니
 
 ## 메트릭 스크레이프
 
-`GET /_internal/metrics` 에는 **`auth.metricsToken` 을 쓰십시오.** admin 토큰은 GC(blob 물리
-삭제)와 `/_admin/*` 까지 여는 자격증명이라, 스크레이프 용도로 모니터링 스택에 배포하면 삭제
-권한을 함께 넘기게 됩니다. `metricsToken` 은 이 엔드포인트에서만 통합니다.
+`GET /_internal/metrics` 는 **`auth.metricsToken` 으로만 열립니다.** 이 엔드포인트에서만
+통하고 다른 어떤 경로도 열지 않습니다.
 
-**이 경로는 액세스 키로 열리지 않습니다** — root 키로도 `401` 입니다. 두 토큰 중 하나가 반드시
-필요하고, 둘 다 비면 그 경로는 열립니다.
+**이 경로는 액세스 키로 열리지 않습니다** — SigV4 분기가 없어 root 키로도 `401` 입니다.
+`metricsToken` 이 비면 auth 를 켠 배포에서는 `401`, NoAuth 배포에서는 무인증으로 열립니다.
 
-`sealed-secret`에 `auth-metrics-token` 키를 추가합니다. 이 키는 **선택 항목**이고
-deployment가 `optional: true`로 참조하므로, 추가하지 않아도 파드는 정상 기동합니다
-(그 경우 서버가 `admin_token`으로 폴백합니다). **cas-server 이미지 `0.1.18` 이상**이
-필요하며, 그 이하 이미지는 이 토큰을 무시하므로 스크레이프가 401이 됩니다.
+`sealed-secret`에 `auth-metrics-token` 키를 추가합니다. deployment가 `optional: true`로
+참조하므로 추가하지 않아도 파드는 기동하지만, **auth 를 켠 배포에서는 그때 스크레이프가
+`401`** 입니다. **cas-server 이미지 `0.1.18` 이상**이 필요합니다.
 
 **auth 가 꺼진 배포(`secrets.secretMasterKey` 가 빔)에서 `metricsToken` 만 채우고 admin·GC
 토큰을 둘 다 비우지 마세요.** 그 조합에서는 서버가 기동을 거부합니다 — metrics 만 잠기고
@@ -219,8 +216,10 @@ kubectl rollout restart -n <namespace> deploy/<fullname>   # 릴리스명이 아
 | `cas_blob_put_bytes_total` | counter | 바이트 | |
 | `cas_gc_deleted_blobs_total` | counter | 건수 | **GC 가 한 번 돌아야 등록됩니다** |
 | `cas_gc_freed_bytes_total` | counter | 바이트 | 〃 |
+| `cas_anonymous_get_total` | counter | 건수 | **`reason` 라벨이 붙습니다** — `unsigned` · `signed_valid` · `signed_invalid`. `anonymousGet` 을 끄기 전에 깨질 소비자를 세는 값입니다 (아래 참고). `anonymousGet: false` 면 늘지 않습니다. 이미지 `0.1.24` 이상 |
 
-위 `cas_*` 에는 라벨이 없습니다. 다만 같은 엔드포인트에 `axum_http_requests_total` ·
+**`cas_anonymous_get_total` 을 빼면 `cas_*` 에는 라벨이 없습니다.**
+같은 엔드포인트에 `axum_http_requests_total` ·
 `axum_http_requests_duration_seconds` · `axum_http_requests_pending` 이 함께 나오고
 이쪽은 `endpoint`/`method`/`status` 라벨을 답니다(경로는 라우트 패턴으로 정규화되므로
 키마다 늘지는 않습니다).
@@ -393,19 +392,18 @@ blob 이 0건이든 수천 건이든 같습니다. 판단 기준과 미루는 �
 ## 관리 API 자격증명 (이미지 `0.1.21` 이상)
 
 관리 평면은 `/_admin/*`(액세스 키·정책 관리)과 GC(`POST /_internal/gc`, `GET /_api/gc/*`)
-둘입니다. 액세스 키로도, Bearer 토큰으로도 열 수 있습니다.
+둘입니다. `/_admin/*` 은 액세스 키로만 열리고, GC 는 Bearer 토큰으로도 열립니다.
 
 | 자격증명 | `/_admin/*` | GC | 폐기 | 로그의 행위자 |
 |---|---|---|---|---|
 | root 액세스 키 | 열림 | 열림 | 값 교체 + 재배포 | `CASKroot` |
 | 관리 정책 액세스 키 | 정책대로 | 정책대로 | 그 키만 즉시 | `key_id` |
-| admin 토큰 | 열림 | 열림 | 값 교체 + 재배포, 쓰던 전부 끊김 | `<bearer>` |
 | GC 토큰 | 닫힘 | 열림 | 값 교체 + 재배포 | `<bearer>` |
 
 | 액션 | 여는 것 |
 |---|---|
-| `cas:ReadAccessKeys` | 키·정책 목록 조회 |
-| `cas:ManageAccessKeys` | 키 발급·폐기, 정책 추가·삭제 **+ 목록 조회** |
+| `cas:ReadAccessKeys` | 키·정책 목록 조회, 키 단건 조회 |
+| `cas:ManageAccessKeys` | 키 발급·폐기, 정책 추가·삭제 **+ 위 조회 전부** |
 | `cas:ReadGc` | `GET /_api/gc/*` |
 | `cas:RunGc` | `POST /_internal/gc` **+ GC 조회** |
 
@@ -425,20 +423,39 @@ blob 이 0건이든 수천 건이든 같습니다. 판단 기준과 미루는 �
 사람마다 키를 하나씩 주면 관리자를 둘 이상 둘 수 있고, 한 사람을 끊을 때 나머지가 살아
 있습니다. 부트스트랩은 root 키로 합니다.
 
+`/_admin/*` 은 **SigV4 서명으로만** 열립니다. 아래 `$SIGV4` 는 서명 헤더 묶음을 뜻하며,
+손으로 만들지 말고 `awscurl` 같은 서명 도구를 쓰십시오 (`--service s3`, region 은 아무
+값이나 됩니다 — 서버는 클라이언트가 선언한 값으로 서명 키를 유도합니다).
+
 ```bash
-curl -X POST "$BASE/_admin/access-keys" -H "Authorization: Bearer $ADMIN_TOKEN" \
+curl -X POST "$BASE/_admin/access-keys" -H "$SIGV4" \
   -H "Content-Type: application/json" -d '{"description":"alice"}'
 
-curl -X POST "$BASE/_admin/access-keys/$KEY_ID/policies" -H "Authorization: Bearer $ADMIN_TOKEN" \
+curl -X POST "$BASE/_admin/access-keys/$KEY_ID/policies" -H "$SIGV4" \
   -H "Content-Type: application/json" -d '{"effect":"allow","action":"cas:ManageAccessKeys"}'
 ```
+
+조회는 셋입니다 (이미지 `0.1.24` 이상 — 단건 조회와 `?active=` 가 그 버전부터입니다).
+
+```bash
+curl "$BASE/_admin/access-keys"              -H "$SIGV4"
+curl "$BASE/_admin/access-keys?active=true"  -H "$SIGV4"
+curl "$BASE/_admin/access-keys/$KEY_ID"      -H "$SIGV4"
+```
+
+**단건 조회는 폐기된 키도 `200` 으로 돌려줍니다** (`is_active: false`). `404` 는 그 `key_id`
+가 없을 때뿐입니다 — 「폐기됐다」 와 「애초에 없다」 를 가르기 위한 것이라, 상위 시스템이
+폐기 여부로 재발급을 판정한다면 이 구분에 기대십시오.
+
+`?active=` 는 폐기 여부만 봅니다. **만료된 키도 폐기하지 않았으면 `active=true` 에
+들어옵니다** — 만료와 폐기는 다른 상태입니다.
 
 > **`cas:ManageAccessKeys` 는 사실상 전권입니다.** 그 키는 아무 정책이나 붙인 새 키를 만들 수
 > 있으므로 데이터 전체에 접근하는 키도 만들 수 있습니다.
 
 ### 어느 자격증명을 어디에 주는가
 
-admin 토큰은 두 평면을 다 열고 행위자가 남지 않으므로 최소 권한 쪽을 고르십시오.
+쓰는 곳마다 필요한 만큼만 주십시오. 행위자가 로그에 남는 쪽(액세스 키)을 먼저 고려하십시오.
 
 | 쓰는 곳 | 주는 것 |
 |---|---|
@@ -448,20 +465,24 @@ admin 토큰은 두 평면을 다 열고 행위자가 남지 않으므로 최소
 | 부트스트랩 · 비상 접근 | root 액세스 키 |
 
 GC 토큰에는 켜기/끄기 값이 없습니다 — Secret 의 `auth-gc-token` 에 값을 넣으면 서버와
-CronJob 이 둘 다 그것을 쓰고, 비면 CronJob 이 admin 토큰으로 돌아갑니다.
+CronJob 이 둘 다 그것을 씁니다. 비면 auth 를 켠 배포에서 GC 의 bearer 경로가 닫힙니다
+(`cas:RunGc` 를 가진 키의 SigV4 경로는 그대로입니다).
 `useExternalSecret: false` 로 차트가 Secret 을 만드는 경우에만 `secrets.gcToken` 에 넣습니다.
 
-**admin 토큰은 폐기 예정입니다 — 이미지 `0.1.24` 에서 제거됩니다.** 위 셋을 갖추면
-`auth-admin-token` 은 빈 문자열로 두면 되고, 그때 자격증명 없는 `/_admin/*` · GC 는 `401`
-입니다. 값이 남아 있으면 auth 를 켠 배포에서 기동 시 경고가 뜹니다(이미지 `0.1.21` 이상).
-단 **키 자체는 제거 시점까지 지우지 마십시오** — deployment 가 필수로 참조하므로 키가 없으면
-파드가 기동하지 못합니다.
+**admin 토큰은 폐기됐습니다**(이미지 `0.1.24` 이상). **새 배포에서는 `auth-admin-token` 을
+만들지 마십시오** — 차트 `0.1.31` 부터 기본 설치가 그 키를 만들지 않고, deployment 도
+`optional` 로 참조합니다.
 
-제거되면 `gcToken` · `auth.metricsToken` 의 admin 토큰 폴백도 함께 사라집니다. 사유와 이행
-절차는 CHANGELOG `0.1.28` 을 보십시오.
+**이미 그 키를 들고 있으면 지우셔도 됩니다.** `0.1.30` 까지는 필수 참조라 지우면 파드가
+기동하지 못했습니다. 값만 비운 채로 두어도 되고, 그 경우 서버가 무시했다고 기동 로그에
+남깁니다 — sealed-secret 을 회전할 때 함께 지우는 것이 편합니다.
 
-NoAuth 배포(`secretMasterKey` 가 빔)에는 액세스 키가 없으므로 bearer 토큰이 유일한
-자격증명입니다.
+`gcToken` · `auth.metricsToken` 의 admin 토큰 폴백도 함께 사라졌습니다. **올리기 전에 그
+둘을 채웠는지 확인하십시오** — 비어 있으면 GC 와 스크레이프가 `401` 이 됩니다. 사유와 이행
+절차는 CHANGELOG `0.1.28`·`0.1.31` 을 보십시오.
+
+NoAuth 배포(`secretMasterKey` 가 빔)에는 액세스 키가 없으므로 `gcToken` 이 GC 의 유일한
+자격증명입니다. 그 모드에서 `metricsToken` 이 비면 메트릭은 무인증으로 열립니다.
 
 ## 대량 적재 중에는 GC를 끄십시오 (모든 이미지 버전)
 
@@ -525,7 +546,7 @@ NoAuth 배포(`secretMasterKey` 가 빔)에는 액세스 키가 없으므로 bea
 3번은 **`kubectl exec`로 실행할 수 없습니다** — 런타임 이미지(`debian:bookworm-slim`)에
 `curl`도 `wget`도 없습니다. 클러스터 안에서 주기 실행하려면 `curl`이 있는 이미지의
 CronJob이 필요합니다(`templates/gc-cronjob.yaml`이 참고가 됩니다 — 같은 방식으로
-Secret에서 `auth-admin-token`을 주입하면 토큰이 클러스터 밖으로 나가지 않습니다).
+Secret에서 `auth-gc-token`을 주입하면 토큰이 클러스터 밖으로 나가지 않습니다).
 
 **일회성 확인**은 포트포워드 후 로컬 `curl`로 됩니다:
 
@@ -540,7 +561,7 @@ REL=cas-server     # 리소스명. 릴리스명이 'cas-server'를 포함하면 
 #  바꾼다면 그 셋을 함께 맞춰야 합니다.)
 kubectl port-forward -n "$NS" "svc/$REL" 18080:http &
 TOKEN=$(kubectl get secret -n "$NS" "$REL" \
-          -o jsonpath='{.data.auth-admin-token}' | base64 -d)
+          -o jsonpath='{.data.auth-gc-token}' | base64 -d)
 
 time curl -sS -X POST -H "Authorization: Bearer $TOKEN" \
   "http://localhost:18080/_internal/gc?dry_run=true"
@@ -566,8 +587,39 @@ kubectl get deploy "$REL" -n "$NS" \
 
 ## 집계 조회 격리 (이미지 `0.1.18` 이상)
 
-`/_api/stats`, `/_api/buckets`, `/_api/buckets/{bucket}/objects` 의 서브폴더 조회,
-`/_api/backends` 의 blob 집계, `/_api/gc/orphan-count` 는 전 테이블 집계입니다.
+`/_api/stats`, `/_api/buckets`, `/_api/backends` 의 blob 집계, `/_api/gc/orphan-count` 는
+전 테이블 집계입니다.
+
+`/_api/buckets/{bucket}/objects` 의 서브폴더 조회도 이미지 `0.1.23` 까지는 그랬습니다.
+**`0.1.24` 부터 비용이 그 레벨의 항목 수에 비례합니다** — 하위 폴더를 subtree 째 건너뛰므로
+폴더 안의 파일 수는 영향을 주지 않습니다. 그래도 계속 이 격리 풀에서 돕니다: 한 레벨의
+항목이 많으면 여전히 길어질 수 있습니다.
+
+**한 레벨의 상한이 있습니다** — 하위 폴더 10,000 개, 훑는 항목 20,000 개.
+
+그보다 큰 레벨은 **잘리고, 응답에 그 사실이 실리지 않습니다.** `prefixes` 는 페이지를 나누지
+않는 계약이라(폴더는 매 페이지 전량, 파일만 `after` 로 이어 받음) 「더 있음」을 적을 자리가
+없기 때문입니다. **두 상한 모두 서버가 경고 로그를 남기므로 그쪽으로 확인하십시오.** 두 줄 다 `bucket` 과
+`prefix` 를 필드로 남기므로 어느 레벨인지 바로 나옵니다.
+
+```bash
+# 걸음 상한: steps 필드가 있는 쪽
+kubectl logs -n <namespace> deploy/<fullname> | grep 'steps=' | grep 상한
+
+# 개수 상한
+kubectl logs -n <namespace> deploy/<fullname> | grep '개수 상한'
+```
+
+문구 전문이 아니라 필드(`steps=`)와 짧은 조각으로 찾는 것이 안전합니다 — 문장은 다듬어질 수
+있지만 필드 이름은 그대로입니다.
+
+걸음 상한 쪽이 더 눈에 안 띕니다. **그 레벨에 직접 파일이 많으면 걸음이 파일에 먼저 소진돼
+하위 폴더가 하나도 보이지 않을 수 있습니다** — 폴더 개수는 0 이라 개수 상한에는 닿지 않습니다.
+파일 목록은 정상입니다.
+
+파일 쪽이 잘리는 경우에는 위 경고가 반드시 함께 뜹니다 — `limit` 상한이 2,000 이라
+10,000(폴더) + 2,001 이 20,000(걸음)보다 작고, 따라서 파일이 걸음 상한에 닿으려면 폴더 쪽이
+이미 상한을 넘었어야 하기 때문입니다.
 
 `/_api/stats` 와 `/_api/buckets` 는 **용량 계산을 기본에서 뺐습니다.** 그 둘만
 `object_versions` × `blobs` 조인을 요구하기 때문이고, 한 문장에 두면 상한에 걸릴 때
@@ -711,7 +763,7 @@ GC 는 파트를 지울 때 **스토리지의 목록 API** 를 씁니다. 그 AP
 GC 결과에 드러납니다.
 
 ```bash
-curl -s -H "Authorization: Bearer $ADMIN_TOKEN" http://<host>/_api/gc/last-result
+curl -s -H "Authorization: Bearer $GC_TOKEN" http://<host>/_api/gc/last-result
 ```
 
 `errors` 가 0 이 아니면 그것입니다. **`status` 는 `success` 로 남으므로 `status` 가 아니라

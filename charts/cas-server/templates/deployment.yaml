@@ -146,24 +146,23 @@ spec:
                 secretKeyRef:
                   name: {{ include "cas-server.fullname" . }}
                   key: auth-secret-master-key
-            # 폐기 예정 — 이미지 0.1.24 에서 제거된다. 값이 있으면 auth 를 켠 배포에서
-            # 기동 시 경고가 뜬다. 제거 시점에는 이 블록과 Secret 키도 함께 지운다.
+            # 폐기된 토큰이다. 주입만 남긴 것은 **값이 아직 남아 있는 배포에 기동 로그로
+            # 알리기 위해서**다 — 그 경고를 내려면 값이 서버까지 닿아야 한다.
             #
-            # optional 을 붙이지 않는 것이 지금은 의도다 — 키 자체가 없으면 파드가 뜨지
-            # 못하게 해 sealed-secret 과 차트의 어긋남을 기동 시점에 드러낸다.
+            # optional 이다. 죽은 키를 지우는 것이 파드 기동 실패가 되면 아무도 지우지
+            # 않는다. 키가 없으면 서버는 미설정으로 보고 경고도 뜨지 않는다.
             - name: CAS__AUTH__ADMIN_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ include "cas-server.fullname" . }}
                   key: auth-admin-token
-            # GET /_internal/metrics 전용 읽기 토큰 (cas-server 이미지 0.1.18 이상).
-            # 이것을 모니터링 스택에 쓰면 admin 토큰을 배포하지 않아도 스크레이프가 된다 —
-            # admin 토큰은 POST /_internal/gc(blob 물리 삭제)까지 여는 자격증명이다.
+                  optional: true
+            # GET /_internal/metrics 를 여는 유일한 수단이다.
             #
             # optional: true 가 필수다. 기존 배포의 sealed-secret 은 7개 키만 갖고 있고,
             # 필수로 두면 그 Secret 을 갱신하기 전에는 파드가 CreateContainerConfigError 로
             # 뜨지 못한다 — 업그레이드가 곧 전면 중단이 된다(replicaCount=1).
-            # 키가 없으면 환경변수가 설정되지 않고, 서버는 admin 토큰으로 폴백한다.
+            # 키가 없으면 환경변수가 설정되지 않고, auth 를 켠 배포에서는 그 경로가 401 이다.
             - name: CAS__AUTH__METRICS_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -171,11 +170,11 @@ spec:
                   key: auth-metrics-token
                   optional: true
             # GC(POST /_internal/gc, GET /_api/gc/*) 전용 토큰. 이 토큰으로 /_admin/* 은
-            # 열리지 않으므로 GC CronJob 에는 admin 토큰이 아니라 이것을 준다.
+            # 열리지 않으므로 GC CronJob 에는 이것을 준다.
             # cas-server 이미지 0.1.21 이상.
             #
             # optional: true 가 필수다 — 이 키가 없는 sealed-secret 에서 파드가 뜨지
-            # 못하게 된다. 없으면 서버는 admin 토큰만 받는다.
+            # 못하게 된다. 없으면 auth 를 켠 배포에서 GC 의 bearer 경로가 닫힌다.
             - name: CAS__AUTH__GC_TOKEN
               valueFrom:
                 secretKeyRef:

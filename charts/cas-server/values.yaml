@@ -6,11 +6,11 @@
 #
 # ── 문서 ─────────────────────────────────────────────────────────────────────
 #   아키텍처 (스토리지 모델·백엔드·API 명세)
-#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.30/charts/cas-server/docs/architecture.md
+#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.31/charts/cas-server/docs/architecture.md
 #   사용법 (배포·키 관리·AWS CLI/boto3 예제)
-#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.30/charts/cas-server/docs/usage.md
+#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.31/charts/cas-server/docs/usage.md
 #   차트 README
-#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.30/charts/cas-server/README.md
+#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.31/charts/cas-server/README.md
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── 이미지 ────────────────────────────────────────────────────────────────────
@@ -23,7 +23,7 @@ image:
   #  - 해시별 쓰기 락 테이블의 즉시 회수. GC 실행 시에만 회수되므로,
   #    gc.enabled: false 배포에서는 유휴 바닥값이 상승한다 (gc 섹션 주석 참고)
   #  - auth.metricsToken. 그 토큰으로 스크레이프하면 401 이 된다
-  tag: "0.1.23"
+  tag: "0.1.24"
   # digest 로 핀하려면 여기에 넣으십시오 (`sha256:...`). 값이 있으면 tag 대신 이것이
   # 쓰이고, 렌더 결과가 `repository@sha256:...` 가 됩니다.
   #
@@ -159,7 +159,7 @@ config:
   # 노드 IP 로 직접 열려 있는 경우다.
   #
   # GC CronJob 과 함께 쓸 수 있다. 끄면 핸들러가 붙지 않는 것은 콘솔이 쓰는 경로들이고,
-  # /_api/gc/* 는 admin 토큰 라우터에 있어 남는다. 실측(false 로 기동):
+  # /_api/gc/* 는 별도 라우터에 있어 남는다. 실측(false 로 기동):
   #
   #   막힘  /_ui  /_api/auth-mode  /_api/stats  /_api/buckets  /_api/backends
   #         /_api/blobs/{hash}
@@ -246,12 +246,12 @@ externalDatabase:
 # Secret 키 목록. useExternalSecret: true(기본값)면 아래 값들은 쓰이지 않고,
 # kubeseal 로 만든 sealed-secret 이 클러스터에 이미 있는 것을 전제로 합니다.
 #
-#   필수  db-password, auth-secret-master-key, auth-admin-token,
+#   필수  db-password, auth-secret-master-key,
 #         auth-root-access-key-id, auth-root-secret-key
 #         (storage.mode: s3 면 s3-access-key-id, s3-secret-access-key 도)
 #   선택  auth-gc-token, auth-metrics-token  — 없어도 파드는 기동합니다
 #
-# auth-admin-token 은 폐기 예정입니다(0.1.24 제거). 키는 그때까지 필수, 값은 비우십시오.
+# auth-admin-token 은 폐기됐습니다. 이 키는 두지 않아도 됩니다.
 #
 # 필수 키는 값이 비어 있어도 되지만 **키 자체는 있어야 합니다** — deployment 가
 # optional 없이 참조하므로 없으면 파드가 기동하지 못합니다.
@@ -270,14 +270,15 @@ secrets:
   rootAccessKeyId: ""
   rootSecretKey: ""
 
-  # 폐기 예정 — 이미지 0.1.24 에서 제거됩니다. 이 토큰은 /_admin/*·GC·메트릭 셋을 모두
-  # 열고, gcToken·metricsToken 을 채워도 빠지지 않습니다. 셋 다 더 좁은 수단이 있어
-  # 대체 불가능한 자리가 없으면서 그 분리만 되돌립니다. auth 를 켠 배포에서 값이 있으면
-  # 기동 시 경고가 뜹니다. 사유와 이행 절차는 CHANGELOG 0.1.28 참고.
-  adminToken: ""
+  # adminToken 은 폐기돼 차트에서 없어졌습니다. 이 값을 주셔도 아무 데도 쓰이지 않습니다.
+  # 이미 Secret 에 auth-admin-token 키를 들고 계시면 서버가 무시했다고 기동 로그에
+  # 남깁니다 — 회전할 때 함께 지우십시오. 자세한 것은 CHANGELOG 0.1.31.
   # GC(POST /_internal/gc, GET /_api/gc/*) 전용 Bearer 토큰. 이 토큰으로 /_admin/* 은
   # 열리지 않으므로 GC CronJob 에는 이것을 쓰십시오. 켜기/끄기 값은 없습니다 —
   # Secret 에 auth-gc-token 이 있는지가 그대로 스위치입니다.
+  #
+  # auth 를 켠 배포에서 비면 GC 의 bearer 경로가 닫힙니다(cas:RunGc 키의 SigV4 경로는
+  # 그대로입니다).
   gcToken: ""
 
 # ── 인증 설정 ─────────────────────────────────────────────────────────────────
@@ -285,14 +286,18 @@ auth:
   # true 면 GET/HEAD /{bucket}/{key} 를 인증 없이 허용한다 (이미지 서버, FiftyOne 등).
   # ListObjects·ListBuckets 는 제외되므로 보호는 "버킷명과 키를 알아야 읽을 수 있다" 하나다.
   # 노출 범위는 아래 service 절 주의도 함께 볼 것.
+  #
+  # **이 값을 false 로 내리기 전에 cas_anonymous_get_total 을 보십시오**
+  # (이미지 0.1.24 이상). 익명으로 통과한 읽기를 reason 별로 셉니다 —
+  # unsigned 와 signed_invalid 가 끄는 순간 403 이 될 요청입니다. 관측 없이 내리면
+  # 무엇이 깨지는지 모른 채 내리게 됩니다.
   anonymousGet: true
 
-  # GET /_internal/metrics 전용 읽기 토큰. 모니터링 스택에는 adminToken 이 아니라
-  # 이것을 쓸 것 — adminToken 은 GC 와 /_admin/* 까지 여는 자격증명이다.
+  # GET /_internal/metrics 전용 읽기 토큰. **이 경로를 여는 유일한 수단이다.**
   #
-  # **metrics 는 액세스 키로 열리지 않는다.** 그 경로에만 SigV4 분기가 없어 root 키로도
-  # 401 이다. 두 토큰 중 하나가 반드시 필요하다. 둘 다 비면 이 경로는 열린다 —
-  # /_admin/* 과 GC 는 401 로 닫히지만 metrics 는 닫지 않는다.
+  # **metrics 는 액세스 키로도 열리지 않는다.** 그 경로에만 SigV4 분기가 없어 root 키로도
+  # 401 이다. 이 값이 비면 auth 를 켠 배포에서는 401 로 닫히고(/_admin/*·GC 와 같은 판정),
+  # NoAuth 배포에서는 무인증으로 열린다 — 후자는 기동 시 경고가 뜬다.
   #
   # 다른 자격증명은 전부 secrets.* 에 있다. 이 키만 예외다.
   # useExternalSecret: true(기본값)면 sealed-secret 의 auth-metrics-token 이 쓰인다.
@@ -512,7 +517,7 @@ serviceAccount:
 # 즉 **GC 를 켜 뒀다고 해당 없는 항목이 아니다.** 2026-08 운영 건에서 유휴 바닥값이
 # 하루 330~430 MiB 상승했고, 주 1회 주기면 그 사이 최대 2.3~2.9 GiB 가 쌓인다.
 # 해당 이미지를 쓴다면 적재 기간에 아래를 주기 실행해 완화할 것 —
-# blob 물리 삭제도 advisory lock도 없이 그 테이블을 회수한다(admin 토큰 필요):
+# blob 물리 삭제도 advisory lock도 없이 그 테이블을 회수한다(GC 자격증명 필요):
 #
 #   POST /_internal/gc?dry_run=true
 #
