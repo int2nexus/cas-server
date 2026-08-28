@@ -2,7 +2,16 @@
 
 image:
   repository: jiwonkim97/nexus-client
-  tag: "0.1.10"
+  tag: "0.1.12"
+  # digest 로 핀하려면 여기에 넣으십시오 (`sha256:...`). 값이 있으면 tag 대신 이것이
+  # 쓰이고, 렌더 결과가 `repository@sha256:...` 가 됩니다.
+  #
+  # 태그는 같은 이름으로 다시 밀릴 수 있어 "지금 무엇을 돌리고 있는가" 를 확정하지
+  # 못합니다. digest 는 내용 주소라 그 문제가 없습니다. 각 버전의 digest 는 그 버전의
+  # CHANGELOG 절 맨 위에 image 와 함께 적혀 있습니다.
+  #
+  # 비워 두면 지금까지와 같이 tag 로 참조합니다.
+  digest: ""
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
