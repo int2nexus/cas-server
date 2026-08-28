@@ -3,7 +3,7 @@
 ---
 
 ## 설치 및 배포 (Kubernetes / Helm)
-cas-server 는 helm 차트를 통해 k8s 환경에 배포할 수 있습니다. 
+cas-server 는 helm 차트를 통해 k8s 환경에 배포할 수 있습니다.
 
 ### 1. Helm 레포 추가
 cas-server 레포지토리를 등록하고 업데이트합니다.
@@ -38,7 +38,8 @@ externalDatabase:
 
 # 자격증명. useExternalSecret: false 로 두면 차트가 Secret 을 직접 만든다.
 # 기본값은 true 이고, 그 경우 클러스터에 미리 만들어 둔 Secret(sealed-secret 등)을
-# 참조하며 아래 값들은 읽히지 않는다 — 그 방식은 README 의 "시크릿" 절을 따를 것.
+# 참조하며 아래 값들은 읽히지 않는다 — 그 방식은 README 의
+# "시크릿 (sealed-secret) 먼저 주입" 절을 따를 것.
 secrets:
   useExternalSecret: false
 
@@ -48,13 +49,15 @@ secrets:
 
   # DB 내부 시크릿 암호화용 마스터 키. 비우면 인증이 꺼진 NoAuth 모드로 뜬다.
   secretMasterKey: "<openssl rand -hex 32 의 출력(64자 Hex)>"
-  adminToken: ""                              # 폐기 예정(0.1.24 제거). 비워 둘 것
   rootAccessKeyId: "int2cas-root"             # 최고 관리자 Access Key ID. auth 를 켜면 필수
   rootSecretKey: "<최고 관리자 Secret Key>"    # auth 를 켜면 필수
+  gcToken: "<GC CronJob 용 Bearer 토큰>"       # 비우면 GC 의 Bearer 경로가 닫힌다
 
 # CAS 서버 인증 동작 설정.
 auth:
   anonymousGet: true # GET/HEAD 를 인증 없이 허용. 신뢰 네트워크가 아니면 false
+                     # (끄기 전에 cas_anonymous_get_total 을 볼 것 — 아래 메트릭 절)
+  metricsToken: "<스크레이프용 Bearer 토큰>"  # GET /_internal/metrics 를 여는 유일한 수단
 ```
 
 ### 3. Helm 차트 설치
@@ -90,13 +93,18 @@ API 호출 없이 브라우저에서 액세스 키를 발급하고 정책을 관
 
 ### 1. UI 접속
 
-`/_ui` 에 rootkey로 로그인하여 접속하면 Dashboard 화면이 표시됩니다.
+`/_ui` 에 root 키로 로그인하면 Dashboard 화면이 표시됩니다.
+
+**경로는 `/_ui` 입니다. 뒤에 슬래시를 붙인 `/_ui/` 는 `404` 입니다.** 리버스 프록시나
+Ingress 에서 경로를 재작성한다면 슬래시가 붙지 않게 하십시오.
 
 브라우저에서 열려면 접근 경로를 하나 만들어야 합니다.
 
-> **먼저 읽으십시오.** `/_api/*` 는 SigV4 인증을 요구합니다(이미지 `0.1.21` 기준).
-> 무인증으로 열려 있는 것은 `/_ui` 와 `/_api/auth-mode` 둘뿐이고, `config.consoleEnabled:
-> false` 로 콘솔 전체를 끌 수 있습니다. `auth.anonymousGet: true` 여도 예약 경로 넷
+> **먼저 읽으십시오.** `/_api/*` 는 SigV4 인증을 요구합니다(이미지 `0.1.21` 이상).
+> 콘솔 표면에서 무인증으로 열려 있는 것은 `/_ui` 와 `/_api/auth-mode` 둘뿐이고,
+> `config.consoleEnabled: false` 로 콘솔 전체를 끌 수 있습니다. 그 밖에 무인증인 것은
+> 프로브용 `/_internal/health` 와 `/_internal/live` 입니다.
+> `auth.anonymousGet: true` 여도 예약 경로 넷
 > (`_api`·`_ui`·`_internal`·`_admin`)은 익명 대상이 아닙니다 — 익명 허용은 데이터 평면
 > `GET`/`HEAD /{bucket}/{key}` 뿐입니다.
 >
@@ -120,9 +128,10 @@ kubectl port-forward -n <namespace> svc/cas-server 8080:http
 <!-- 이미지: Dashboard 탭 전체 화면 -->
 ![UI Dashboard](./images/ui-01-dashboard.png)
 
-### 2. 관리 화면 활성화
+### 2. 화면과 권한
 
-토큰 입력 단계가 없습니다. 화면은 로그인한 키의 정책으로 열립니다.
+**콘솔은 토큰을 받지 않습니다.** 화면은 로그인한 키의 SigV4 서명으로 열리고, 무엇을 보일지는
+`GET /_api/whoami` 한 번으로 정합니다.
 
 | 화면 | 필요한 권한 |
 |---|---|
@@ -133,8 +142,8 @@ kubectl port-forward -n <namespace> svc/cas-server 8080:http
 
 root 키는 전부 열립니다. 권한이 없는 화면은 탭이 표시되지 않습니다.
 
-`secrets.adminToken` 과 GC 토큰은 서버에서 그대로 동작합니다. GC CronJob·`curl` 용이고
-콘솔에서는 쓰지 않습니다.
+`secrets.gcToken` 과 `auth.metricsToken` 은 GC CronJob 과 스크레이프 용입니다 — 콘솔은
+어느 쪽도 쓰지 않습니다.
 
 ### 3. 새 키 발급
 
@@ -155,21 +164,81 @@ Keys 탭에서 설명(description)과 선택적 만료일을 입력하고 발급
 <!-- 이미지: 정책 추가 폼 및 적용된 정책 태그 목록 -->
 ![정책 추가](./images/ui-05-add-policy.png)
 
-정책을 줄 때 알아 두실 것 셋입니다.
-
-- **`action` 이름을 검증합니다.** 정의되지 않은 이름은 `400` 으로 거절합니다. 예전에는 자유
-  문자열이라 `PutObjekt` 같은 오타가 아무것에도 걸리지 않는 정책을 만들었고, 만든 쪽은 권한을
-  준 줄 알았습니다. `cas:*` 처럼 관리 액션에 와일드카드를 적는 것도 거절합니다.
-- **`action: "*"` 는 데이터 평면에만 걸립니다.** `cas:ReadAccessKeys`·`cas:ManageAccessKeys`·
-  `cas:ReadGc`·`cas:RunGc` 는 이름을 명시한 정책에만 붙습니다. 그러지 않으면 `*` 로 발급된
-  기존 키 전부가 키 발급·GC 실행 권한을 얻게 됩니다.
-- **목록 조회는 둘 중 하나로 열립니다.** `cas:ManageAccessKeys` 만 준 키도 목록이 보입니다.
-  거꾸로 `cas:ReadAccessKeys` 만 준 키는 발급·폐기를 못 합니다 — 감사·대조 전용 자격증명이
-  그래서 성립합니다. GC 도 같아서 `cas:RunGc` 는 GC 조회를 포함합니다.
+`action` 에 쓸 수 있는 이름과 `bucket`·`prefix` 가 걸리는 범위는 아래 "5. 액션 목록" 에
+정리했습니다.
 
 **root 키는 폐기할 수 없습니다** — `DELETE /_admin/access-keys/<root>` 는 `403` 입니다.
 auth 를 켠 배포에서 root 는 필수 부트스트랩 신원이라, 비활성으로 만들면 관리 평면 접근 수단이
 통째로 사라질 수 있기 때문입니다.
+
+### 5. 액션 목록
+
+정책에 쓸 수 있는 이름은 **아래 열다섯 개와 `"*"` 가 전부**입니다. 다른 문자열은 `400`
+입니다 — `PutObjekt` 같은 오타가 아무것에도 걸리지 않는 정책이 되지 않게 하려는 것입니다.
+`cas:*` 처럼 관리 액션에 와일드카드를 적는 것도 거절합니다.
+
+| 평면 | 액션 |
+|---|---|
+| 데이터 | `ListBuckets` · `CreateBucket` · `DeleteBucket` · `ListObjects` |
+| | `GetObject` · `PutObject` · `DeleteObject` |
+| | `CreateMultipartUpload` · `UploadPart` · `CompleteMultipartUpload` · `AbortMultipartUpload` |
+| 관리 | `cas:ReadAccessKeys` · `cas:ManageAccessKeys` · `cas:ReadGc` · `cas:RunGc` |
+
+**`"*"` 는 데이터 평면 액션 열한 개에만 걸립니다.** 관리 액션 넷은 이름을 명시한 정책에만
+붙습니다 — 그러지 않으면 `*` 로 발급된 키 전부가 키 발급·GC 실행 권한을 얻게 됩니다.
+
+**넓은 쪽이 좁은 쪽을 포함합니다.** `cas:ManageAccessKeys` 만 준 키도 키 목록이 보이고,
+`cas:RunGc` 만 준 키도 GC 조회가 됩니다. 거꾸로는 성립하지 않습니다 — `cas:ReadAccessKeys`
+만 준 키는 발급·폐기를 못 하므로 감사·대조 전용 자격증명으로 쓸 수 있습니다.
+
+#### 어떤 API 가 어느 액션으로 판정되는가
+
+넷은 자기 이름의 액션이 없습니다(굵게). **인가를 건너뛰는 것이 아니라 다른 액션으로
+판정되며, 그 판정은 요청 처리보다 먼저 일어납니다.**
+
+| API | 요청 | 판정 액션 |
+|---|---|---|
+| `ListBuckets` | `GET /` | `ListBuckets` |
+| `CreateBucket` | `PUT /{bucket}` | `CreateBucket` |
+| **`PutBucketVersioning`** | `PUT /{bucket}?versioning` | `CreateBucket` |
+| `DeleteBucket` | `DELETE /{bucket}` | `DeleteBucket` |
+| `ListObjects(V2)` · `ListObjectVersions` | `GET /{bucket}` | `ListObjects` |
+| **`ListMultipartUploads`** | `GET /{bucket}?uploads` | `ListObjects` |
+| `GetObject` | `GET /{bucket}/{key}` | `GetObject` |
+| **`HeadObject`** | `HEAD /{bucket}/{key}` | `GetObject` |
+| `PutObject` | `PUT /{bucket}/{key}` | `PutObject` |
+| **`CopyObject`** | `PUT` + `x-amz-copy-source` | `PutObject`(대상) **+** `GetObject`(소스) |
+| `DeleteObject` | `DELETE /{bucket}/{key}` | `DeleteObject` |
+| `CreateMultipartUpload` | `POST /{bucket}/{key}?uploads` | `CreateMultipartUpload` |
+| `UploadPart` | `PUT ...?partNumber=&uploadId=` | `UploadPart` |
+| `CompleteMultipartUpload` | `POST ...?uploadId=` | `CompleteMultipartUpload` |
+| `AbortMultipartUpload` | `DELETE ...?uploadId=` | `AbortMultipartUpload` |
+| Presigned URL | `GET` · `PUT` · `DELETE` | 각각 `GetObject` · `PutObject` · `DeleteObject` |
+
+**`GetObject` 만 부여한 키는 `CopyObject` 로 쓸 수 없습니다** — 대상에 `PutObject` 가
+필요합니다. 버저닝도 바꿀 수 없고(`CreateBucket` 필요) 멀티파트 목록도 볼 수
+없습니다(`ListObjects` 필요). 그런 키는 읽기 전용으로 운용하셔도 됩니다.
+
+#### `bucket` · `prefix` 가 걸리는 깊이
+
+액션마다 다릅니다. 정책을 좁힐 때 여기서 어긋납니다.
+
+| 대상 | 해당 액션 | `bucket` | `prefix` |
+|---|---|---|---|
+| 서비스 | `ListBuckets` | **`"*"` 여야만 통과** | 보지 않음 |
+| 버킷 | `CreateBucket` · `DeleteBucket` · `ListObjects` | 이름 일치 또는 `"*"` | **보지 않음** |
+| 오브젝트 | 나머지 전부 | 이름 일치 또는 `"*"` | `key` 의 접두사 또는 `"*"` |
+| 관리 | 관리 액션 4개 | 보지 않음 | 보지 않음 |
+
+조용히 어긋나는 자리가 둘입니다.
+
+- **`ListBuckets` 는 버킷을 지정한 정책으로 열리지 않습니다.** 버킷 목록은 특정 버킷의
+  자원이 아니므로 `bucket: "images"` 정책이 걸리지 않습니다. 버킷 목록이 필요한 소비자에게는
+  `{"action": "ListBuckets", "bucket": "*"}` 를 따로 주십시오.
+- **`ListObjects` 에는 `prefix` 가 걸리지 않습니다.**
+  `{"action": "ListObjects", "bucket": "images", "prefix": "upload/"}` 로 발급해도 그 키는
+  `images` 버킷 **전체**를 나열합니다. prefix 로 좁혀지는 것은 오브젝트 액션뿐입니다.
+  목록을 실제로 가리려면 버킷을 나누셔야 합니다.
 
 ---
 
@@ -184,15 +253,12 @@ aws configure set aws_access_key_id     <root_access_key_id>
 aws configure set aws_secret_access_key <root_secret_key>
 aws configure set region                cas-default
 
-CAS="http://cas-server:80" 
+CAS="http://cas-server:80"
 ```
 
 > region 은 아무 값이나 됩니다. 서버가 클라이언트의 선언 값으로 서명 키를 유도하므로,
 > 지정하지 않아 SDK 기본값(boto3 는 `us-east-1`)이 들어가도 그대로 동작합니다.
 > 예시의 `cas-default` 는 관례일 뿐입니다.
->
-> 이미지 `0.1.18` 이하는 `cas-default` 만 받았고, 다른 값이면
-> `403 InvalidAccessKeyId` 로 거부했습니다.
 
 ### boto3
 
@@ -212,23 +278,23 @@ s3 = boto3.client(
 
 ## Admin API로 키 관리
 
-웹 UI 대신 curl로 직접 발급할 수도 있습니다. `/_admin/*` 을 여는 자격증명은 셋입니다.
+웹 UI 대신 명령줄로 직접 발급할 수도 있습니다. `/_admin/*` 을 여는 자격증명은 **SigV4
+신원 둘뿐입니다.** Bearer 토큰으로 열리는 경로가 없으므로 `gcToken` 으로도 열리지 않습니다.
 
-| 자격증명 | 형태 | 비고 |
-|---|---|---|
-| root 키 | SigV4 서명 | 관리 평면 전권. 조작이 `key_id=<root>` 로 기록됨 |
-| `cas:ManageAccessKeys` · `cas:ReadAccessKeys` 정책 키 | SigV4 서명 | 사람마다 하나씩. 조작이 그 `key_id` 로 기록됨 |
-| `adminToken` | `Authorization: Bearer <admin_token>` | **폐기 예정 — 이미지 `0.1.24` 에서 제거.** 조작이 `<bearer>` 로만 남음 |
+| 자격증명 | 필요한 것 |
+|---|---|
+| root 키 | 관리 평면 전권. 조작이 `key_id=<root>` 로 기록됨 |
+| 관리 정책 키 | 발급·폐기·정책 변경은 `cas:ManageAccessKeys`, 조회는 `cas:ReadAccessKeys` 또는 `cas:ManageAccessKeys`. 조작이 그 `key_id` 로 기록됨 |
 
-발급·폐기·정책 변경에는 `cas:ManageAccessKeys` 가, 목록 조회에는 `cas:ReadAccessKeys` 또는
-`cas:ManageAccessKeys` 가 필요합니다. `gcToken` 으로는 이 경로가 열리지 않습니다.
+**서명을 손으로 만들지 말고 서명 도구를 쓰십시오.** 아래는
+[`awscurl`](https://github.com/okigan/awscurl) 예시입니다 — `--service` 는 `s3`,
+`--region` 은 아무 값이나 됩니다.
 
 ```bash
-CAS="http://cas-server:80"
-
 # 키 발급 — root 키 또는 cas:ManageAccessKeys 를 가진 키로 서명
-curl -s -X POST --aws-sigv4 "aws:amz:cas-default:s3" --user "$KEY_ID:$SECRET" \
-  $CAS/_admin/access-keys \
+awscurl --service s3 --region cas-default \
+  --access_key "$KEY_ID" --secret_key "$SECRET" \
+  -X POST "$CAS/_admin/access-keys" \
   -H "Content-Type: application/json" \
   -d '{"description": "my-service-key"}'
 ```
@@ -241,7 +307,14 @@ curl -s -X POST --aws-sigv4 "aws:amz:cas-default:s3" --user "$KEY_ID:$SECRET" \
 }
 ```
 
-> `secret_key`는 생성 시점인 이 응답에서 단 한 번만 평문으로 노출되며, 이후 DB에는 AES-256-GCM으로 안전하게 암호화되어 저장되므로 다시 조회할 수 없습니다. 반드시 안전한 곳에 즉시 저장해 두세요.
+> `secret_key` 는 이 응답에서 한 번만 평문으로 나옵니다. DB 에는 AES-256-GCM 으로 암호화해
+> 저장하므로 다시 조회할 수 없습니다. 즉시 안전한 곳에 옮겨 두십시오.
+
+조회·정책 변경 등 나머지 `/_admin/*` 호출과 각 응답의 계약(`?active=` 필터, 폐기된 키의
+단건 조회, 시각 형식)은 차트 README 의 "관리 API 자격증명" 절에 있습니다.
+
+`/_admin/*` 은 **auth 를 켠 배포에만 존재합니다.** NoAuth 배포에는 액세스 키라는 개념이
+없어 이 경로가 마운트되지 않습니다.
 
 ---
 
@@ -294,6 +367,11 @@ for obj in resp.get("Contents", []):
     print(obj["Key"], obj["Size"])
 ```
 
+`--max-keys 0` 은 빈 목록을 돌려줍니다 — `IsTruncated` 는 `false` 이고 이어받을 커서도
+없습니다. 0건을 요청했으므로 「더 있음」 을 참으로 두지 않습니다. 콘솔 API
+`GET /_api/buckets/{bucket}/objects` 의 `limit=0` 도 같습니다(`has_more: false`,
+`next_after: null`).
+
 ---
 
 ## 오브젝트
@@ -342,29 +420,36 @@ print(resp["ResponseMetadata"]["HTTPHeaders"].get("x-cas-already-existed"))
 파일의 BLAKE3 hash를 미리 알고 있는 경우 `x-cas-hash` 헤더로 전달하면,
 중복 파일일 때 body를 전송하지 않고 즉시 완료됩니다.
 
+이것도 평범한 `PutObject` 입니다 — **`auth.anonymousGet` 은 `GET`/`HEAD` 에만 걸리므로 이
+요청은 서명해야 합니다.** `curl` 은 `--aws-sigv4` 로 직접 서명할 수 있습니다(curl `7.75`
+이상).
+
 ```bash
 HASH=$(b3sum --no-names file.bin)
+
 curl -X PUT "$CAS/my-bucket/path/to/file.bin" \
+  --aws-sigv4 "aws:amz:cas-default:s3" --user "$KEY_ID:$SECRET" \
   -H "x-cas-hash: $HASH" \
   --data-binary @file.bin
 ```
 
-boto3는 임의 커스텀 헤더를 지원하지 않으므로 (`Metadata`는 `x-amz-meta-*`로 변환됨) `requests`로 직접 전송합니다.
+boto3 는 `put_object` 인자로 임의 헤더를 받지 않습니다 (`Metadata` 는 `x-amz-meta-*` 로
+변환됩니다). 서명 직전 이벤트에 훅을 걸어 헤더를 넣습니다.
 
 ```python
 import blake3
-import requests
 
 with open("file.bin", "rb") as f:
     data = f.read()
 
 file_hash = blake3.blake3(data).hexdigest()
 
-resp = requests.put(
-    f"{CAS}/my-bucket/path/to/file.bin",
-    data=data,
-    headers={"x-cas-hash": file_hash},
-)
+def add_cas_hash(request, **kwargs):
+    request.headers.add_header("x-cas-hash", file_hash)
+
+s3.meta.events.register_first("before-sign.s3.PutObject", add_cas_hash)
+s3.put_object(Bucket="my-bucket", Key="path/to/file.bin", Body=data)
+s3.meta.events.unregister("before-sign.s3.PutObject", add_cas_hash)
 ```
 
 ### 다운로드
@@ -575,13 +660,12 @@ curl http://localhost:8080/_internal/health
 
 ### GC 수동 트리거
 
-GC 경로(`POST /_internal/gc`, `GET /_api/gc/*`)를 여는 자격증명은 셋입니다.
+GC 경로(`POST /_internal/gc`, `GET /_api/gc/*`)를 여는 자격증명은 둘입니다.
 
 | 자격증명 | 형태 | 비고 |
 |---|---|---|
 | `secrets.gcToken` | `Authorization: Bearer <gc_token>` | GC 전용. `/_admin/*`·메트릭은 열리지 않음 |
 | `cas:RunGc` · `cas:ReadGc` 정책 키 (또는 root) | SigV4 서명 | 조작이 `key_id` 로 기록됨 |
-| `adminToken` | `Authorization: Bearer <admin_token>` | **폐기 예정 — 이미지 `0.1.24` 에서 제거** |
 
 GC CronJob 처럼 blob 회수만 필요한 주체에는 `gcToken` 을 주십시오. Secret 의 `auth-gc-token`
 키에 값이 있는지가 그대로 스위치이고, 서버와 CronJob 이 같은 키를 읽습니다.
@@ -653,7 +737,7 @@ curl -s -X POST http://localhost:8080/_internal/gc \
 과거 실행 이력으로 판단하십시오.
 
 ```bash
-curl -s "http://localhost:8080/_api/gc/history"   -H "Authorization: Bearer $GC_TOKEN"
+curl -s "http://localhost:8080/_api/gc/history" -H "Authorization: Bearer $GC_TOKEN"
 ```
 
 `deleted_blobs`가 매번 한 자릿수라면 전수 스캔을 그 빈도로 돌릴 이유가 없습니다. 월 1회
@@ -689,7 +773,7 @@ Helm으로 배포하셨다면 `gc.phases`와 `gc.fullSweep`으로 두 개의 Cro
 
 ```bash
 curl -s --aws-sigv4 "aws:amz:cas-default:s3" --user "$KEY_ID:$SECRET" \
-  "$BASE/_api/whoami"
+  "http://localhost:8080/_api/whoami"
 ```
 
 ```json
@@ -705,12 +789,11 @@ curl -s --aws-sigv4 "aws:amz:cas-default:s3" --user "$KEY_ID:$SECRET" \
 }
 ```
 
-**각 값은 정책 원장이 아니라 실제로 열리는 것을 답합니다.** 목록 조회 라우트가 두 액션 중
-하나로 열리므로 Manage 만 가진 키도 `read_access_keys` 가 `true` 이고, GC 조회도 같아서
-`cas:RunGc` 만 가진 키는 `read_gc` 가 `true` 입니다. 거꾸로는 성립하지 않습니다.
+**각 값은 정책 원장이 아니라 실제로 열리는 것을 답합니다.** 위 "액션 목록" 절의 포함 관계가
+그대로 반영되므로, `cas:ManageAccessKeys` 만 가진 키도 `read_access_keys` 가 `true` 이고
+`cas:RunGc` 만 가진 키도 `read_gc` 가 `true` 입니다.
 
-`action: "*"` 정책은 관리 평면에 걸리지 않아 전부 `false` 이고, NoAuth 배포도 전부
-`false` 입니다.
+`action: "*"` 정책은 관리 평면에 걸리지 않으므로 그런 키는 넷 다 `false` 입니다.
 
 #### `GET /_api/config-effective`
 
@@ -719,15 +802,19 @@ curl -s --aws-sigv4 "aws:amz:cas-default:s3" --user "$KEY_ID:$SECRET" \
 값이라 `extraEnv` 오버라이드도 여기 드러납니다.
 
 ```bash
-curl -s "$BASE/_api/config-effective" -H "$SIGV4"
+curl -s --aws-sigv4 "aws:amz:cas-default:s3" --user "$KEY_ID:$SECRET" \
+  "http://localhost:8080/_api/config-effective"
 ```
+
+아래는 발췌입니다 — 실제 응답에는 `config.*` 로 넘긴 값이 전부 들어 있습니다.
 
 ```json
 {
   "db_url": "postgresql://postgres:***@pg/cas",
   "multipart_ttl_secs": 86400,
   "console_enabled": true,
-  "auth": { "admin_token": "<set>", "secret_master_key": "<set>", "anonymous_get": true },
+  "auth": { "secret_master_key": "<set>", "metrics_token": "<set>",
+            "gc_token": "<set>", "anonymous_get": true },
   "storage_backends": [
     { "id": "s3-1", "backend_type": "s3", "endpoint": null,
       "access_key_id": "<set>", "secret_access_key": "<set>" }
@@ -738,9 +825,9 @@ curl -s "$BASE/_api/config-effective" -H "$SIGV4"
 **자격증명은 값으로 나가지 않습니다.** `<set>`/`<unset>` 만 나가고, `db_url` 의 비밀번호는
 가려집니다.
 
-**백엔드 스토리지 주소(`endpoint`)는 관리 주체에게만 채웁니다.** root 키,
-`cas:ManageAccessKeys` 를 가진 키, `Authorization: Bearer <adminToken>` 셋입니다.
-`/_api/backends` 와 같은 기준이고, 그 밖의 키에는 `null` 로 나갑니다.
+**백엔드 스토리지 주소(`endpoint`)는 관리 주체에게만 채웁니다** — root 키 또는
+`cas:ManageAccessKeys` 를 가진 키. `/_api/backends` 와 같은 기준이고, 그 밖의 키에는
+`null` 로 나갑니다.
 
 이미지 `0.1.21` 이상입니다.
 
@@ -765,11 +852,12 @@ GC가 미완료 멀티파트 업로드를 만료로 보는 기준은 `config.mul
 노드 IP에 직접 열려 있는 경우입니다.
 
 끄면 `/_ui`, `/_api/auth-mode`, `/_api/stats`, `/_api/buckets`, `/_api/backends`,
-`/_api/blobs/{hash}`에 핸들러가 붙지 않습니다. 응답 코드는 인증 설정에 따라 갈립니다 —
+`/_api/blobs/{hash}`, `/_api/whoami`, `/_api/config-effective` 에 핸들러가 붙지 않습니다.
+응답 코드는 인증 설정에 따라 갈립니다 —
 인증이 꺼져 있으면 `404`, 켜져 있으면 인증 미들웨어가 라우팅보다 먼저 걸러 `403`입니다.
 **어느 쪽이든 유효한 자격증명으로도 응답하지 않습니다.**
 
-`/_api/gc/*`와 `/_internal/*`은 admin 토큰 라우터에 있어 남으므로 **GC CronJob은 그대로
+`/_api/gc/*`와 `/_internal/*`은 별도 라우터에 있어 남으므로 **GC CronJob은 그대로
 동작합니다.**
 
 ### GC 이력 조회
@@ -779,8 +867,9 @@ GC가 미완료 멀티파트 업로드를 만료로 보는 기준은 `config.mul
 curl -s http://localhost:8080/_api/gc/last-result \
   -H "Authorization: Bearer $GC_TOKEN"
 
-# 최근 20건 이력
-curl -s "http://localhost:8080/_api/gc/history?limit=20" \
+# 이력. limit 은 기본 20, 상한 90 입니다. 오프셋·커서는 없으므로
+# 90 건을 넘는 이력은 이 API 로 뜰 수 없습니다.
+curl -s "http://localhost:8080/_api/gc/history?limit=90" \
   -H "Authorization: Bearer $GC_TOKEN"
 
 # 고아 블롭 수
@@ -795,27 +884,19 @@ curl -s http://localhost:8080/_internal/metrics \
   -H "Authorization: Bearer $METRICS_TOKEN"
 ```
 
-**모니터링 스택에는 `auth.metricsToken`을 쓰세요** (cas-server 이미지 `0.1.18` 이상).
-`ADMIN_TOKEN`도 이 엔드포인트를 열지만, 그 토큰은 `POST /_internal/gc`(blob 물리 삭제)와
-`/_admin/*`(액세스 키 관리)까지 여는 자격증명입니다 — 스크레이프 용도로 배포하면
-삭제 권한을 함께 넘기게 됩니다. `metricsToken`은 이 엔드포인트에서만 통합니다.
-
-`metricsToken`을 설정하지 않으면 서버가 `adminToken`으로 폴백하므로, 위 명령을
-그 토큰으로 바꿔도 동작합니다(기존 배포 동작 유지).
+**이 경로를 여는 것은 `auth.metricsToken` 하나입니다.** 이 토큰은 이 엔드포인트에서만
+통하고 다른 어떤 경로도 열지 않으므로, 모니터링 스택에 배포해도 넘어가는 권한이 없습니다.
 
 **이 경로에는 SigV4 분기가 없습니다.** 액세스 키로는 열리지 않고 root 키로도 `401`입니다.
 관리 평면에서 유일한 예외입니다.
 
-**두 토큰이 다 비면 닫히는 것이 아니라 무인증으로 열립니다.** `/_admin/*`·GC는 auth를 켜면
-토큰이 비어도 `401`로 닫히는데, 이 경로만 빈 토큰 폴백이 통과시킵니다. 그 상태면 기동 시
-경고가 뜹니다(이미지 `0.1.21` 이상).
+**`metricsToken` 이 비면** auth 를 켠 배포에서는 `/_admin/*`·GC 와 같이 `401` 로 닫히고
+(이미지 `0.1.24` 이상), NoAuth 배포에서는 무인증으로 열립니다. 후자는 기동 시 경고가 뜹니다.
 
-`adminToken`은 폐기 예정이므로(이미지 `0.1.24` 제거), 그 값을 비울 때 `auth.metricsToken`을
-반드시 함께 채우십시오.
-
-**노출되는 지표는 `cas_*` 12종입니다.** 타입·단위와 각 값이 무엇을 보는지(특히 `cas_db_pool_*`
-가 어느 풀을 보고하는지)는 차트 README 의 "메트릭 스크레이프" 절에 표로 정리했습니다.
-같은 엔드포인트에 `axum_http_*` 3종이 함께 나오고 이쪽은 라벨을 답니다.
+**노출되는 지표는 `cas_*` 13종입니다.** 타입·단위와 각 값이 무엇을 보는지(특히
+`cas_db_pool_*` 가 어느 풀을 보고하는지)는 차트 README 의 "메트릭 스크레이프" 절에 표로
+정리했습니다. `cas_anonymous_get_total` 하나만 라벨(`reason`)을 답니다. 같은 엔드포인트에
+`axum_http_*` 3종이 함께 나오고 이쪽은 라벨을 답니다.
 
 먼저 볼 값 셋만 여기 적습니다.
 
@@ -824,6 +905,20 @@ curl -s http://localhost:8080/_internal/metrics \
 | `cas_blob_lock_map_entries` | **유휴 시 `0`** | 0으로 안 떨어지면 항목 회수가 동작하지 않는 것입니다 |
 | `cas_db_pool_idle_connections` | 부하 중에도 `0` 이 지속되지 않음 | `connections` 가 max 인데 `idle` 이 0 으로 지속되면 풀 포화입니다 |
 | `cas_db_pool_acquire_timeouts_total` | 증가하지 않음 | 증가하면 포화가 실제 실패로 이어진 것입니다(`503`) |
+
+#### `anonymousGet` 을 끄기 전에 — `cas_anonymous_get_total`
+
+`auth.anonymousGet: true` 인 동안 익명으로 통과한 읽기를 `reason` 라벨로 셉니다(이미지
+`0.1.24` 이상). 세 값 모두 지금은 `200` 이고, 이 계수가 판정을 바꾸지는 않습니다.
+
+| `reason` | 요청 | `anonymousGet: false` 로 내리면 |
+|---|---|---|
+| `unsigned` | 서명이 없음 | `403` |
+| `signed_valid` | 유효한 키로 서명함 | 그대로 통과 (정책에 `GetObject` 가 있어야 함) |
+| `signed_invalid` | 서명이 있으나 검증 실패 | `403` |
+
+`unsigned` 와 `signed_invalid` 가 끄는 순간 깨질 소비자입니다. **둘 다 늘지 않는 기간을
+확인한 뒤에 내리십시오.** `false` 로 두면 이 카운터는 늘지 않습니다.
 
 ### 스크레이프 배선
 
@@ -842,10 +937,17 @@ curl -s http://localhost:8080/_internal/metrics \
 
 업로드 전 BLAKE3 해시를 미리 확인하여 이미 존재하는 blob이면 물리 전송을 생략할 수 있습니다.
 
+`/_api/blobs/{hash}` 는 콘솔 경로라 **유효한 키의 SigV4 서명이 필요합니다.** 대응하는 정책
+액션은 없으므로 데이터 전용 키로도 열립니다. `config.consoleEnabled: false` 인 배포에는 이
+경로가 없습니다.
+
 ```bash
 HASH=$(b3sum --no-names file.bin)
 
 # 200 OK → 이미 존재 (업로드 생략 가능)
 # 404    → 신규 업로드 필요
-curl -sI http://localhost:8080/_api/blobs/$HASH
+curl -sI --aws-sigv4 "aws:amz:cas-default:s3" --user "$KEY_ID:$SECRET" \
+  "http://localhost:8080/_api/blobs/$HASH"
 ```
+
+`HEAD` 는 존재 여부만 돌려주고, 같은 경로의 `GET` 은 blob 상세를 JSON 으로 돌려줍니다.

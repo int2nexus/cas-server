@@ -94,23 +94,28 @@ spec:
 
               # 인증 헤더를 positional params에 저장 (공백 보존).
               #
-              # Secret 에 auth-gc-token 이 있으면 그것을, 없으면 admin 토큰을 쓴다.
-              # 둘 다 비면 헤더를 붙이지 않는다. values 쪽 스위치를 두지 않는 이유는 두 키가
-              # optional 참조라 **Secret 에 값이 있는지가 그대로 스위치**이기 때문이다 —
-              # 스위치를 따로 두면 그 둘이 어긋날 수 있다.
+              # Secret 에 auth-gc-token 이 있으면 그것을 쓰고, 없으면 헤더를 붙이지 않는다.
+              # values 쪽 스위치를 두지 않는 이유는 그 키가 optional 참조라 **Secret 에 값이
+              # 있는지가 그대로 스위치**이기 때문이다 — 스위치를 따로 두면 둘이 어긋난다.
               #
-              # ADMIN_TOKEN 폴백은 폐기 예정이다 — 이미지 0.1.24 에서 제거되면 이 Job 은
-              # auth-gc-token 없이는 401 이 된다. 그 전에 그 키를 채울 것.
-              TOKEN="${GC_TOKEN:-${ADMIN_TOKEN:-}}"
+              # 폐기된 admin 토큰으로 폴백하지 않는다. HTTP 결과가 달라지지는 않는다 —
+              # 받는 토큰이 하나도 없으면 게이트는 실어 온 값을 보지 않는다. 죽은
+              # 자격증명을 매 실행마다 보내지 않으려는 것이다.
+              TOKEN="${GC_TOKEN:-}"
               if [ -n "$TOKEN" ]; then
                 set -- -H "Authorization: Bearer ${TOKEN}"
               else
                 set --
               fi
 
-              # 1) 트리거 전 마지막 ran_at 기록 (이번 실행 완료 감지 기준)
-              prev=$(curl -sS --max-time 30 "$@" "$BASE/_api/gc/last-result" | grep -o '"ran_at":"[^"]*"' || true)
-              echo "이전 ran_at: ${prev:-<none>}"
+              # 1) 트리거 전 마지막 실행의 id 기록 (이번 실행을 가려내는 기준)
+              #
+              # **`ran_at` 이 아니라 `id` 다.** 서버는 시작 시점에 행을 INSERT 하고 완료
+              # 시점에 같은 행을 UPDATE 하므로 `ran_at` 은 시작 값으로 남는다 — 그 값이
+              # 바뀐 것은 「끝났다」가 아니라 「시작됐다」를 뜻한다. `id` 는 새 실행에서만
+              # 바뀐다.
+              prev_id=$(curl -sS --max-time 30 "$@" "$BASE/_api/gc/last-result" | grep -o '"id":[0-9]*' | head -1 || true)
+              echo "이전 실행: ${prev_id:-<none>}"
 
               # 2) GC 트리거 — 서버는 백그라운드로 실행하고 202를 즉시 반환한다.
               echo "돌 단계: {{ $job.phases | default "전체" }}"
@@ -118,36 +123,41 @@ spec:
               echo "트리거 응답: $code $(cat /tmp/resp 2>/dev/null)"
               if [ "$code" = "409" ]; then echo "이미 GC 실행 중 — 스킵"; exit 0; fi
               # 401은 자격증명 문제다 — 비었든 틀렸든 회전 뒤 어긋났든 여기서 잡힌다.
-              if [ "$code" = "401" ]; then echo "인증 실패 — Secret 의 auth-gc-token / auth-admin-token 을 확인하십시오"; exit 1; fi
+              if [ "$code" = "401" ]; then echo "인증 실패 — Secret 의 auth-gc-token 을 확인하십시오"; exit 1; fi
               # 400은 phases 값이 서버가 모르는 이름이라는 뜻이다. 서버가 조용히 넘기지
               # 않으므로 여기서도 실패로 남긴다 — 오타 하나로 의도한 단계가 빠진 채
               # 성공으로 보이면 회수가 멈춘 것을 아무도 모른다.
               if [ "$code" = "400" ]; then echo "phases 값이 거절됨 — values 의 gc.phases 확인"; exit 1; fi
               if [ "$code" != "202" ] && [ "$code" != "200" ]; then echo "GC 트리거 실패 (HTTP $code)"; exit 1; fi
 
-              # 3) last-result의 ran_at이 바뀔 때까지(=이번 GC 완료) 폴링
+              # 3) 새 실행이 **끝날 때까지** 폴링한다.
+              #
+              # 조건이 둘이다 — `id` 가 바뀌었고(내 트리거가 만든 실행이다), `status` 가
+              # 더 이상 `running` 이 아니다(그 실행이 끝났다). 앞엣것만 보면 시작 시점의
+              # 스냅샷을 완료로 읽고 나가 버린다. 그러면 아래 셋이 전부 무너진다.
+              #
+              #   - 로그에 남는 본문이 **시작 시점 값**이다 — `deleted_blobs: 0` 이
+              #     「회수할 것이 없었다」로 읽힌다
+              #   - `ms_*` 가 아직 비어 있다
+              #   - `failed` 분기가 죽는다 — 실패가 기록되기 전에 Job 이 이미 나갔다
               elapsed=0
               while [ "$elapsed" -lt "$MAX_WAIT" ]; do
                 sleep "$POLL_INTERVAL"; elapsed=$((elapsed + POLL_INTERVAL))
                 body=$(curl -sS --max-time 30 "$@" "$BASE/_api/gc/last-result" || true)
-                cur=$(printf '%s' "$body" | grep -o '"ran_at":"[^"]*"' || true)
-                if [ -n "$cur" ] && [ "$cur" != "$prev" ]; then
-                  status=$(printf '%s' "$body" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
-                  echo "GC 완료: $body"
-                  if [ "$status" = "failed" ]; then echo "GC 실행이 실패로 기록됨"; exit 1; fi
-                  exit 0
-                fi
+                cur_id=$(printf '%s' "$body" | grep -o '"id":[0-9]*' | head -1 || true)
+                [ -n "$cur_id" ] || continue
+                [ "$cur_id" != "$prev_id" ] || continue
+                status=$(printf '%s' "$body" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
+                # 아직 도는 중이면 계속 기다린다. 타임아웃까지 안 끝나면 아래에서 실패다.
+                [ "$status" != "running" ] || continue
+                echo "GC 완료: $body"
+                if [ "$status" = "failed" ]; then echo "GC 실행이 실패로 기록됨"; exit 1; fi
+                exit 0
               done
-              echo "GC 완료 대기 타임아웃 (${MAX_WAIT}s)"; exit 1
-            # 둘 다 optional 이다. 키가 없으면 unset 이 되고 위 스크립트가 넘어간다.
+              # 새 실행이 보이지 않았거나 `running` 인 채로 시간이 다 갔다. 둘 다 실패다.
+              echo "GC 완료 대기 타임아웃 (${MAX_WAIT}s) — 마지막 응답: ${body:-<none>}"; exit 1
+            # optional 이다. 키가 없으면 unset 이 되고 위 스크립트가 헤더를 붙이지 않는다.
             env:
-            # 폐기 예정 — 이미지 0.1.24 에서 제거 시 이 블록도 함께 지운다.
-            - name: ADMIN_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "cas-server.fullname" $ }}
-                  key: auth-admin-token
-                  optional: true
             - name: GC_TOKEN
               valueFrom:
                 secretKeyRef:

@@ -45,8 +45,7 @@ externalDatabase:
 # auth-gc-token: GC 경로 전용. 아래 gc 를 켤 때 함께 채우십시오. (0.1.21 이상)
 # auth-root-access-key-id · auth-root-secret-key: auth-secret-master-key 를 채운
 #   배포에서 필수. 비면 기동을 거부하고 replicaCount 가 1 이라 전면 중단입니다.
-# auth-admin-token: 폐기 예정 — 0.1.24 에서 제거. 값은 비우십시오.
-#   (사유와 이행 절차는 차트 CHANGELOG 0.1.28)
+# auth-admin-token: 폐기됨. 이 키는 두지 않아도 됩니다.
 
 # ── 리소스 ────────────────────────────────────────────────────────────────────
 # 차트 기본값이 requests 2Gi / limits 6Gi 다. 그대로 쓰면 되므로 여기서 오버라이드하지 않는다.

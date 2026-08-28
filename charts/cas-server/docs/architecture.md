@@ -23,7 +23,7 @@ CAS Server는 **Content-Addressable Storage(내용 기반 주소 지정 스토�
 | 특징 | 설명 |
 |------|------|
 | **자동 중복 제거** | 동일 내용의 파일은 백엔드에 한 번만 저장 — 스토리지 용량 절약 |
-| **콘텐츠 무결성 보장** | BLAKE3 해시로 업로드·다운로드 시 파일 손상 여부 검증 |
+| **콘텐츠 무결성 보장** | 업로드 시 BLAKE3 해시로 저장 내용을 검증하고, 응답의 `ETag`로 클라이언트가 대조 |
 | **S3 호환 API** | AWS CLI, SDK, 기존 S3 연동 코드 그대로 사용 가능 |
 | **다중 백엔드 지원** | 로컬 NAS 또는 S3 호환 오브젝트 스토리지를 백엔드로 사용 |
 | **Zero-copy 복사** | 파일 복사 시 물리적 데이터 이동 없이 즉시 완료 |
@@ -180,7 +180,8 @@ GET /{버킷}/{키}
 | 클라이언트 직접 업로드 | `PUT` | SDK의 `generate_presigned_url("put_object")`로 생성 |
 | 오브젝트 삭제 위임 | `DELETE` | SDK의 `generate_presigned_url("delete_object")`로 생성 |
 
-서명은 발급 시 지정한 메서드·경로·유효기간이 포함되며, 만료 또는 메서드 불일치 시 `403 AccessDenied`를 반환합니다.
+서명에는 발급 시 지정한 메서드·경로·유효기간이 포함됩니다. 만료된 URL 은 `403 AccessDenied`,
+메서드나 경로가 다른 요청은 `403 SignatureDoesNotMatch` 입니다.
 
 ### 3.3 복사
 
@@ -211,7 +212,7 @@ NAS(Network Attached Storage)의 마운트 경로를 직접 사용하는 방식�
 
 - 블롭 파일은 해시 앞 4자를 디렉터리 계층으로 분산 저장합니다 (`ab/cd/...`).
 - 파일시스템 수준의 원자적 저장으로 부분 쓰기 없이 안전하게 처리됩니다.
-- NAS 연결이 끊기면 해당 백엔드를 사용하는 요청은 503으로 응답합니다.
+- NAS 연결이 끊기면 해당 백엔드를 사용하는 요청은 `503 ServiceUnavailable` 로 응답합니다.
 
 ### 4.2 S3 호환 백엔드
 
@@ -239,24 +240,25 @@ S3-main  ...                                     ←── 3번째 업로드
 ```
 
 > **S3 모드의 한계 두 가지.** ⑴ 잔여 용량을 읽을 수단이 없어 `/_api/backends` 의 용량
-> 필드가 `null` 입니다 — 용량 감시는 오브젝트 스토리지 쪽 지표로 하십시오. ⑵ 같은 이유로
-> `/_internal/health` 의 백엔드 검사도 S3 에 대해서는 **항상 통과합니다.** 오브젝트
-> 스토리지가 죽어도 파드는 Ready 로 남고, 업로드 실패로만 드러납니다.
+> 필드가 `null` 입니다 — 용량 감시는 오브젝트 스토리지 쪽 지표로 하십시오. ⑵
+> `/_internal/health` 의 백엔드 검사가 S3 에 대해서는 **항상 통과합니다.** 오브젝트
+> 스토리지가 죽어도 파드는 Ready 로 남고, 요청 실패로만 드러납니다.
 
 ### 4.4 백엔드 장애 시 동작
 
 | 상황 | 동작 |
 |------|------|
-| 특정 NAS 연결 끊김 | 해당 NAS 관련 요청만 503 반환, 나머지 백엔드는 정상 동작 |
-| 해당 NAS에만 있는 블롭 다운로드 요청 | 503 `BackendUnavailable` 반환 |
-| S3 백엔드 응답 불가 | 동일하게 503 반환, 다른 S3 백엔드는 정상 동작 |
-| 신규 업로드 | **NFS**: 정상 백엔드 중 가용 공간 최대인 곳. **S3**: 등록 순서 round-robin(잔여 용량을 읽을 수단이 없습니다). 버킷이 특정 백엔드에 핀돼 있으면 그쪽 |
+| 특정 NAS 연결 끊김 | 해당 NAS 관련 요청만 `503 ServiceUnavailable` 반환, 나머지 백엔드는 정상 동작 |
+| 해당 NAS에만 있는 블롭 다운로드 요청 | `503 ServiceUnavailable` 반환 |
+| S3 백엔드 응답 불가 | **`500 InternalError` 입니다.** 오브젝트 스토리지가 돌려준 오류는 `ServiceUnavailable` 로 갈라지지 않습니다. 다른 S3 백엔드는 정상 동작합니다 |
+| 신규 업로드 | **NAS**: 정상 백엔드 중 가용 공간 최대인 곳. **S3**: 등록 순서 round-robin. 버킷이 특정 백엔드에 핀돼 있으면 그쪽 |
 
 ---
 
 ## 5. API 사용 가이드
 
-CAS Server는 **AWS S3 호환 REST API**를 제공합니다. 별도 배포된 사용가이드를 통해 사용 예시를 확인할 수 있습니다. 
+CAS Server는 **AWS S3 호환 REST API**를 제공합니다. 요청 단위의 사용 예시(AWS CLI·boto3·
+관리 API)는 같은 차트의 `docs/usage.md` 에 있습니다.
 
 ### 5.1 연동 방법
 
@@ -285,7 +287,7 @@ aws s3 presign s3://documents/2026/report.pdf \
 
 SigV4 사용 시 region 은 아무 값이나 됩니다 — 서버가 클라이언트의 선언 값으로 서명 키를
 유도하므로, 지정하지 않아 SDK 기본값(boto3 는 `us-east-1`)이 들어가도 동작합니다.
-아래 예시의 `cas-default` 는 관례입니다. (이미지 `0.1.18` 이하는 이 값만 받았습니다.)
+아래 예시의 `cas-default` 는 관례입니다. `service` 는 `s3` 여야 합니다.
 
 ```bash
 aws configure set aws_access_key_id     <발급된-키-ID>
@@ -293,7 +295,22 @@ aws configure set aws_secret_access_key <발급된-시크릿>
 aws configure set region                cas-default
 ```
 
-관리 API(`/_admin/*`)도 SigV4 를 받습니다. 액세스 키에 관리 정책을 붙여 사람마다 하나씩
+**`auth.anonymousGet: true` 인 배포에서는 `GET`·`HEAD /{버킷}/{키}` 가 서명 검증에 닿지
+않습니다.** 익명 분기가 인증보다 먼저 돌기 때문입니다. 서명을 실은 요청도 그 분기로 통과하므로
+서명이 틀려도 `200` 입니다. 통과한 읽기는 `cas_anonymous_get_total{reason}` 으로 세며
+`reason` 은 `unsigned` · `signed_valid` · `signed_invalid` 입니다 — `anonymousGet` 을 끄면
+앞뒤 둘이 `403` 이 되므로, 끄기 전에 이 지표로 깨질 소비자를 세십시오.
+목록(`ListObjects`·`ListBuckets`)·쓰기·삭제는 이 배포에서도 서명을 요구합니다.
+
+#### 정책 액션
+
+정책에 쓸 수 있는 이름은 **열다섯 개와 `"*"` 가 전부**이고, 목록 밖의 문자열은 `400` 으로
+거절합니다. 전체 목록, 어떤 API 가 어느 액션으로 판정되는지, `bucket`·`prefix` 가 걸리는
+깊이는 `docs/usage.md` 의 "액션 목록" 절에 있습니다. 그중 정책을 좁힐 때 어긋나는 자리 둘은
+`ListBuckets`(`bucket: "*"` 여야 열림)와 `ListObjects`(`prefix` 를 보지 않아 버킷 전체를
+나열)입니다.
+
+관리 API(`/_admin/*`)는 SigV4 로만 열립니다. 액세스 키에 관리 정책을 붙여 사람마다 하나씩
 주면, 조작마다 그 키가 로그에 남고 회수는 그 키만 폐기하면 됩니다.
 
 | 액션 | 대상 |
@@ -303,8 +320,9 @@ aws configure set region                cas-default
 | `cas:ReadGc` | GC 조회(`GET /_api/gc/*`) |
 | `cas:RunGc` | GC 실행(`POST /_internal/gc`) + GC 조회 |
 
-GC 경로는 `/_admin/*` 과 **별도 라우터**입니다. 위 두 액션 외에 `secrets.gcToken` 으로도
-열리므로, GC CronJob 에는 `adminToken` 이 아니라 그 토큰을 줍니다.
+GC 경로는 `/_admin/*` 과 **별도 라우터**입니다. 위 두 GC 액션 외에 `secrets.gcToken`(Bearer)
+으로도 열리므로, GC CronJob 에는 그 토큰을 줍니다 — 키 발급·폐기 권한은 함께 넘어가지
+않습니다. CronJob 은 그 토큰만 싣고, 없으면 인증 헤더를 붙이지 않습니다.
 
 **root 키는 관리 평면 전권입니다** — 정책 없이 위 넷을 모두 통과합니다. 그리고 auth 를 켜면
 (`secrets.secretMasterKey` 설정) root 키가 **필수**입니다. 없으면 서버가 기동을 거부합니다.
@@ -315,21 +333,23 @@ GC 경로는 `/_admin/*` 과 **별도 라우터**입니다. 위 두 액션 외�
 액션들로 열리는지에서 나옵니다.
 
 정책의 `"*"` 는 데이터 평면 액션에만 걸립니다. 관리 권한은 이름을 명시적으로 적은 정책에만
-붙으므로, 기존에 `"*"` 로 발급된 키의 권한이 이 버전에서 넓어지지 않습니다.
+붙으므로, `"*"` 로 발급된 키에는 위 넷이 붙지 않습니다.
 
-`adminToken` 은 **폐기 예정입니다 — 이미지 `0.1.24` 에서 제거됩니다.** 그 토큰은 `/_admin/*`,
-GC, 메트릭 셋을 모두 열고 좁은 토큰(`gcToken`·`metricsToken`)을 설정해도 빠지지 않습니다.
-셋 다 더 좁은 수단이 있으므로 대체 불가능한 자리를 갖지 않으면서 그 분리만 되돌립니다.
-그 토큰으로 한 조작은 행위자를 특정할 수 없어 로그에 `<bearer>` 로 남습니다.
+**메트릭(`GET /_internal/metrics`)은 `auth.metricsToken` 하나로만 열립니다.** 이 경로에는
+SigV4 분기가 없어 root 키로도 `401` 이고, 토큰이 비면 auth 를 켠 배포에서는 `401` 입니다.
+
+`adminToken` 은 **폐기됐습니다.** 어느 경로도 열지 않으며 `/_admin/*`·GC·메트릭 모두
+`401` 입니다. 설정 필드는 남아 있어 값이 있어도 렌더·기동은 되고, 서버가 무시했다고 기동
+로그에 남깁니다. 기본 설치는 Secret 키 `auth-admin-token` 을 만들지 않습니다 — 이미 들고
+있으면 지우셔도 됩니다(deployment 가 `optional` 로 참조합니다).
 
 **콘솔은 토큰을 쓰지 않습니다.** 관리 화면도 로그인한 액세스 키의 SigV4 서명으로 열리므로
 콘솔에서 한 조작은 그 사람의 `key_id` 로 기록됩니다.
 
-이미지 `0.1.21` 이상이 필요합니다. 그 이하는 관리 API 가 `admin_token` 만 받습니다.
+관리 평면의 SigV4 인가에는 이미지 `0.1.21` 이상이 필요합니다.
 
 SigV4 를 켜면 데이터 API 뿐 아니라 **관리 콘솔이 쓰는 조회 API(`/_api/*`)도 같은 서명을
-요구합니다.** 자격증명 없이 호출하면 `403` 입니다. (이미지 `0.1.19` 이하는 이 경로를
-인증 없이 열어 두었습니다.)
+요구합니다.** 자격증명 없이 호출하면 `403` 입니다.
 
 예외 둘은 의도적으로 열려 있습니다. `/_api/auth-mode` 는 콘솔이 로그인 화면을 띄울지
 판단하는 입구라 서명할 자격증명이 아직 없는 시점에 호출되며, 응답은 인증 활성 여부
@@ -349,7 +369,7 @@ S3 표준에 없는 CAS 전용 헤더가 업로드 응답에 추가됩니다.
 ### 5.4 지원 API 범위
 
 **지원**:
-- 버킷: `ListBuckets`, `CreateBucket`, `DeleteBucket`, `ListObjects(V2)`, `PutBucketVersioning`
+- 버킷: `ListBuckets`, `CreateBucket`, `DeleteBucket`, `ListObjects(V2)`, `ListObjectVersions`, `PutBucketVersioning`
 - 오브젝트: `PutObject`, `GetObject`, `HeadObject`, `DeleteObject`, `CopyObject`
 - 멀티파트: `CreateMultipartUpload`, `UploadPart`, `CompleteMultipartUpload`, `AbortMultipartUpload`, `ListMultipartUploads`
 - Presigned URL: `GET`, `PUT`, `DELETE` 방식
@@ -366,26 +386,26 @@ S3 표준에 없는 CAS 전용 헤더가 업로드 응답에 추가됩니다.
 | **GC** | `cas:ReadGc` 또는 `cas:RunGc` 로 열림. 고아 블롭 수 조회, 실행 이력 확인. 수동 실행·Dry-run 버튼은 `cas:RunGc` |
 | **액세스 키** | `cas:ReadAccessKeys` 또는 `cas:ManageAccessKeys` 로 열림. 발급·비활성화·정책 관리 버튼은 `cas:ManageAccessKeys` |
 
-> 콘솔은 토큰을 받지 않습니다. 화면은 로그인한 키의 정책으로 열리고, 권한이 없는 화면은 탭이
-> 표시되지 않습니다. root 키는 전부 열립니다. 액세스 키 탭은 SigV4 인증이 활성화된 경우에만
-> 표시됩니다.
->
-> `adminToken` 과 GC 토큰은 서버에서 그대로 동작합니다. GC CronJob·`curl` 용입니다.
+> 화면은 로그인한 키의 정책으로 열리고, 권한이 없는 화면은 탭이 표시되지 않습니다. root 키는
+> 전부 열립니다. 액세스 키 탭은 SigV4 인증이 활성화된 경우에만 표시됩니다. 판정은
+> `GET /_api/whoami` 한 번으로 하며, 자격증명 종류는 5.2 를 보십시오.
 
 SigV4 가 활성화된 배포에서는 콘솔 진입 시 액세스 키·시크릿 로그인 화면이 먼저 표시되며,
 이후 모든 조회 요청은 브라우저에서 그 자격증명으로 서명됩니다. 별도의 인증 수단을 설정할
 필요는 없습니다.
 
 콘솔을 쓰지 않는 배포에서는 `config.consoleEnabled: false` 로 `/_ui` 와 콘솔용 `/_api/*`
-경로를 아예 마운트하지 않을 수 있습니다. 인증을 거는 것보다 표면 자체를 없애는 편이
-확실합니다. 이때도 `/_api/gc/*` 와 `/_internal/*` 는 남으므로 GC CronJob 은 그대로
-동작합니다.
+(`auth-mode` · `whoami` 포함)가 응답하지 않게 할 수 있습니다. 인증을 거는 것보다 표면
+자체를 없애는 편이 확실합니다. 이때도 `/_api/gc/*` 와 `/_internal/*` 는 남으므로 GC
+CronJob 은 그대로 동작합니다.
 
 ---
 
 ## 6. 에러 코드 및 대응
 
-모든 에러는 S3 표준 XML 형식으로 반환됩니다.
+데이터 평면과 `/_api/*` 의 에러는 S3 표준 XML 형식으로 반환됩니다. Bearer 토큰으로 여는
+경로(`/_internal/metrics`, GC 의 토큰 경로)의 `401` 만 예외로, 본문이 XML 이 아니라
+`Unauthorized` 문자열입니다.
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -400,13 +420,14 @@ SigV4 가 활성화된 배포에서는 콘솔 진입 시 액세스 키·시크�
 | 400 | `InvalidArgument` | 요청 파라미터 오류 |
 | 400 | `InvalidDigest` | `x-cas-hash` 로 넘긴 해시와 실제 본문이 다름 |
 | 400 | `InvalidPart` | 멀티파트 파트 번호·구성 오류 |
-| 400 | `AuthorizationHeaderMalformed` | Authorization 헤더/presigned 쿼리 형식 오류 — 서명을 계산할 수조차 없음 |
+| 400 | `AuthorizationHeaderMalformed` | Authorization 헤더/presigned 쿼리 형식 오류 — 서명을 계산할 수조차 없음. `service` 가 `s3` 가 아닌 경우도 여기입니다 |
+| 401 | — | 관리 평면(`/_admin/*`·GC·`/_internal/metrics`)에 Bearer 로 접근했는데 그 경로가 받는 토큰이 설정되지 않았거나 값이 다름. 본문은 `Unauthorized` 문자열입니다 |
 | 403 | `AccessDenied` | 자격증명이 없거나, 해당 작업 권한이 없거나, presigned URL 이 만료됨 |
 | 403 | `InvalidAccessKeyId` | 그런 액세스 키가 없음 (비활성·유효기간 만료 포함) |
 | 403 | `SignatureDoesNotMatch` | 서명 불일치 — 시크릿 값을 확인 |
 | 403 | `RequestTimeTooSkewed` | 요청 시각이 서버 시각과 15분 이상 차이 (헤더 인증 경로에만 해당) |
 | 404 | `NoSuchBucket` | 버킷 없음 |
-| 404 | `NoSuchKey` | 오브젝트 없음. 등록되지 않은 `/_api/*` 경로도 이 코드입니다 |
+| 404 | `NoSuchKey` | 오브젝트 없음. 인증을 통과한 요청이 등록되지 않은 `/_api/*` 경로를 부른 경우도 이 코드입니다 |
 | 404 | `NoSuchUpload` | 멀티파트 업로드 ID 없음 |
 | 405 | `MethodNotAllowed` | 삭제 마커인 버전을 GET/HEAD |
 | 408 | — | `config.requestTimeoutSecs`(기본 120초) 초과. **이 시점에도 DB 쪽 쿼리는 계속 돕니다** |
@@ -424,7 +445,6 @@ SigV4 가 활성화된 배포에서는 콘솔 진입 시 액세스 키·시크�
 `cas_upload_rejected_total`, 풀 고갈은 `cas_db_pool_acquire_timeouts_total` 이 오릅니다.
 `BackendUnavailable` 은 둘 다 오르지 않습니다.
 
-
 #### 인증 실패의 진단
 
 와이어에서 합쳐지는 사유도 **서버 로그에서는 갈라집니다.** 인증 실패는 `reason` 필드를
@@ -434,9 +454,6 @@ SigV4 가 활성화된 배포에서는 콘솔 진입 시 액세스 키·시크�
 WARN cas_server::auth::middleware: authn fail path=/ reason="signature_mismatch" key_id="CASK..."
 ```
 
-
-
-
 | `reason` | 뜻 | 운영자가 할 일 |
 |---|---|---|
 | `no_credentials` | 자격증명이 아예 없음 | 클라이언트 설정 확인 |
@@ -444,7 +461,7 @@ WARN cas_server::auth::middleware: authn fail path=/ reason="signature_mismatch"
 | `unknown_key` | 그런 키가 없음 | 키 발급 여부 확인 |
 | `key_inactive` | 키가 비활성 | 키 재활성화 |
 | `key_expired` | 키 유효기간 만료 | 키 재발급 |
-| `secret_undecryptable` | 저장된 시크릿 복호화 실패 | **서버 문제** — `auth.secret_master_key` 가 바뀌었는지 확인 |
+| `secret_undecryptable` | 저장된 시크릿 복호화 실패 | **서버 문제** — 마스터 키(`secrets.secretMasterKey`)가 바뀌었는지 확인 |
 | `clock_skew` | 요청 시각 차이 초과 | 클라이언트 시각 동기화 |
 | `presigned_expired` | presigned URL 만료 | URL 재발급 |
 | `signature_mismatch` | 서명 불일치 | 시크릿 값 확인 |
@@ -453,9 +470,12 @@ WARN cas_server::auth::middleware: authn fail path=/ reason="signature_mismatch"
 `key_id` 는 요청이 **주장한** 값이고 검증된 것이 아닙니다. 어느 자격증명이 실패했는지
 좁히는 용도입니다.
 
-**region 은 검사하지 않습니다.** 서명 키를 클라이언트가 선언한 region 으로 유도하므로
-어떤 region 으로 서명해도 통과합니다 — S3 호환 클라이언트의 기본 설정(boto3 는 지정하지
-않으면 `us-east-1`)을 그대로 쓸 수 있습니다. `service` 는 `s3` 여야 합니다.
+**region 불일치는 이 목록에 없습니다** — 검사하지 않기 때문입니다(5.2 참고). 서명이
+region 때문에 거절되는 일은 없습니다.
+
+Bearer 토큰 경로의 실패는 이 표가 아니라 `reason="wrong-token"` · `"missing-token"` 으로
+남습니다.
+
 ---
 
 ## 7. 부록: 대용량 파일 업로드 (멀티파트)
@@ -463,7 +483,7 @@ WARN cas_server::auth::middleware: authn fail path=/ reason="signature_mismatch"
 AWS S3 표준 멀티파트 업로드 프로토콜을 지원합니다. AWS CLI·SDK의 기본 멀티파트 임계값(통상 8 MiB)에 따라 자동으로 분할 전송됩니다.
 
 ```bash
-# AWS CLI — 100 MiB 이상은 자동으로 멀티파트 전송
+# AWS CLI — 임계값을 넘는 파일은 자동으로 멀티파트 전송
 aws s3 cp ./large-file.bin s3://archives/large-file.bin \
   --endpoint-url http://cas.internal:8080
 ```
