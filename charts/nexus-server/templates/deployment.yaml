@@ -80,6 +80,18 @@ spec:
               value: {{ .Values.cas.region | quote }}
             - name: NEXUS__CAS__DEFAULT_BUCKET
               value: {{ .Values.cas.defaultBucket | quote }}
+            {{- if .Values.cas.adminKeyId }}
+            {{- /* 비밀이 아니므로 평문 env로 둔다. 짝인 adminSecret은 Secret에서
+                   envFrom으로 들어온다(cas.secret과 같은 경로) — 여기서는 보이지
+                   않으므로 차트는 짝이 맞는지 검사할 수 없다. 한쪽만 있으면 서버가
+                   기동에 실패한다(auth.superuserEmail과 같은 이유·같은 패턴). */}}
+            - name: NEXUS__CAS__ADMIN_KEY_ID
+              value: {{ .Values.cas.adminKeyId | quote }}
+            {{- end }}
+            {{- if ne (.Values.cas.credentialsPerUser | toString) "" }}
+            - name: NEXUS__CAS__CREDENTIALS_PER_USER
+              value: {{ .Values.cas.credentialsPerUser | quote }}
+            {{- end }}
             - name: NEXUS__DATABASE__MAX_CONNECTIONS
               value: {{ .Values.database.maxConnections | quote }}
             {{- if ne (.Values.jwt.ttlHours | toString) "" }}
@@ -112,6 +124,13 @@ spec:
             {{- if .Values.ingest.batchItemConcurrency }}
             - name: NEXUS__INGEST__BATCH_ITEM_CONCURRENCY
               value: {{ .Values.ingest.batchItemConcurrency | quote }}
+            {{- end }}
+            {{- if ne (.Values.ingest.admissionWaitMs | toString) "" }}
+            {{- /* 빈 문자열("")만 "설정 안 함"이다 — jwt.ttlHours와 같은 이유로 Go
+                   template 진리값으로 판단하면 0도 false라 admissionWaitMs=0(자리가
+                   없으면 즉시 429)이 조용히 무시된다. */}}
+            - name: NEXUS__INGEST__ADMISSION_WAIT_MS
+              value: {{ .Values.ingest.admissionWaitMs | quote }}
             {{- end }}
             {{- if .Values.cvat.baseUrl }}
             {{- /* baseUrl이 있을 때만 주입한다. 빈 값이라도 넣으면 cvat 섹션이 생겨,

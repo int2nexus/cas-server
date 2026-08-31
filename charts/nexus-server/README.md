@@ -4,9 +4,9 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
 
 ## 문서
 
-- [아키텍처](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.5/charts/nexus-server/docs/architecture.md)
+- [아키텍처](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.6/charts/nexus-server/docs/architecture.md)
   — 도메인 모델, Version 생명주기, Annotation CoW, 스냅샷·Manifest 구조
-- [사용법](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.5/charts/nexus-server/docs/usage.md)
+- [사용법](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.6/charts/nexus-server/docs/usage.md)
   — 설치, Python SDK 연결, Dataset 적재·검색·seal 워크플로우, API 레퍼런스
 - [변경 이력](CHANGELOG.md)
   — 버전별 동작 변경·마이그레이션·설정 키. 각 항목은 해당 GitHub Release 본문과 동일하다
@@ -23,7 +23,24 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
 
 DB 마이그레이션은 바이너리에 임베드되어 **기동 시 자동 적용**된다(별도 Job 불필요). 마이그레이션이 끝나야 포트가 열리므로 그 시간은 곧 startupProbe 예산(기본 `periodSeconds 10 × failureThreshold 60` = 600초)에서 나간다 — 스키마가 바뀌는 릴리스로 올릴 때는 [CHANGELOG](CHANGELOG.md)의 해당 버전 **마이그레이션** 항목에서 예상 소요를 먼저 확인할 것. **거기 적힌 실측값은 우리 환경의 것이라 행 수로 환산해 그대로 쓸 수 없다** — 소요가 행 수에 선형인 것은 같은 하드웨어 안에서일 뿐이고 계수는 DB마다 다르다. 예산은 넉넉한 쪽으로 잡는다(모자라면 기동 실패가 반복되고, 남으면 아무 일도 일어나지 않는다). 서버는 stateless(파일=CAS, 메타=Postgres)라 PVC가 없다.
 
-> **업그레이드 전에 [CHANGELOG](CHANGELOG.md)를 읽을 것.** 차트 0.3.5 / appVersion 0.1.8은 읽기 엔드포인트 하나(태그 후보 목록)만 더하며 동작 변경도 마이그레이션도 없다. 아래는 **0.3.3 이하에서 올라오는 경우**에 해당한다. 차트 0.3.4 / appVersion 0.1.7은 **인가 모델을 바꾼다** — 쓰기는 `users.role`(`admin`/`editor`/`viewer`)이 가르고, 삭제만 담당자 검사가 남는다. 기존 계정은 전부 `editor`로 들어가므로 업그레이드만으로 쓰기를 잃는 사람은 없다. 함께 조이는 변경 셋이 있다: **담당자가 비어 있는 dataset은 `admin`만 지울 수 있고**(예전에는 인증된 누구나 지울 수 있었다), **`viewer`는 자기가 담당인 dataset도 지울 수 없으며**, **`POST /api/v1/buckets/ensure`도 `editor` 이상**이다. `GET /datasets`를 비롯한 목록 셋은 **기본 100개로 잘린다**(`?limit=`·`?cursor=`). 0.3.2의 "소유 dataset이 남으면 계정 삭제 409"는 **철회됐다** — 담당자가 비어도 권한이 생기지 않게 되어 그 근거가 사라졌다. 0.3.1을 건너뛰고 올라온다면 그 버전의 변경 둘도 함께 읽을 것 — 삭제 요청의 **`delete_cas` 기본값이 "삭제"에서 "보존"으로 바뀌고**(예전처럼 지우려면 `delete_cas=true`를 명시해야 한다), **기본 설치에서 ServiceAccount 토큰이 더 이상 마운트되지 않는다**(롤링 재시작 한 번). appVersion 0.1.1부터 조회를 포함한 **모든 API가 인증을 요구**하는 것은 그대로다.
+> **업그레이드 전에 [CHANGELOG](CHANGELOG.md)를 읽을 것.**
+
+**차트 0.3.6 / appVersion 0.1.9** — 동작 넷이 바뀌고 마이그레이션 `018`이 붙는다(**`0.1.8` 이하로 롤백 불가**).
+
+1. 적재(`POST /ingest`·`/ingest/batch`)가 포화에서 `429` + `Retry-After`. **SDK를 `0.1.9`로 함께 올릴 것** — 구 SDK는 `429`를 재시도하지 않고 그 청크를 실패로 기록한다(`flush()`가 `ok=False`를 돌려줄 뿐 예외가 아니라 조용히 유실된다).
+2. `/_internal/health`가 전용 커넥션으로 판정한다. readiness 실패의 뜻이 「DB에 못 닿는다」 하나로 좁아진다.
+3. **삭제에서 담당자 조건이 빠진다** — `editor` 이상이면 담당자와 무관하게 지울 수 있다(0.3.4의 제한을 되돌린다). `owner_user_id`는 더 이상 인가에 관여하지 않는다. 되돌릴 수 없는 동작이 넓은 역할에 열리므로 `delete_cas=true`를 쓰는 자동화가 있는지 먼저 확인할 것.
+4. Secret에 `NEXUS__METRICS__TOKEN`을 넣으면 `GET /_internal/metrics`가 열린다(비우면 404).
+
+**0.3.5 / 0.1.8** — 읽기 엔드포인트 하나(태그 후보 목록)만 더한다.
+
+**0.3.4 / 0.1.7** — 인가 모델을 바꾼다. 쓰기를 `users.role`(`admin`/`editor`/`viewer`)이 가르고, 기존 계정은 전부 `editor`로 들어가므로 업그레이드만으로 쓰기를 잃는 사람은 없다. 함께 조인 셋 중 **담당자 관련 둘은 0.3.6에서 되돌아갔고**(위 3), `POST /api/v1/buckets/ensure`가 `editor` 이상인 것만 남는다. `GET /datasets`를 비롯한 목록 셋은 **기본 100개로 잘린다**(`?limit=`·`?cursor=`).
+
+**0.3.2** — "소유 dataset이 남으면 계정 삭제 409"는 **철회됐다.**
+
+**0.3.1** — 삭제 요청의 **`delete_cas` 기본값이 "삭제"에서 "보존"으로** 바뀌고(예전처럼 지우려면 `delete_cas=true`), **기본 설치에서 ServiceAccount 토큰이 마운트되지 않는다**(롤링 재시작 한 번).
+
+appVersion 0.1.1부터 조회를 포함한 **모든 API가 인증을 요구**하는 것은 그대로다.
 
 ## 설치
 
@@ -68,7 +85,10 @@ helm install nexus-server int2nexus/nexus-server -n <namespace> \
 | `server.port` | `8090` | 컨테이너 포트. **이 값 하나만 바꾼다** — 프로브와 `service.targetPort`는 숫자가 아니라 컨테이너 포트 이름 `http`를 가리키므로 따라온다. 숫자를 함께 박으면 오히려 어긋난다(아래 참조) |
 | `cas.baseUrl` | `http://cas-server:80` | CAS(cas-server) 주소 |
 | `cas.region` / `cas.defaultBucket` | `cas-default` / `data` | CAS region·기본 버킷. **버킷 이름은 S3 규칙**(소문자·숫자·`-`·`.`, 3~63자)을 따라야 한다 |
-| `database.maxConnections` | `16` | 커넥션 풀 상한. `ingest.batchItemConcurrency`와의 불변식은 [`values.yaml`](values.yaml) 주석 참조 |
+| `database.maxConnections` | `16` | 워크로드 풀 상한. 적재가 쓸 수 있는 자리는 **이 값 - 4**(조회·관리·seal 몫)이고, readiness 전용 커넥션이 이 풀 **밖에** 하나 더 붙는다(Postgres 쪽 계산은 replica당 이 값 + 1). `ingest.batchItemConcurrency`와의 불변식은 [`values.yaml`](values.yaml) 주석 |
+| `ingest.admissionWaitMs` | `""` | 적재가 자리를 기다리는 상한(ms). 넘기면 대기가 아니라 **`429` + `Retry-After: 1`**. 비우면 서버 기본 3000. `0`이면 기다리지 않는다(자리가 비어 있으면 통과, 없으면 그 자리에서 `429`) |
+| `cas.adminKeyId` | `""` | 비우면 **CAS 자격증명 자동 발급이 꺼진다**(기본). 채우면 시크릿의 `NEXUS__CAS__ADMIN_SECRET`이 함께 있어야 하고 데이터 평면 키와 **다른 키**여야 한다. cas 정책 요구사항은 [`values.yaml`](values.yaml) 주석 |
+| `cas.credentialsPerUser` | `""` | 비우면 서버 기본 10. 한 사람이 동시에 가질 수 있는 활성 CAS 자격증명(기기당 하나) 상한. 1 미만이면 기동 실패 |
 | `secret.existingSecret` | `""` | 비밀 Secret 이름(비우면 fullname) |
 | `service.type` / `service.nodePort` | `NodePort` / `30090` | 서비스 노출 |
 | `ingress.enabled` | `false` | Ingress 사용 여부 |
@@ -83,6 +103,7 @@ helm install nexus-server int2nexus/nexus-server -n <namespace> \
 | `auth.approvalRequired` | `false` | `true`면 가입은 열어 둔 채 승인 전까지 아무것도 할 수 없다. 가입이 토큰 없이 `202`를 반환하므로 **가입 화면이 그것을 처리해야 한다.** 승인·대기목록 엔드포인트가 관리자 전용이라 `auth.superuserEmail`을 함께 설정해야 한다 |
 | `auth.revocationCacheTtlSecs` | `""` | 비우면 서버 기본 5초. 인증이 사용자 행(역할·승인·활성)을 읽고 캐시하는 시간이며, **곧 권한 회수·계정 정지·계정 삭제가 듣기까지의 상한**이다. `0`이면 매 요청 조회(적재 처리량 20~33% 감소). 조회 자체는 끌 수 없다 |
 | `auth.superuserEmail` | `""` | **비우면 관리자를 만들 부트스트랩 수단이 없다.** 채우면 시크릿의 `NEXUS__AUTH__SUPERUSER_PASSWORD`도 **반드시 함께** 있어야 한다 |
+| Secret `NEXUS__METRICS__TOKEN` | (없음) | 넣으면 `GET /_internal/metrics`가 열리고 없으면 **404**다. values 스위치는 없다 — 이 차트는 Secret 전체를 `envFrom`으로 받으므로 키를 넣는 것이 곧 켜는 것 |
 | `serviceAccount.automountToken` | `false` | ServiceAccount 토큰 마운트 여부. **차트 0.3.1부터 이 값이 실제로 적용된다** — 그 전에는 `serviceAccount.create: true`일 때만 렌더돼 기본 설치에서 효과가 없었다. 기본 설치의 동작이 "마운트됨"에서 "마운트 안 됨"으로 뒤집히고 **롤링 재시작이 한 번 일어난다.** 파드 토큰에 기대는 사이드카가 있으면 `--set serviceAccount.automountToken=true` |
 
 전체 키는 [`values.yaml`](values.yaml) 참조.
@@ -127,7 +148,17 @@ kubectl port-forward svc/nexus-server 8090:80 -n <namespace>
 curl localhost:8090/_internal/health      # {"status":"ok","db":true}
 ```
 
-이 두 경로는 프로브가 자격증명 없이 호출해야 하므로 인증이 면제된다. 그 밖의 면제 경로는 `POST /api/v1/auth/register`·`POST /api/v1/auth/login`과 API 문서 경로(`/api-docs/openapi.json`, `/swagger-ui`, `/swagger-ui/`)뿐이며, 문서 경로는 `auth.docsEnabled: false`로 끄면 404가 된다. **데이터 API는 조회를 포함해 전부 토큰이 필요하다.**
+**readiness는 워크로드와 커넥션 풀을 나눠 쓴다**(0.3.6+). `/_internal/health`는 크기 1의 전용 풀로 ping하므로 적재가 워크로드 풀을 전부 써도 200이다. 그래서 **readiness 실패는 「DB에 못 닿는다」만 뜻하고**, 「앱이 바쁘다」는 더 이상 파드를 서비스에서 빼지 않는다. 앱이 커넥션을 못 받고 있는지는 readiness가 아니라 `nexus_db_pool_acquire_timeouts_total`(아래)로 본다.
+
+`GET /_internal/metrics`는 **인증이 면제되지 않는다.** 시크릿의 `NEXUS__METRICS__TOKEN`을 bearer로 받고, 비어 있으면 경로 자체가 404다. 스크레이퍼는 로그인할 수 없고 JWT를 쓰게 하면 모니터링 스택이 카탈로그 전체를 읽는 계정을 들고 있어야 해서 토큰을 따로 뒀다. DB를 조회하지 않으므로 15초 주기도 부담이 없다. 설정 여부는 `GET /api/v1/admin/config-effective`의 `metrics.token_set`으로 확인한다.
+
+```bash
+curl -H "Authorization: Bearer $METRICS_TOKEN" localhost:8090/_internal/metrics
+```
+
+내는 시리즈는 여섯이다 — DB 풀 셋(`nexus_db_pool_connections`·`_idle_connections`·`_acquire_timeouts_total`)과 적재 유입 제어 셋(`nexus_ingest_permits_total`·`_available`·`nexus_ingest_rejected_total`).
+
+`live`와 `health` 두 경로는 프로브가 자격증명 없이 호출해야 하므로 인증이 면제된다. 그 밖의 면제 경로는 `POST /api/v1/auth/register`·`POST /api/v1/auth/login`과 API 문서 경로(`/api-docs/openapi.json`, `/swagger-ui`, `/swagger-ui/`)뿐이며, 문서 경로는 `auth.docsEnabled: false`로 끄면 404가 된다. **데이터 API는 조회를 포함해 전부 토큰이 필요하다.**
 
 ### `server.port`를 바꿀 때
 

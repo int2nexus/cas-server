@@ -226,9 +226,17 @@ requests.post(f"{base}/api/v1/admin/datasets/transfer-owner",
 
 - **임시 비밀번호는 응답에 한 번만 실려 온다.** 서버 어디에도 저장되지 않으니 그 자리에서 전달하고, 받은 사람은 곧바로 `client.change_password(...)`로 바꾼다.
 - **재설정해도 그 사람의 기존 토큰은 만료까지(기본 24시간, 배포마다 `jwt.ttlHours`로 다를 수 있다 — 아래 참조) 유효하다.** "잊어버림"을 푸는 도구지 "탈취 즉시 차단"이 아니다.
-- **담당자 이전은 캐시 수명 안에 적용된다.** 삭제 권한이 그 다음 요청부터 새 담당자에게 간다.
-- 담당자가 없는 dataset은 `GET /datasets?unowned=true`로 조회한다. 담당자가 비어도 권한이 생기지 않으므로 위험한 상태가 아니라 **인수 대기**다. 다만 그런 dataset은 `admin`만 지울 수 있다. 담당자가 있는 dataset을 넘기는 것은 담당자 본인이 한다([4.4](#44-dataset-담당자-이전-서버-016)).
+- **담당자 이전은 인가를 옮기지 않는다**(서버 0.1.9). 이전 담당자도 계속 쓰고 지울 수 있다 — 역할이 `editor`이기 때문이다. 옮겨가는 것은 「다시 넘길 자격」 하나다.
+- 담당자가 없는 dataset은 `GET /datasets?unowned=true`로 조회한다. 담당자가 비어도 권한이 생기지 않으므로 위험한 상태가 아니라 **인수 대기**다. 그런 dataset도 `editor` 이상이면 지울 수 있다(서버 0.1.9 — 그 전에는 `admin` 전용이었다). 담당자가 있는 dataset을 넘기는 것은 담당자 본인이 한다([4.4](#44-dataset-담당자-이전-서버-016)).
 - **superuser 비밀번호를 바꾼 뒤에도 시크릿을 갱신할 필요가 없다.** `NEXUS__AUTH__SUPERUSER_PASSWORD`는 **그 계정이 없을 때 새로 만드는 용도로만** 읽힌다 — 계정이 이미 있으면 기동 시 값을 읽지도, 비교하지도 않는다. 그래서 시크릿의 값과 실제 로그인 비밀번호가 달라도 파드는 정상 기동하고, 반대로 시크릿을 바꿔 재배포해도 비밀번호는 바뀌지 않는다. 이 값을 "현재 비밀번호"가 아니라 **"계정 생성용 씨앗"**으로 보시는 편이 정확하다. 실제로 다시 쓰이는 경우는 하나뿐이다 — `auth.superuserEmail`을 **아직 가입되지 않은** 주소로 바꿔 재배포하면, 그때 이 값으로 새 계정이 만들어진다(이미 누가 쓰는 주소를 넣으면 그 계정을 채택하므로 그 사람이 superuser가 된다).
+- **지표를 보려면 `GET /_internal/metrics`**(차트 0.3.6+). 시크릿의 `NEXUS__METRICS__TOKEN`을 bearer로 받고, 그 값이 없으면 경로 자체가 **404**다. Prometheus 텍스트를 내며 DB를 조회하지 않으므로 15초 주기도 부담이 없다.
+
+  ```bash
+  curl -H "Authorization: Bearer $METRICS_TOKEN" $base/_internal/metrics
+  ```
+
+  DB 풀 셋(`nexus_db_pool_connections` · `_idle_connections` · `_acquire_timeouts_total`)과 적재 유입 제어 셋(`nexus_ingest_permits_total` · `_available` · `nexus_ingest_rejected_total`)이다. **`_acquire_timeouts_total`이 오르기 시작하는 순간이 풀 포화의 시작점이다** — readiness는 전용 커넥션을 쓰므로 그 상황에서도 계속 200이고, 이 카운터가 유일한 신호다.
+
 - **적용된 설정을 확인하려면 `GET /api/v1/admin/config-effective`**(차트 0.3.5+, superuser 전용). 지금 그 프로세스가 **읽은 값**을 돌려준다 — 차트 렌더 결과가 아니므로 `extraEnv` 오버라이드도 드러난다.
 
   ```python
@@ -518,7 +526,14 @@ samples = [
 ]
 
 ds.add(samples)                       # 등록 큐에 추가 - 단일 Sample 또는 리스트 모두
-results = ds.flush(workers=8)         # 병렬 등록 → IngestResult 리스트
+results = ds.flush(workers=4)         # 병렬 등록 → IngestResult 리스트
+
+> **`flush(workers=)`의 상한은 한 사람이 아니라 동시에 적재하는 전원의 합에 걸린다.**
+> 서버 기본값(`database.maxConnections=16`, `ingest.batchItemConcurrency=3`)에서 그 합이
+> **4**다. 넘치면 서버가 `429` + `Retry-After`로 돌려주고 SDK(`0.1.9`+)가 물러났다 다시
+> 오므로 적재가 실패하지는 않지만 그만큼 느려진다. 처리량을 올리려면 서버의
+> `database.maxConnections`를 함께 올려야 한다. `nx.upload(workers=)`는 CAS로 직접 가므로
+> 이 상한과 무관하다.
 
 print("ok:", sum(r.ok for r in results), "/", len(results))
 for r in (r for r in results if not r.ok):
@@ -553,7 +568,7 @@ for p in sorted(ann_dir.glob("*.json")):
     ))
 
 ds.add(samples)
-results = ds.flush(workers=8)
+results = ds.flush(workers=4)
 
 print("ok:", sum(r.ok for r in results), "/", len(results))
 for r in (r for r in results if not r.ok):
@@ -817,7 +832,7 @@ ds.update(name="new-name", description="새 설명")
 
 ### 4.3 데이터셋 삭제 정책
 Dataset 삭제는 버전 단위로 수행한다. `ds.delete()`로 버전을 삭제하고, 남은 버전이 하나도 없으면 Dataset도 자동으로 삭제된다. 이때 Dataset에 속한 잔여 Sample도 모두 정리되며, CAS로 Asset 삭제 요청을 보낼지는 아래 `delete_cas`가 정한다.
-삭제는 **`editor` 이상이면서 담당자 본인이거나 `admin`**이어야 한다(서버 0.1.7). `viewer`는 자기가 담당인 dataset도 지울 수 없고, 담당자가 비어 있으면 `admin`만 지울 수 있다. sealed 버전은 삭제할 수 없다(409, 예외 없음 — 그 버전이 Dataset의 마지막 버전이어도 마찬가지다).
+삭제는 **`editor` 이상**이면 된다(서버 0.1.9). 담당자와 무관하게 남의 dataset의 버전·샘플도 지울 수 있다(마지막 버전을 지우면 dataset도 함께 사라진다) — 0.1.7이 넣었던 담당자 조건은 되돌아갔다(쓰기가 이미 담당자와 무관한 상태에서 삭제만 막는 것은 가드가 되지 못한다). `viewer`는 자기가 담당인 dataset도 지울 수 없다. sealed 버전은 삭제할 수 없다(409, 예외 없음 — 그 버전이 Dataset의 마지막 버전이어도 마찬가지다).
 
 **CAS 원본 삭제(`delete_cas`)는 층마다 기본값이 다르다.**
 
@@ -837,7 +852,7 @@ ds.delete(confirm="v0", delete_cas=True)  # CAS로 삭제 요청까지 보냄
 
 ### 4.4 Dataset 담당자 이전 (서버 0.1.6+)
 
-`owner_user_id`는 **담당자**이며, 서버 0.1.7부터 **삭제에만** 관여한다. 적재·annotation 수정·seal·이름 변경은 `editor` 이상이면 담당자가 아니어도 할 수 있다. 담당자를 넘기는 것은 "이 dataset을 지울 수 있는 사람"을 넘기는 일이다.
+`owner_user_id`는 **담당자**이며, 서버 0.1.9부터 **인가에 전혀 관여하지 않는다**(0.1.7~0.1.8은 삭제에만 관여했다). 적재·annotation 수정·seal·이름 변경·삭제 전부 `editor` 이상이면 담당자가 아니어도 할 수 있다. 담당자는 목록 필터(`mine`·`unowned`)와 인수 대기 관리에 쓰이는 값이고, 담당자를 넘기는 것은 **"이 dataset을 다시 넘길 수 있는 사람"**을 넘기는 일이다.
 
 SDK `0.1.6`부터 메서드가 있다.
 
@@ -1119,7 +1134,7 @@ except NexusError as e:
 | `401` | 토큰이 없거나 만료됐다 | **SDK 0.1.2+는 자동으로 다시 로그인하고 재시도한다** — 보통 이 예외를 볼 일이 없다. 그래도 401이 올라오면 자격증명 자체가 안 맞는 것이다(비밀번호가 바뀌었거나 서버 JWT 시크릿이 교체됨) |
 | `403` | 로그인은 됐지만 권한이 모자라다 | 본문으로 갈린다 — 아래 표 참조 |
 
-**조회를 포함한 모든 요청에 토큰이 필요하다.** 쓰기는 역할이 가른다(서버 0.1.7) — 적재(`flush`), annotation 수정, 샘플 추가, seal, 이름 변경은 **`editor` 이상이면 다른 사람이 담당인 dataset에도** 된다. 삭제만 담당자 검사가 남는다.
+**조회를 포함한 모든 요청에 토큰이 필요하다.** 쓰기는 역할이 가른다(서버 0.1.7) — 적재(`flush`), annotation 수정, 샘플 추가, seal, 이름 변경은 **`editor` 이상이면 다른 사람이 담당인 dataset에도** 된다. **삭제도 서버 0.1.9부터 같다** — 담당자 조건이 빠졌고, `viewer`만 지울 수 없다.
 
 `403` 본문은 셋으로 갈린다.
 
