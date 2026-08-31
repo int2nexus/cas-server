@@ -219,6 +219,19 @@ auth 를 켠 배포에서 root 는 필수 부트스트랩 신원이라, 비활�
 필요합니다. 버저닝도 바꿀 수 없고(`CreateBucket` 필요) 멀티파트 목록도 볼 수
 없습니다(`ListObjects` 필요). 그런 키는 읽기 전용으로 운용하셔도 됩니다.
 
+**반대도 같습니다 — `PutObject` 만 부여한 키도 `CopyObject` 로 쓸 수 없습니다.** 소스에
+`GetObject` 가 필요합니다. 즉 **쓰기만 하는 워크로드라도 `CopyObject` 를 부른다면
+`GetObject` 를 함께 주어야 합니다.** 정책을 좁히실 때 이 방향이 빠지기 쉽습니다.
+
+**`CopyObject` 는 `authz` 로그 줄을 둘 남깁니다.** 요청은 하나인데 판정이 둘이기
+때문입니다 — 대상 `PutObject`, 이어서 소스 `GetObject` 입니다. 로그를 메서드별로
+집계하시면 **`PUT` 인데 `action=GetObject` 인 줄**이 그만큼 나오는데, 그 건수가 곧
+`CopyObject` 요청 수입니다.
+
+혼동하기 쉬운 두 경로를 갈라 둡니다. **중복 확인(`x-cas-hash`) 헤더가 붙은 `PUT` 은
+판정이 `PutObject` 하나뿐입니다** — blob 존재 확인은 인가와 무관한 내부 조회라 판정을
+남기지 않습니다. `HeadObject` 는 `HEAD` 로 오므로 `PUT` 집계에 섞이지 않습니다.
+
 #### `bucket` · `prefix` 가 걸리는 깊이
 
 액션마다 다릅니다. 정책을 좁힐 때 여기서 어긋납니다.
@@ -813,8 +826,9 @@ curl -s --aws-sigv4 "aws:amz:cas-default:s3" --user "$KEY_ID:$SECRET" \
   "db_url": "postgresql://postgres:***@pg/cas",
   "multipart_ttl_secs": 86400,
   "console_enabled": true,
-  "auth": { "secret_master_key": "<set>", "metrics_token": "<set>",
-            "gc_token": "<set>", "anonymous_get": true },
+  "auth": { "admin_token": "<unset>", "metrics_token": "<set>", "gc_token": "<set>",
+            "secret_master_key": "<set>", "root_secret_key": "<set>",
+            "root_access_key_id": "CASKroot", "anonymous_get": true },
   "storage_backends": [
     { "id": "s3-1", "backend_type": "s3", "endpoint": null,
       "access_key_id": "<set>", "secret_access_key": "<set>" }
@@ -824,6 +838,20 @@ curl -s --aws-sigv4 "aws:amz:cas-default:s3" --user "$KEY_ID:$SECRET" \
 
 **자격증명은 값으로 나가지 않습니다.** `<set>`/`<unset>` 만 나가고, `db_url` 의 비밀번호는
 가려집니다.
+
+**세 토큰(`adminToken` · `metricsToken` · `gcToken`)이 파드에 실렸는지를 여기서
+확인합니다.** 기동 로그가 같은 것을 알려 주지만 그쪽은 한 번 지나가면 끝이고, 이 경로는
+언제든 다시 볼 수 있습니다. **「봉인했다」와 「파드에 실렸다」가 다른 사건인 구성**
+(`secrets.useExternalSecret: true` 처럼 Secret 갱신이 파드를 재시작시키지 않는 경우)에서는
+이 값이 뒤엣것을 답합니다 — 차트 렌더 결과가 아니라 프로세스가 실제로 읽은 값이기
+때문입니다.
+
+빈 값이 무엇을 끊는지는 각 경로의 절에 있습니다. `metricsToken` 이 비면
+`GET /_internal/metrics` 가, `gcToken` 이 비면 GC 의 Bearer 경로가 (auth 를 켠 배포에서)
+닫힙니다. `adminToken` 은 폐기됐으므로 `<set>` 이어도 아무것도 열지 않습니다.
+
+**Secret 에서 `auth-admin-token` 키를 지우셔도 이 필드는 `<unset>` 으로 남습니다.**
+정리가 끝났는지를 계속 이 응답으로 확인하실 수 있습니다.
 
 **백엔드 스토리지 주소(`endpoint`)는 관리 주체에게만 채웁니다** — root 키 또는
 `cas:ManageAccessKeys` 를 가진 키. `/_api/backends` 와 같은 기준이고, 그 밖의 키에는

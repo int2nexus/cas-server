@@ -166,6 +166,30 @@ NoAuth 배포는 그대로입니다 — 인증을 쓰지 않기로 한 배포의
 업그레이드가 끊지 않게 하려는 것이고, 「빈 토큰 폴백」 의 근거가 실제로 성립하는 쪽은
 거기뿐입니다.
 
+**동작 변경** — 차트: GC Job 소요가 실제 GC 소요가 됩니다. `activeDeadlineSeconds` 를 재검토하십시오
+
+`gc-cronjob.yaml` 의 완료 판정이 GC 가 **시작된 것**을 완료로 읽어, Job 이 곧바로
+나갔습니다. 그래서 지금까지 **Job 소요는 실제 GC 소요보다 짧게 보였습니다.** 이 버전부터
+Job 은 그 실행이 끝날 때까지 기다립니다.
+
+**올리시기 전에 `gc.activeDeadlineSeconds` 가 실제 GC 소요보다 큰지 확인하십시오.**
+`0.1.31` 이전 차트를 쓰신 배포는 전부 해당하고, **Job 로그의 소요는 근거가 되지
+않습니다.** 실제 값은 `GET /_api/gc/last-result` 의 `ms_multipart` + `ms_orphan` +
+`ms_purge` 입니다. Job 이 기다리는 시간은 `activeDeadlineSeconds - 60` 입니다.
+
+`ms_orphan` 이 지배적이면 `gc.phases` 로 그 단계를 `gc.fullSweep` 으로 옮기고 그쪽에
+`activeDeadlineSeconds` 를 따로 잡는 편성을 검토하십시오 — `values.yaml` 의 `gc.phases`
+주석에 판단 기준이 있습니다.
+
+**시한을 넘기면 Job 이 실패가 아니라 성공으로 끝납니다.** 대기가 끝나 실패로 나간 뒤
+재시도가 같은 실행에 부딪혀 `409`(이미 실행 중)를 받고, 그것을 정상 종료로 보기
+때문입니다. **회수 자체는 정상입니다** — 서버는 Job 과 무관하게 그 실행을 끝까지 돌리고
+결과를 `gc_runs` 에 남깁니다. 잃는 것은 완료 로그와 실패 탐지입니다. Job 로그에는 두
+시도가 다 남으므로 구분은 됩니다. 이 판정은 다음 차트 버전에서 가릅니다.
+
+함께 바뀐 것 — 새 실행이 보이지 않거나 끝나지 않은 채 대기가 끝나면 Job 이 실패로
+끝납니다. 예전에는 뒤엣것이 성공이었습니다.
+
 **동작 변경** — 차트: GC CronJob 의 `adminToken` 폴백을 없앴습니다
 
 `gc-cronjob.yaml` 은 `auth-gc-token` 이 비면 `auth-admin-token` 을 실어 보냈습니다. 그
