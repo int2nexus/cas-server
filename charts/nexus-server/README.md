@@ -4,9 +4,9 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
 
 ## 문서
 
-- [아키텍처](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.6/charts/nexus-server/docs/architecture.md)
+- [아키텍처](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.7/charts/nexus-server/docs/architecture.md)
   — 도메인 모델, Version 생명주기, Annotation CoW, 스냅샷·Manifest 구조
-- [사용법](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.6/charts/nexus-server/docs/usage.md)
+- [사용법](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.7/charts/nexus-server/docs/usage.md)
   — 설치, Python SDK 연결, Dataset 적재·검색·seal 워크플로우, API 레퍼런스
 - [변경 이력](CHANGELOG.md)
   — 버전별 동작 변경·마이그레이션·설정 키. 각 항목은 해당 GitHub Release 본문과 동일하다
@@ -25,7 +25,14 @@ DB 마이그레이션은 바이너리에 임베드되어 **기동 시 자동 적
 
 > **업그레이드 전에 [CHANGELOG](CHANGELOG.md)를 읽을 것.**
 
-**차트 0.3.6 / appVersion 0.1.9** — 동작 넷이 바뀌고 마이그레이션 `018`이 붙는다(**`0.1.8` 이하로 롤백 불가**).
+**차트 0.3.7 / appVersion 0.1.10** — 마이그레이션 `019`·`020`이 붙는다(**`0.1.9` 이하로 롤백 불가**). 지금까지와 달라지는 것은 둘이고, 그 밖은 모두 새로 더해지는 것이다.
+
+1. **SDK `nexus.connect()`의 `save_cas_credentials` 기본값이 `True` → `False`**(SDK `0.1.10`. 서버가 아니라 SDK의 변경이다). 자동 발급은 그대로 받고 설정 파일에 남기지 않는다. `True`는 옵션으로 남는다.
+2. `POST /api/v1/admin/users/password-reset`이 superuser 계정을 대상으로 삼으면 `403`이다 — `0.1.9`까지 막지 않던 자리다. `role = admin` 계정이 superuser 비밀번호를 가져가 **강등도 정지도 되지 않는 관리자**가 될 수 있었다(무인증 상승은 아니다).
+3. 새로 더해지는 것: 로봇(서비스) 계정, 필터 옵션별 개수(`POST .../facets/counts`), 즐겨찾기 그룹, `explorer`의 `offset`, 취소된 요청 로그, 지표 다섯, `meta.keypoint_info`의 새 구조와 CVAT skeleton 연결선.
+4. **`users`를 바꾸는 마이그레이션이 `lock_timeout` 3초로 돈다.** 앞에 긴 트랜잭션이 걸려 있으면 잡지 못하고 기동이 실패한다 — 서비스 중인 파드는 그대로이고 롤아웃만 멈춘다. 그 3초가 없으면 인증 조회가 락 큐에 함께 갇힌다.
+
+**0.3.6 / 0.1.9** — 동작 넷이 바뀌고 마이그레이션 `018`이 붙는다(**`0.1.8` 이하로 롤백 불가**).
 
 1. 적재(`POST /ingest`·`/ingest/batch`)가 포화에서 `429` + `Retry-After`. **SDK를 `0.1.9`로 함께 올릴 것** — 구 SDK는 `429`를 재시도하지 않고 그 청크를 실패로 기록한다(`flush()`가 `ok=False`를 돌려줄 뿐 예외가 아니라 조용히 유실된다).
 2. `/_internal/health`가 전용 커넥션으로 판정한다. readiness 실패의 뜻이 「DB에 못 닿는다」 하나로 좁아진다.
@@ -122,7 +129,7 @@ CVAT 연동은 `cvat.baseUrl`·`cvat.user`·시크릿의 `NEXUS__CVAT__PASSWORD`
 
 **여기 적은 비밀번호는 최초 계정 생성 때만 쓰인다.** 서버가 기동 시 그 계정이 없으면 만들고(그래야 그 주소를 아무도 선점할 수 없다), 이미 있으면 **비밀번호를 덮지 않는다** — 운영자가 API로 바꾼 값이 파드 재시작마다 되돌아가면 안 되기 때문이다. 나중에 이 env를 바꿔도 로그인 비밀번호는 바뀌지 않는다(자주 나오는 오해다). 잊었다면 Secret을 고쳐도 소용이 없다 — `auth.superuserEmail`을 **아직 가입되지 않은** 새 주소로 바꿔 재배포하면 서버가 그 주소로 계정을 새로 만들고, 그때는 Secret의 비밀번호가 그대로 쓰인다. 같은 주소를 유지해야 한다면 운영자가 DB에서 그 `users` 행을 직접 지운 뒤 재기동하는 방법뿐이다 — **superuser 계정은 API로 삭제할 수 없고(403), 그 이메일로는 가입할 수도 없다(409).** 계정이 사라진 창에 아무나 그 주소를 선점하면 그대로 최고 권한을 가져가기 때문이다.
 
-이 계정의 권한은 토큰이 아니라 **설정값**으로 판정하므로, 이메일을 바꿔 재배포하면 즉시 회수된다 — 토큰을 무효화할 수 없는 이 서버에서 유일한 예외다(`role = admin` 쪽은 캐시 수명만큼 늦게 듣는다). 이 계정은 `POST /api/v1/admin/users/role`과 `POST /api/v1/admin/users/active`로 자기 역할을 바꾸거나 자기를 정지할 수 없다(403).
+이 계정의 권한은 토큰이 아니라 **설정값**으로 판정하므로, 이메일을 바꿔 재배포하면 즉시 회수된다 — 토큰을 무효화할 수 없는 이 서버에서 유일한 예외다(`role = admin` 쪽은 캐시 수명만큼 늦게 듣는다). **superuser 계정을 대상으로 삼는 관리 조작 셋은 누가 부르든 403이다** — `POST /api/v1/admin/users/role`(역할 변경)·`.../active`(정지)·`.../password-reset`(비밀번호 재설정). 호출자가 superuser 본인이든 `role = admin`이든 같다. 마지막 하나는 appVersion 0.1.10에서 채웠다 — 그전에는 `role = admin` 계정이 superuser의 비밀번호를 가져가 강등도 정지도 되지 않는 관리자가 될 수 있었다.
 
 관리 엔드포인트는 다음과 같다. 전부 superuser 또는 `role = admin`이 통과한다.
 
@@ -134,8 +141,14 @@ CVAT 연동은 `cvat.baseUrl`·`cvat.user`·시크릿의 `NEXUS__CVAT__PASSWORD`
 | `GET /api/v1/admin/users/pending` · `POST .../approve` | 승인 대기 목록·승인(`auth.approvalRequired`가 켜진 배포) |
 | `POST /api/v1/admin/users/password-reset` | 임시 비밀번호 발급 |
 | `PUT /api/v1/admin/datasets/{id}/owner` · `POST .../transfer-owner` | 담당자 지정·일괄 이관 |
+| `POST /api/v1/admin/robots` · `GET` | 로봇 계정 생성·목록(appVersion 0.1.10+) |
+| `DELETE /api/v1/admin/robots/{user_id}` | 로봇 계정 삭제 |
+| `POST /api/v1/admin/robots/{user_id}/tokens` · `GET` | 토큰 발급·목록 |
+| `DELETE /api/v1/admin/robots/{user_id}/tokens/{token_id}` | 토큰 폐기 |
 
 감사 로그는 없다.
+
+**로봇 계정에는 `admin`을 줄 수 없다**(appVersion 0.1.10+). 위 표의 관리 권한이 `role = admin`으로도 열리므로, `admin` 로봇의 장수명 토큰은 그대로 관리 평면 전권이 된다. 로봇은 dataset·version·sample을 지울 수도 없다(적재·수정·seal·이름 변경·fork는 된다) — 사람 토큰은 최대 `jwt.ttlHours`인데 로봇 토큰은 최장 365일이라, 그 값 하나로 sealed가 아닌 모든 dataset을 지울 수 있는 것은 장수명 자격증명에 붙일 권한이 아니라는 판단이다. 로봇 토큰으로 `POST /api/v1/auth/refresh`는 403이다(열어 두면 만료 강제가 우회된다).
 
 **담당자가 있는 dataset을 넘기는 데는 관리 권한이 필요하지 않다**(appVersion 0.1.6+). 담당자 본인이 `PUT /api/v1/datasets/{dataset_id}/owner`로 넘긴다. 관리 경로가 필요한 경우는 **담당자가 없는** dataset을 인수할 때와, 이미 떠난 사람의 담당분을 일괄로 넘길 때다.
 
@@ -156,7 +169,7 @@ curl localhost:8090/_internal/health      # {"status":"ok","db":true}
 curl -H "Authorization: Bearer $METRICS_TOKEN" localhost:8090/_internal/metrics
 ```
 
-내는 시리즈는 여섯이다 — DB 풀 셋(`nexus_db_pool_connections`·`_idle_connections`·`_acquire_timeouts_total`)과 적재 유입 제어 셋(`nexus_ingest_permits_total`·`_available`·`nexus_ingest_rejected_total`).
+내는 시리즈는 열하나다(appVersion 0.1.10부터 다섯이 늘었다) — DB 풀 셋(`nexus_db_pool_connections`·`_idle_connections`·`_acquire_timeouts_total`), 적재 유입 제어 셋(`nexus_ingest_permits_total`·`_available`·`nexus_ingest_rejected_total`), 미처리 CAS 자격증명 폐기(`nexus_cas_credential_revocations_pending`), 로봇 토큰 넷(`nexus_robot_tokens_active`·`_expiring_soon`·`nexus_robot_token_min_expires_in_seconds`·`nexus_robot_accounts_without_active_token`). 뒤의 다섯만 DB를 조회하며 250ms를 넘기면 그 다섯만 빠진다. 앞의 여섯은 메모리 상태라 풀이 말라도 그대로 나온다.
 
 `live`와 `health` 두 경로는 프로브가 자격증명 없이 호출해야 하므로 인증이 면제된다. 그 밖의 면제 경로는 `POST /api/v1/auth/register`·`POST /api/v1/auth/login`과 API 문서 경로(`/api-docs/openapi.json`, `/swagger-ui`, `/swagger-ui/`)뿐이며, 문서 경로는 `auth.docsEnabled: false`로 끄면 404가 된다. **데이터 API는 조회를 포함해 전부 토큰이 필요하다.**
 

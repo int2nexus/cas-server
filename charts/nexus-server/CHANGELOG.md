@@ -75,6 +75,203 @@ nexus-server 는 마이그레이션이 바이너리에 임베드되어 **기동 
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.3.7
+
+image: `int2jieun/nexus-server:0.1.9` → `0.1.10`
+digest: `sha256:c97625b9e32a0b407afdd4a5ba016bab0a3d22141b57b26e35c747a1ec3231dc`
+
+**동작 변경** — 지금까지와 달라지는 것은 둘입니다. ⑴ SDK `nexus.connect()` 의 `save_cas_credentials` 기본값이 `True` 에서 `False` 로 바뀝니다(도입처 요청. 서버가 아니라 SDK `0.1.10` 의 변경입니다). ⑵ `POST /api/v1/admin/users/password-reset` 이 superuser 계정을 대상으로 삼으면 `403` 입니다 — `0.1.9` 까지는 통했습니다. **그 밖은 모두 새로 더해지는 것이라 쓰던 호출은 그대로 동작합니다.**
+**마이그레이션** — `019_robot_accounts` 와 `020_favorite_groups` 가 첫 기동에서 자동 적용됩니다.
+
+- **영향받는 테이블** — `users` 에 컬럼 하나(`kind`)가 붙고 `password_hash` 의 `NOT NULL` 이 제약으로 바뀝니다. `dataset_favorites` 에 컬럼 둘(`group_id`·`position`)이 붙습니다. `robot_tokens`·`favorite_groups` 신규 생성
+- **예상 소요시간** — **표 재작성은 없습니다.** 컬럼 추가는 기본값이 상수라 기존 행을 건드리지 않고(PostgreSQL 11+), `NOT NULL` 해제는 메타데이터만 바꿉니다. **훑는 것은 `users` 의 CHECK 검증 하나**이고 그 비용만 계정 수에 비례합니다. 실제 소요는 기동 로그의 `마이그레이션 완료 applied=2 elapsed_ms=<소요>` 에 남습니다
+- **잠금** — `users` 를 바꾸는 문장은 `lock_timeout` 을 3초로 두고 돕니다. **`users` 는 모든 인증 요청이 읽는 표라, 앞에 긴 트랜잭션이 걸려 있으면 그 문장이 락 큐에 서고 그 뒤의 인증 조회가 함께 갇힙니다** — 마이그레이션을 도는 새 파드뿐 아니라 서비스 중인 구 파드까지입니다. 3초 안에 잡지 못하면 기동이 실패하고 롤아웃만 멈춥니다
+- **롤백** — **이 버전은 마이그레이션 `019`·`020` 을 추가하며, 이미지 `0.1.9` 이하로 롤백할 수 없습니다.** 아래 「롤백」 절을 보십시오
+
+**설정 키** — 없음. 기동을 거부하는 설정 조합도 일곱 그대로입니다.
+**지표** — 다섯이 늘었습니다(`nexus_cas_credential_revocations_pending` 과 로봇 넷). 아래 절에 있습니다.
+
+### 로봇(서비스) 계정 — 사람 없는 워크로드가 쓸 장수명 토큰
+
+**관리자만 만들 수 있습니다.** 이메일·비밀번호·메일인증이 없고, 승인 게이트를 지나지 않습니다(만드는 행위 자체가 관리자의 조작입니다).
+
+```
+POST   /api/v1/admin/robots                            계정 생성
+GET    /api/v1/admin/robots                            목록
+DELETE /api/v1/admin/robots/{user_id}
+POST   /api/v1/admin/robots/{user_id}/tokens           토큰 발급
+GET    /api/v1/admin/robots/{user_id}/tokens
+DELETE /api/v1/admin/robots/{user_id}/tokens/{token_id}
+```
+
+토큰은 `nxr_` 로 시작하는 47자 문자열이고 `Authorization: Bearer` 에 그대로 넣습니다. **평문은 발급 응답에만 한 번 실립니다** — 목록에는 `token_id`·`label`·`expires_at`·`revoked_at`·`last_used_at` 만 나옵니다.
+
+**계정 1 : 토큰 N 입니다.** 새 토큰을 발급하고, `last_used_at` 으로 배포가 끝난 것을 확인한 뒤, 옛 토큰을 폐기하면 중단 없이 회전합니다.
+
+**만료가 강제입니다.** 발급할 때 `expires_in_days`(1~365)가 **필수**입니다. 기본값을 두지 않았습니다 — 두면 아무도 적지 않아 「무기한이 아니다」가 형식만 남습니다.
+
+**사람/로봇은 `GET /api/v1/admin/users` 응답의 `kind`(`human`/`robot`)로 갈립니다.**
+
+SDK 는 `nexus.connect(robot_token=...)` 이거나 환경변수 `NEXUS_ROBOT_TOKEN` 입니다.
+
+#### 로봇에 걸린 제한 셋
+
+**⑴ 역할 상한이 `editor` 입니다.** 로봇에 `admin` 을 줄 수 없습니다. 관리 엔드포인트는 설정 `auth.superuserEmail` 계정 **또는** `users.role = 'admin'` 계정 둘 다 통과하므로, `admin` 로봇의 365일 토큰은 그대로 관리 평면 전권이 됩니다. 계정 생성·`users/role`·`users/approve` 세 입구에서 모두 거부됩니다.
+
+**⑵ dataset·version·sample 을 지울 수 없습니다**(`403`). 적재·수정·seal·이름 변경·fork 는 됩니다. 사람 토큰은 최대 `jwt.ttlHours`(기본 24시간)이고 로봇 토큰은 최장 365일입니다 — 그 값 하나로 sealed 가 아닌 모든 dataset 을 지울 수 있는 것은 장수명 자격증명에 붙일 권한이 아니라는 판단입니다.
+
+**⑶ `POST /api/v1/auth/refresh` 가 `403` 입니다.** 열어 두면 로봇 토큰으로 24시간 JWT 를 받고 그것을 반복해 만료 강제가 우회됩니다.
+
+로봇은 superuser 로 지정할 수 없고(그 이메일이 로봇 계정이면 기동이 실패합니다), 관리자가 로봇의 비밀번호를 재설정할 수도 없습니다(통하면 로봇에 로그인 경로가 생깁니다).
+
+#### 폐기와 만료가 듣는 시점이 다릅니다
+
+**폐기는 최대 `auth.revocationCacheTtlSecs`(기본 5초)만큼 늦게 듣습니다. 만료는 늦지 않습니다.** 인증 경로가 판정을 캐시하는데, 없는 토큰은 캐시하지 않으므로 「없는 토큰이 통과하는 창」은 생기지 않습니다. 만료 비교는 캐시와 무관하게 매 요청 계산합니다.
+
+**주의: CAS 자격증명이 토큰보다 오래 삽니다.** nexus 가 발급하는 CAS 자격증명에는 만료가 없습니다. 마지막 활성 토큰을 **폐기**하면 CAS 자격증명도 함께 폐기되지만, **만료**는 아무도 호출하지 않는 사건이라 그 경로가 없습니다. 아래 `nexus_robot_accounts_without_active_token` 이 그 상태를 드러냅니다.
+
+### 지표 다섯이 늘었습니다
+
+`GET /_internal/metrics` 는 그대로이고(Secret 에 `NEXUS__METRICS__TOKEN` 을 넣은 배포에서만 열립니다) 시리즈가 여섯에서 열하나가 됩니다.
+
+| 시리즈 | 무엇 |
+|---|---|
+| `nexus_cas_credential_revocations_pending` | 미처리 CAS 자격증명 폐기 건수 |
+| `nexus_robot_tokens_active` | 폐기되지 않았고 만료 전인 로봇 토큰 수 |
+| `nexus_robot_tokens_expiring_soon` | 그중 7일 안에 만료되는 것 |
+| `nexus_robot_token_min_expires_in_seconds` | 가장 가까운 만료까지 남은 초 |
+| `nexus_robot_accounts_without_active_token` | 활성 토큰이 하나도 없는 로봇 계정 수 |
+
+**첫째는 미처리가 없어도 `0` 으로 나옵니다.** 시리즈를 빼면 「미처리가 없다」와 「지표가 안 나온다」가 구분되지 않고, 그 구분이 이 값의 존재 이유입니다 — 관리자가 화면을 열지 않아도 감시가 봅니다.
+
+**`nexus_robot_token_min_expires_in_seconds` 는 활성 토큰이 없을 때 `+Inf` 입니다.** `0` 을 내면 「임박」으로 읽히고, 시리즈를 빼면 옛 값이 그대로 남습니다(레코더에 idle timeout 이 없습니다). `< 임계값` 형태의 경보를 쓰시면 토큰이 없어질 때 저절로 풀립니다.
+
+토큰별 라벨은 붙이지 않습니다 — 회전할 때마다 시리즈가 늘고, 라벨이 운영 문자열이라 지표에 그대로 노출됩니다. 「누가 만료되는가」는 `GET /api/v1/admin/robots` 가 답합니다.
+
+**이 다섯만 DB 를 조회합니다.** 한 왕복이고 250ms 를 넘기면 그 다섯만 생략한 채 나머지를 냅니다 — 풀이 말라 조회가 실패해도 풀·유입 제어 지표는 그대로 나옵니다. **readiness 전용 풀(크기 1)은 쓰지 않습니다.** 스크레이프가 그 하나를 잡으면 readiness 가 굶어 파드가 서비스에서 빠지는데, 그것이 `0.3.6` 에서 두 풀을 나눈 이유와 같은 모양의 사고입니다.
+
+### 필터 옵션별 개수 — `POST .../facets/counts`
+
+사이드바의 옵션 옆에 붙일 숫자를 줍니다.
+
+```
+POST /datasets/{dataset_id}/versions/{version}/facets/counts?field=<path>
+```
+
+바디는 `.../samples/explorer` 와 같은 필터입니다.
+
+```jsonc
+{ "field":"det_gt.label", "computed":true, "truncated":false,
+  "counts":[{"value":"car","count":8500},{"value":"pedestrian","count":3120}] }
+```
+
+**단위가 샘플입니다. 같은 자리의 `GET .../histogram` 과 숫자가 다릅니다.** `Car (8,500)` 은 박스 8,500개가 아니라 Car 가 든 8,500장입니다. 이 숫자가 하는 일이 「누르면 나올 결과 수」의 예고라 그렇습니다. `histogram` 은 종전대로 인스턴스 수를 주고 필터도 받지 않습니다 — **두 숫자가 다른 것이 정상입니다.**
+
+**`computed: false` 를 「0건」으로 그리면 안 됩니다.** `true` 일 때만 목록에 없는 값이 0건입니다. `false` 는 제한 시간(3초) 안에 못 셌다는 뜻이라 숫자 없이 목록만 그려야 합니다.
+
+**`GET .../facets` 와 나눈 것이 대량 데이터셋에 대한 안전장치입니다.** 값 목록은 즉시 열리고 숫자는 도착하는 대로 채워집니다. 합쳤으면 개수가 느린 dataset 에서 사이드바 자체가 느려집니다. 제한은 트랜잭션 `statement_timeout` 이라 시간을 넘기면 PostgreSQL 이 스스로 중단합니다 — 애플리케이션 쪽 타임아웃은 기다리기를 그만두는 것이지 백엔드를 멈추는 것이 아니어서 커넥션이 계속 물려 있습니다.
+
+교차필터는 **그 필드 자신의 필터만 뺍니다.** `label = car` 를 고른 채 label 목록을 펴면 car 말고 전부 0 이 되어 목록이 쓸모없어지기 때문입니다. 다른 필드의 필터는 반영합니다.
+
+개수가 붙는 field 는 다섯입니다 — `tags`·`meta.<enum|bool|string>`·`group_key`·`<group>.label`·`<group>.component.type`. 나머지는 `400` 입니다.
+
+### 즐겨찾기 그룹(폴더)
+
+전부 유저 스코프입니다. `GET /datasets` 응답에 `favorite_group_id` 와 `favorite_position` 이 늘어납니다(즐겨찾기가 아닌 항목은 둘 다 `null`).
+
+```
+POST   /api/v1/datasets/favorites/groups              그룹 생성
+GET    /api/v1/datasets/favorites/groups              사이드바 트리 전체
+PATCH  /api/v1/datasets/favorites/groups/{group_id}   이름 변경
+DELETE /api/v1/datasets/favorites/groups/{group_id}
+PUT    /api/v1/datasets/favorites/layout              그룹 순서·소속·그룹 내 순서
+```
+
+**레이아웃은 하나의 요청이 셋을 다 정합니다.** 배열 순서가 곧 순서입니다. 멱등이고, 두 탭이 각각 옮겨도 마지막 쓰기가 정해집니다 — 상대 이동(「d1 을 d7 뒤로」)은 그렇지 않습니다.
+
+**전체를 요구합니다.** 즐겨찾기한 dataset 이 하나라도 빠지거나 중복되면 `400` 이고 본문에 그 목록이 담깁니다. 부분 갱신은 「안 적은 것은 어디로 가는가」가 정해지지 않고, 그 애매함이 사이드바에서 항목이 조용히 사라지는 증상으로 나옵니다.
+
+순서는 조밀한 정수를 통째로 다시 쓰는 방식입니다. 사용자당 수십 개 규모라 간격이 닳지 않고, 그래서 주기적 재배치가 필요 없습니다.
+
+그룹을 지우면 안의 즐겨찾기는 미분류로 빠집니다(사라지지 않습니다). 새 즐겨찾기는 미분류의 맨 뒤에 붙습니다.
+
+### 샘플 목록의 임의 위치 이동 — `offset`
+
+`POST .../samples/explorer` 바디에 `offset`(앞 N개 건너뛰기)이 붙습니다. 화면 하단 위치 바를 임의 지점으로 끌 때 씁니다. 총 개수는 기존 `.../samples/explorer/count` 그대로입니다.
+
+**`offset` 과 `cursor` 를 함께 주면 `400`** 입니다. 「앞에서 N개 건너뛴다」와 「이 id 뒤부터」가 겹쳐 뜻이 정해지지 않고, 한쪽을 조용히 무시하면 화면이 엉뚱한 자리를 가리키는데 증상만으로는 어느 쪽이 무시됐는지 알 수 없습니다.
+
+**깊은 `offset` 은 비쌉니다** — 건너뛸 행을 데이터베이스가 세어 나갑니다. 위치로 점프한 뒤의 연속 스크롤은 `cursor` 로 이어가는 것이 맞습니다.
+
+### 취소된 요청이 자기 로그 줄을 남깁니다
+
+클라이언트가 응답 전에 연결을 끊으면 요청이 그 자리에서 사라지고 **완료 줄이 나오지 않습니다.** 그 사이 돌던 쿼리는 취소되면서 그때까지의 소요가 PostgreSQL 의 느린 문장으로 기록되는데, 실제로 60초 걸린 쿼리가 아닌데 `elapsed≈59.96s` 로 남습니다.
+
+지금까지 그 구분법은 「느린 문장이 있는데 대응하는 완료 줄이 없으면 취소」였습니다. **없는 것을 보고 판단하는 방법**이라 로그 보존 창이 짧으면 성립하지 않습니다.
+
+이제 `요청이 취소됐다 — 클라이언트가 응답 전에 연결을 끊었다` 가 `WARN` 으로 남고, 같은 줄에 `request_id`·`uri`·`elapsed_ms` 가 실립니다. 그 시각의 느린 문장과 직접 맞춰 볼 수 있습니다.
+
+### `meta.keypoint_info` 의 새 구조와 CVAT skeleton 연결선
+
+`meta.keypoint_info` 의 값이 이름 배열에서 `{"labels": [...], "edges": [[...]]}` 로 확장됐습니다. 색인 키는 그대로 컴포넌트 키입니다.
+
+**옛 모양을 계속 읽습니다.** 이미 적재된 샘플은 다시 적재하지 않는 한 그대로이고, 그 dataset 들의 CVAT skeleton 은 종전처럼 관절 이름만 붙고 연결선이 없습니다.
+
+**`edges` 가 있으면 CVAT skeleton 에 연결선을 그립니다.** `edges` 의 원소는 쌍이 아니라 **경로**입니다 — `[3, 2, 1, 0]` 은 3-2·2-1·1-0 을 잇는 사슬 하나입니다.
+
+심는 경로를 따로 뒀습니다.
+
+```
+PATCH /datasets/{dataset_id}/versions/{version}/samples/keypoint-info
+```
+
+**인스턴스를 건드리지 않습니다.** 같은 결과를 annotation 왕복(`GET .../annotations` → 고침 → `PUT`)으로도 낼 수 있지만, 그쪽은 샘플마다 그 버전의 인스턴스를 통째로 다시 씁니다 — 정적 골격 정의 하나를 바꾸자고 GT 전체를 재작성하게 됩니다.
+
+**병합이지 교체가 아닙니다.** 적어 보낸 컴포넌트 키만 덮고 나머지 키와 `meta` 의 다른 필드는 보존합니다. **버전은 대상을 고르는 데만 쓰입니다** — `samples.meta` 는 버전 격리가 없어 쓴 값은 그 샘플을 담은 모든 버전이 함께 봅니다. 같은 이유로 sealed 버전에서도 됩니다(`PATCH /samples/dimensions` 와 같은 규율입니다 — seal 이 박제하는 것은 인스턴스이고 `samples.meta` 는 얼리지 않습니다).
+
+옛 배열 모양, 빈 `labels`, **관절 수 밖을 가리키는 `edges` 인덱스**는 `400` 입니다. 대상이 10,000건을 넘으면 `?confirm=<개수>` 가 필요합니다.
+
+SDK 는 `ds.set_keypoint_info(...)` 입니다. 이미 열려 있는 CVAT 세션은 영향받지 않습니다(라벨 해석이 세션 생성 시점에 고정됩니다).
+
+### `password-reset` 에 superuser 가드가 없었습니다
+
+**`0.1.9` 까지 `POST /api/v1/admin/users/password-reset` 이 superuser 계정을 대상으로 삼는 것을 막지 않았습니다.** 같은 관리 평면의 `users/role`·`users/active` 에는 그 가드가 있었고 이 경로만 빠져 있었습니다.
+
+관리 엔드포인트는 설정 `auth.superuserEmail` 계정 **또는** `users.role = 'admin'` 계정 둘 다 통과합니다. 그래서 `role=admin` 인 계정이 superuser 의 비밀번호를 재설정하고 그 계정으로 로그인하면 **강등도 정지도 되지 않는 관리자**가 됩니다(그 둘에는 가드가 있습니다). 운영자의 break-glass 경로도 함께 막힙니다.
+
+**무인증 권한 상승은 아닙니다** — 이미 `role=admin` 인 주체만 가능합니다.
+
+이 버전에서 `403` 입니다.
+
+### SDK `0.1.10` — 기본값 하나가 뒤집힙니다
+
+**`nexus.connect()` 의 `save_cas_credentials` 기본값이 `True` 에서 `False` 가 됩니다.** 자동 발급은 그대로 받고 그 프로세스 안에서 쓰이지만 설정 파일에 남기지 않습니다. 도입처 요청이고, 그 경로를 타는 소비자가 아직 없어 지금 뒤집는 비용이 0 이라는 판단이 근거입니다. `save_cas_credentials=True` 는 옵션으로 남습니다. 환경변수(`CAS_KEY_ID`/`CAS_SECRET`)가 이기는 순서는 그대로입니다.
+
+나머지는 더해지는 것입니다.
+
+- `nexus.connect(robot_token=...)` 또는 환경변수 `NEXUS_ROBOT_TOKEN` — 로그인 없이 붙습니다
+- `ds.set_keypoint_info(...)` — 위 골격 정의 심기
+- `ds.backfill_dims(overwrite=True)` — 지금까지는 `meta.width/height` 가 **비어 있는** 샘플만 채웠습니다. 이 모드는 **기록된 값도 실측값으로 교체합니다** — 적재 당시 `ann.json` 이 들고 있던 선언값 자체가 틀린 경우가 채우기 모드로는 닿지 않기 때문입니다. `dry_run=True` 가 개수가 아니라 변경 목록(`from` → `to`)을 주므로 먼저 돌려 보십시오
+- `client.count_samples(...)` — 필터에 걸리는 샘플 수만 묻습니다(목록을 받지 않습니다)
+- 버전 삭제가 `403` 일 때의 메시지에서 담당자 조건을 뺐습니다. 차트 `0.3.6` 에서 삭제가 역할만 보게 바뀐 뒤로 그 문구가 틀린 원인을 가리키고 있었습니다
+
+### 롤백
+
+**이미지 `0.1.9` 이하로 롤백할 수 없습니다.** `019`·`020` 이 적용된 데이터베이스에서는 옛 이미지가 sqlx 부기 검사에 걸려 기동을 거부합니다. 스키마 변경 자체는 추가만 하는 것이지만 그것과 무관합니다.
+
+차트만 `0.3.6` 으로 되돌리는 것은 됩니다(이미지를 함께 내리지 않는 경우). 이 차트 버전은 템플릿을 바꾸지 않았습니다.
+
+**올리기 전에 데이터베이스 백업을 두십시오.**
+
+### 올린 뒤 확인할 것
+
+- `GET /_internal/metrics` 에 `nexus_cas_credential_revocations_pending` 이 있는지. **값이 `0` 이어도 나와야 합니다**
+- `nexus_robot_accounts_without_active_token` — 로봇을 만들기 전이므로 `0` 입니다
+- `role=admin` 계정 토큰으로 superuser 이메일에 `POST /api/v1/admin/users/password-reset` 이 `403` 인지
+- `GET /api/v1/admin/users` 응답에 `kind` 가 있는지
+- `GET /datasets` 응답에 `favorite_group_id`·`favorite_position` 이 늘었는지
+- 기동 로그의 `마이그레이션 완료 applied=2 elapsed_ms=<소요>`
+
 ## 0.3.6
 
 image: `int2jieun/nexus-server:0.1.8` → `0.1.9`

@@ -5,16 +5,16 @@
 #
 # ── 문서 ─────────────────────────────────────────────────────────────────────
 #   아키텍처 (도메인 모델·버전 관리·스냅샷 구조)
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.6/charts/nexus-server/docs/architecture.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.7/charts/nexus-server/docs/architecture.md
 #   사용법 (설치·SDK 연결·Dataset 워크플로우)
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.6/charts/nexus-server/docs/usage.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.7/charts/nexus-server/docs/usage.md
 #   차트 README
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.6/charts/nexus-server/README.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.7/charts/nexus-server/README.md
 # ─────────────────────────────────────────────────────────────────────────────
 
 image:
   repository: int2jieun/nexus-server
-  tag: "0.1.9"
+  tag: "0.1.10"
   # digest 로 핀하려면 여기에 넣으십시오 (`sha256:...`). 값이 있으면 tag 대신 이것이
   # 쓰이고, 렌더 결과가 `repository@sha256:...` 가 됩니다.
   #
@@ -216,7 +216,7 @@ auth:
 # 나머지 엔드포인트와 달리 JWT가 아니라 별도 bearer를 받는다 — 스크레이퍼는 로그인할 수
 # 없고, JWT를 쓰게 하면 모니터링 스택이 카탈로그 전체를 읽는 계정을 들고 있어야 한다.
 #
-# 내는 시리즈 여섯:
+# 내는 시리즈 열하나(appVersion 0.1.10부터 다섯이 늘었다):
 #   nexus_db_pool_connections            워크로드 풀의 현재 커넥션 수(상한이 아니다)
 #   nexus_db_pool_idle_connections       그중 유휴. 현재 - 유휴 = 사용 중
 #   nexus_db_pool_acquire_timeouts_total 풀 획득 타임아웃 누적 — 이 값이 오르기
@@ -224,10 +224,25 @@ auth:
 #   nexus_ingest_permits_total           적재 자리 수(maxConnections - 4)
 #   nexus_ingest_permits_available       그중 비어 있는 자리
 #   nexus_ingest_rejected_total          유입 제어가 429로 돌려보낸 누적 건수
+#   nexus_cas_credential_revocations_pending  미처리 CAS 자격증명 폐기 건수.
+#                                        **미처리가 없어도 0으로 나온다** — 시리즈가
+#                                        사라지면 "없다"와 "안 나온다"가 구분되지 않고,
+#                                        그 구분이 이 값의 존재 이유다
+#   nexus_robot_tokens_active            폐기되지 않았고 만료 전인 로봇 토큰 수
+#   nexus_robot_tokens_expiring_soon     그중 7일 안에 만료되는 것
+#   nexus_robot_token_min_expires_in_seconds  가장 가까운 만료까지 남은 초.
+#                                        **활성 토큰이 없으면 +Inf** — 0을 내면 알림이
+#                                        "임박"으로 읽고, 시리즈를 빼면 옛 값이 남는다
+#   nexus_robot_accounts_without_active_token 활성 토큰이 하나도 없는 로봇 계정 수.
+#                                        이 값이 0이 아닌 채로 유지되면 그 계정들의
+#                                        CAS 자격증명이 살아 있다는 뜻이다
 # readiness 전용 커넥션은 세지 않는다(크기 1 고정).
 #
-# DB를 조회하지 않으므로 15초 주기도 부담이 없다. 설정 여부는
-# `GET /api/v1/admin/config-effective` 의 `metrics.token_set` 으로 확인한다.
+# **뒤의 다섯만 DB를 조회한다**(한 왕복). 250ms를 넘기면 그 다섯만 생략하고 나머지를
+# 낸다 — 풀이 말라 조회가 실패해도 풀·유입 제어 지표는 그대로 나온다. readiness 전용
+# 풀(크기 1)은 쓰지 않는다: 스크레이프가 그 하나를 잡으면 readiness가 굶어 파드가
+# 서비스에서 빠지는데, 그것이 0.3.6에서 두 풀을 나눈 이유와 같은 모양의 사고다.
+# 설정 여부는 `GET /api/v1/admin/config-effective` 의 `metrics.token_set` 으로 확인한다.
 
 # ── CVAT 연동 (선택) ─────────────────────────────────────────────────
 # annotation 편집 세션에 쓰는 외부 편집기. **설정하지 않으면 연동만 꺼지고 서버는 정상
