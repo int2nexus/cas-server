@@ -11,7 +11,7 @@ config:
   # DB 커넥션 풀. 파드당 총 사용량은 dbMaxConnections + gcDbMaxConnections + 1(집계 전용).
   # 지켜야 할 부등식:
   #   replicaCount × (dbMaxConnections + gcDbMaxConnections + 1) < PostgreSQL max_connections
-  # 아래 기본값 기준 1 × (20 + 2 + 1) = 23. 집계 전용 1개는 차트 0.1.24 에서 늘어난 몫이다.
+  # 아래 기본값 기준 1 × (20 + 2 + 1) = 23. 마지막 1개는 집계 조회 전용 풀의 몫이다.
   dbMaxConnections: 20
 
   # 업로드 상한(maxUploadBytesInFlight 3 GiB / maxConcurrentUploads 96)은
@@ -36,9 +36,13 @@ externalDatabase:
   database: ""  # DB 이름
 
 # ── 자격증명 ─────────────────────────────────────────────────────────────────
-# 필수 7개 + 선택 2개(auth-metrics-token · auth-gc-token)를 sealed-secret.yaml로
+# 필수 6개 + 선택 2개(auth-metrics-token · auth-gc-token)를 sealed-secret.yaml로
 # 관리합니다. 이 파일에 포함하지 마세요.
 # 적용 방법: kubectl apply -f sealed-secret.yaml (Helm 배포 전에 실행)
+#
+# 필수: db-password · s3-access-key-id · s3-secret-access-key ·
+#       auth-secret-master-key · auth-root-access-key-id · auth-root-secret-key
+#       (s3-* 둘은 storage.mode: "s3" 에서만 참조됩니다 — nfs 모드면 필수 4개입니다)
 #
 # auth-metrics-token: 메트릭 읽기 전용. 모니터링 스택에는 이것을 쓰십시오.
 #   (cas-server 이미지 0.1.18 이상)

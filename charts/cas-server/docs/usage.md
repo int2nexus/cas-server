@@ -95,8 +95,8 @@ API 호출 없이 브라우저에서 액세스 키를 발급하고 정책을 관
 
 `/_ui` 에 root 키로 로그인하면 Dashboard 화면이 표시됩니다.
 
-**경로는 `/_ui` 입니다. 뒤에 슬래시를 붙인 `/_ui/` 는 `404` 입니다.** 리버스 프록시나
-Ingress 에서 경로를 재작성한다면 슬래시가 붙지 않게 하십시오.
+**`/_ui` 와 `/_ui/` 둘 다 같은 페이지입니다**(이미지 `0.1.25` 이상. 그 이전에는
+뒤 슬래시가 열리지 않았습니다). 그 아래 경로(`/_ui/x`)는 열리지 않습니다.
 
 브라우저에서 열려면 접근 경로를 하나 만들어야 합니다.
 
@@ -116,6 +116,9 @@ Ingress 에서 경로를 재작성한다면 슬래시가 붙지 않게 하십시
 `http://<노드IP>:30080/_ui` 입니다.
 
 ```bash
+# svc 이름은 릴리스명이 아니라 fullname 입니다 — 릴리스명에 "cas-server" 가 들어 있으면
+# 릴리스명 그대로, 아니면 "<릴리스명>-cas-server" 입니다.
+# 원격 포트는 named port 라 service.port 를 바꿨어도 그대로 동작합니다.
 kubectl port-forward -n <namespace> svc/cas-server 8080:http
 # http://localhost:8080/_ui
 ```
@@ -703,38 +706,40 @@ GC가 이미 실행 중이면 `409 GcAlreadyRunning`이 반환됩니다.
 
 #### 단계를 나눠 실행하기
 
-> 이미지 `0.1.20` 이상이 필요합니다. 그 이하는 `phases` 를 무시하고 세 단계를 모두
-> 실행합니다 — 요청은 성공하므로 로그의 `phases` 필드로 적용 여부를 확인하십시오.
+> `phases` 는 이미지 `0.1.20` 이상이 해석합니다. **`sweep` 은 `0.1.25` 이상**이라,
+> 그보다 낮은 이미지에 보내면 `400` 으로 거절합니다.
 
-GC는 세 단계로 나뉘며 비용이 크게 다릅니다. 아래는 blobs 200만 / object_versions 358만
-환경에서 GC를 실제로 돌려 완료 로그의 `ms_*` 필드로 받은 값입니다.
+GC는 네 단계이고 비용이 크게 다릅니다.
 
-| 단계 | 하는 일 | `ms_*` |
+| 단계 | 하는 일 | 비용 |
 |---|---|---|
-| `multipart` | 만료된 미완료 멀티파트 업로드의 파트 회수 | 2~5 |
-| `orphan` | 참조가 사라진 blob 물리 삭제 | **13,729** |
-| `purge` | 보존 기간이 지난 soft-delete 레코드 삭제 | 213~319 |
+| `multipart` | 만료된 미완료 멀티파트 업로드의 파트 회수 | 인덱스가 덮습니다 |
+| `orphan` | 회수 후보 큐를 확인해 blob 물리 삭제 | 삭제·덮어쓰기 건수를 따릅니다 |
+| `purge` | 보존 기간이 지난 soft-delete 레코드 삭제 | 인덱스가 덮습니다 |
+| `sweep` | `blobs` 전량 안티조인 | **테이블 크기를 따릅니다** |
 
-`multipart,purge` 편성은 324 ms, 전 단계는 13.9초가 걸렸습니다 — 43배 차이입니다.
+참조가 0 이 되는 시점에 서버가 회수 후보를 기록하고 `orphan` 은 그 큐만 확인합니다.
+전량을 훑는 것은 `sweep` 하나입니다 — blobs 200만 / object_versions 358만 환경에서
+그 단계가 13,729 ms 였고, 더 큰 배포에서는 1 시간 44 분이었습니다.
 
-`orphan`만 blob 테이블 전체를 훑기 때문에 데이터가 늘어나는 만큼 실행 시간이 함께
-늘어납니다. 나머지 두 단계는 인덱스로 처리되어 규모의 영향을 받지 않습니다.
-
-`phases` 파라미터로 이번 실행에서 돌 단계를 고를 수 있습니다. 생략하면 세 단계 모두
-실행합니다.
+`phases` 를 생략하면 `multipart,orphan,purge` 입니다. **`sweep` 은 이름으로 적을 때만
+돕니다.**
 
 ```bash
-# 주간 작업: 저렴한 단계만
-curl -s -X POST "http://localhost:8080/_internal/gc?phases=multipart,purge" \
-  -H "Authorization: Bearer $GC_TOKEN"
+# 주간: 후보 큐 확인까지
+curl -s -X POST "http://localhost:8080/_internal/gc?phases=multipart,orphan,purge"   -H "Authorization: Bearer $GC_TOKEN"
 
-# 월간 작업: 전체
-curl -s -X POST http://localhost:8080/_internal/gc \
-  -H "Authorization: Bearer $GC_TOKEN"
+# 월간: 전량 스캔
+curl -s -X POST "http://localhost:8080/_internal/gc?phases=sweep"   -H "Authorization: Bearer $GC_TOKEN"
 ```
 
-`orphan`을 미루면 회수가 그만큼 늦어질 뿐 데이터가 사라지지는 않습니다. 회수 대상 blob은
-다음 스캔까지 디스크에 남아 있으므로, 주기를 늘린 만큼 용량 여유를 두고 잡으십시오.
+**`sweep` 은 미뤄도 되는 단계가 아닙니다.** 같은 내용을 가리키던 마지막 두 참조가 서로
+다른 키에서 동시에 지워지면 두 삭제가 서로를 보지 못해 후보가 등록되지 않고, 그렇게 빠진
+blob 을 찾는 경로가 `sweep` 뿐입니다. `orphan` 도 뺄 수 없습니다 — 큐를 비우는 경로가
+그것뿐이라 빼면 후보가 삭제 1 건당 1 행씩 쌓입니다.
+
+Helm 으로 배포하셨다면 차트가 이 둘을 렌더에서 거부합니다. 설정은 차트 README 의
+"GC 단계와 두 CronJob" 절입니다.
 
 ##### 주기를 정하는 기준
 
@@ -767,7 +772,9 @@ curl -s "http://localhost:8080/_api/gc/history" -H "Authorization: Bearer $GC_TO
 이 값이 용량 여유에 비해 작다면 늦추는 편이 이득입니다.
 
 > `dry_run=true`로 회수 대상 수를 먼저 확인하는 방법은 이 판단에 쓰지 마십시오.
-> 그 조회도 같은 전수 스캔을 돕니다 — 알아보려고 비용을 그대로 치르게 됩니다.
+> `phases` 를 생략한 `dry_run` 은 `orphan` 의 **후보 큐**를 세므로, `sweep` 이 찾는
+> 「후보 등록에서 빠진 blob」이 애초에 그 수에 없습니다. 반대로 `phases=sweep` 을 붙이면
+> 세어 보려고 전량 스캔 비용을 그대로 치릅니다.
 > 이미 지나간 실행 이력을 보는 편이 공짜입니다.
 
 정의되지 않은 단계 이름은 `400`으로 거절합니다. 조용히 무시하면 오타 하나로 의도한
@@ -776,8 +783,11 @@ curl -s "http://localhost:8080/_api/gc/history" -H "Authorization: Bearer $GC_TO
 실행된 단계는 완료 로그의 `phases` 필드에 남습니다. `deleted_blobs=0`이 회수할 대상이
 없어서인지 해당 단계를 돌리지 않아서인지 이 필드로 구분할 수 있습니다.
 
-Helm으로 배포하셨다면 `gc.phases`와 `gc.fullSweep`으로 두 개의 CronJob을 나눌 수 있습니다.
-설정 방법은 차트 README의 "GC가 오래 걸린다면 단계를 나누십시오"를 참고하십시오.
+Helm 으로 배포하셨다면 **기본값은 CronJob 하나가 넷을 다 도는 것**입니다
+(`gc.phases: "multipart,orphan,purge,sweep"` · `gc.fullSweep.enabled: false`). `sweep` 이
+오래 걸리기 시작하면 `gc.phases` 를 `""` 로 두고 `gc.fullSweep.enabled: true` 로 떼어,
+주간 Job 이 `multipart,orphan,purge` 를 월간 Job 이 `sweep` 을 돌게 합니다.
+설정은 차트 README의 "GC 단계와 두 CronJob" 절입니다.
 
 #### `GET /_api/whoami`
 
@@ -879,8 +889,10 @@ GC가 미완료 멀티파트 업로드를 만료로 보는 기준은 `config.mul
 인증을 거는 것보다 표면 자체를 없애는 편이 확실합니다 — 특히 서비스가 `NodePort`로
 노드 IP에 직접 열려 있는 경우입니다.
 
-끄면 `/_ui`, `/_api/auth-mode`, `/_api/stats`, `/_api/buckets`, `/_api/backends`,
-`/_api/blobs/{hash}`, `/_api/whoami`, `/_api/config-effective` 에 핸들러가 붙지 않습니다.
+끄면 `/_ui`, `/_api/auth-mode`, `/_api/stats`, `/_api/buckets`,
+`/_api/buckets/{bucket}/objects`, `/_api/buckets/{bucket}/object-versions`,
+`/_api/backends`, `/_api/blobs/{hash}`, `/_api/whoami`, `/_api/config-effective` 에
+핸들러가 붙지 않습니다.
 응답 코드는 인증 설정에 따라 갈립니다 —
 인증이 꺼져 있으면 `404`, 켜져 있으면 인증 미들웨어가 라우팅보다 먼저 걸러 `403`입니다.
 **어느 쪽이든 유효한 자격증명으로도 응답하지 않습니다.**
@@ -921,10 +933,11 @@ curl -s http://localhost:8080/_internal/metrics \
 **`metricsToken` 이 비면** auth 를 켠 배포에서는 `/_admin/*`·GC 와 같이 `401` 로 닫히고
 (이미지 `0.1.24` 이상), NoAuth 배포에서는 무인증으로 열립니다. 후자는 기동 시 경고가 뜹니다.
 
-**노출되는 지표는 `cas_*` 13종입니다.** 타입·단위와 각 값이 무엇을 보는지(특히
+**노출되는 지표는 `cas_*` 19종입니다.** 타입·단위와 각 값이 무엇을 보는지(특히
 `cas_db_pool_*` 가 어느 풀을 보고하는지)는 차트 README 의 "메트릭 스크레이프" 절에 표로
-정리했습니다. `cas_anonymous_get_total` 하나만 라벨(`reason`)을 답니다. 같은 엔드포인트에
-`axum_http_*` 3종이 함께 나오고 이쪽은 라벨을 답니다.
+정리했습니다. 라벨이 붙는 것은 `cas_anonymous_get_total`(`reason`·`cause`)과
+`cas_gc_last_*`(`phase`) 뿐입니다. 같은 엔드포인트에 `axum_http_*` 3종이 함께 나오고
+이쪽은 `endpoint`/`method`/`status` 라벨을 답니다.
 
 먼저 볼 값 셋만 여기 적습니다.
 
@@ -947,6 +960,12 @@ curl -s http://localhost:8080/_internal/metrics \
 
 `unsigned` 와 `signed_invalid` 가 끄는 순간 깨질 소비자입니다. **둘 다 늘지 않는 기간을
 확인한 뒤에 내리십시오.** `false` 로 두면 이 카운터는 늘지 않습니다.
+
+`signed_invalid` 는 `cause` 라벨로 한 겹 더 갈립니다(이미지 `0.1.25` 이상) — 키를 새로
+발급할 일인지(`key_expired`), 클라이언트 배선이 틀린 것인지(`signature_mismatch`), 그 키가
+이 배포에 없는 것인지(`unknown_key`). 나머지 두 `reason` 에는 `cause="none"` 이 붙습니다.
+**라벨이 붙으면서 계열이 갈라지므로, 업그레이드 구간을 지나는 `increase()` 는
+`sum by (reason)` 으로 감싸십시오.**
 
 ### 스크레이프 배선
 

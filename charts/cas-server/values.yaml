@@ -6,16 +6,22 @@
 #
 # ── 문서 ─────────────────────────────────────────────────────────────────────
 #   아키텍처 (스토리지 모델·백엔드·API 명세)
-#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.31/charts/cas-server/docs/architecture.md
+#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.32/charts/cas-server/docs/architecture.md
 #   사용법 (배포·키 관리·AWS CLI/boto3 예제)
-#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.31/charts/cas-server/docs/usage.md
+#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.32/charts/cas-server/docs/usage.md
 #   차트 README
-#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.31/charts/cas-server/README.md
+#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.32/charts/cas-server/README.md
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── 이미지 ────────────────────────────────────────────────────────────────────
 image:
   repository: int2jieun/cas-server # Docker Hub에 미리 빌드된 이미지 사용
+  # **0.1.25 미만으로는 내릴 수 없다.** 그 버전의 마이그레이션이 DB 에 적용되고 나면
+  # 이전 이미지가 _sqlx_migrations 대조에서 기동을 거부한다 — 스키마 호환과 무관하다.
+  # 되돌리려면 업그레이드 전 pg_dump 스냅샷을 복원해야 한다(CHANGELOG 0.1.32).
+  #
+  # 아래 둘은 그 하한 **아래**의 이야기다. 스냅샷을 복원해 실제로 내려가는 경우에만 쓴다.
+  #
   # 0.1.17 미만으로 내리려면 livenessProbe/startupProbe의 path를
   # /_internal/health로 함께 되돌릴 것 — 아래 프로브 섹션 주석 참고.
   #
@@ -23,7 +29,7 @@ image:
   #  - 해시별 쓰기 락 테이블의 즉시 회수. GC 실행 시에만 회수되므로,
   #    gc.enabled: false 배포에서는 유휴 바닥값이 상승한다 (gc 섹션 주석 참고)
   #  - auth.metricsToken. 그 토큰으로 스크레이프하면 401 이 된다
-  tag: "0.1.24"
+  tag: "0.1.25"
   # digest 로 핀하려면 여기에 넣으십시오 (`sha256:...`). 값이 있으면 tag 대신 이것이
   # 쓰이고, 렌더 결과가 `repository@sha256:...` 가 됩니다.
   #
@@ -161,8 +167,9 @@ config:
   # GC CronJob 과 함께 쓸 수 있다. 끄면 핸들러가 붙지 않는 것은 콘솔이 쓰는 경로들이고,
   # /_api/gc/* 는 별도 라우터에 있어 남는다. 실측(false 로 기동):
   #
-  #   막힘  /_ui  /_api/auth-mode  /_api/stats  /_api/buckets  /_api/backends
-  #         /_api/blobs/{hash}
+  #   막힘  /_ui  /_api/auth-mode  /_api/stats  /_api/buckets
+  #         /_api/buckets/{bucket}/objects  /_api/buckets/{bucket}/object-versions
+  #         /_api/backends  /_api/blobs/{hash}  /_api/whoami  /_api/config-effective
   #   200   /_api/gc/last-result  /_api/gc/history  /_api/gc/orphan-count
   #   200   /_internal/health  /_internal/metrics
   #
@@ -213,26 +220,30 @@ storage:
   # NFS 모드: 백엔드를 최소 한 개 정의해야 한다. mode=nfs 인데 비어 있으면 렌더가 실패한다.
   # 빈 목록으로 렌더를 통과시키면 백엔드 0개 ConfigMap 이 만들어지고 서버가 기동 시
   # panic 하는데, replicaCount: 1 + Recreate 조합에서 그것은 전면 장애다.
+  #
+  # 항목의 **앞 다섯 필드는 필수이고 비면 렌더가 거부한다.** 목록이 비지 않았어도 필드가
+  # 비면 조용히 어긋나기 때문이다 — 특히 storageClassName 을 빼면 PVC 가 클러스터 기본
+  # StorageClass 로 붙어 NFS 가 아닌 곳에 blob 이 쌓여도 install 이 성공한다.
   nfs:
     backends: []
-    # - id: nas1                     # storage_backends[].id — blobs.storage_backend_id 에 기록된다
-    #   name: nas1                   # 표시용 이름
-    #   mountPath: /mnt/nas1         # 컨테이너 안 마운트 경로
-    #   storageClassName: nfs-client # PVC 의 storageClassName
-    #   storage: 1Ti                 # PVC 요청 용량
-    #   pvcName: ""                  # 비우면 "{fullname}-{id}" 로 자동 생성
-    #   accessMode: ReadWriteMany    # PVC accessMode. 생략 시 ReadWriteMany
+    # - id: nas1                     # [필수] storage_backends[].id — blobs.storage_backend_id 에 기록된다
+    #   name: nas1                   # [필수] 표시용 이름
+    #   mountPath: /mnt/nas1         # [필수] 컨테이너 안 마운트 경로
+    #   storageClassName: nfs-client # [필수] PVC 의 storageClassName
+    #   storage: 1Ti                 # [필수] PVC 요청 용량
+    #   pvcName: ""                  # [선택] 비우면 "{fullname}-{id}" 로 자동 생성
+    #   accessMode: ReadWriteMany    # [선택] PVC accessMode. 생략 시 ReadWriteMany
 
   # S3 모드: 자격증명은 secrets 섹션에서 Secret으로 주입
   s3:
-    endpoint: ""
-    bucket: ""        # TODO: 실제 버킷 이름으로 변경
+    endpoint: ""      # 비우면 AWS 기본 엔드포인트. S3 호환 스토리지는 채울 것
+    bucket: ""        # [필수] 미리 만들어 둔 버킷 이름. 차트는 버킷을 만들지 않는다
     region: ""        # S3 호환 스토리지의 경우 region은 임의값 가능
     # 비우면 서버가 "cas/" 를 쓴다. 버킷 루트에 쓰는 선택지는 없다.
     # lifecycle 규칙이나 버킷 탐색을 할 때 이 실효 프리픽스를 기준으로 삼을 것
     # (README 의 "오브젝트 스토리지 lifecycle 규칙" 절 참고).
     keyPrefix: ""
-    allowHttp: true   # S3 호환 스토리지에서 HTTP 사용 시 true로 설정 (예: MinIO 로컬 배포)      
+    allowHttp: true   # S3 호환 스토리지에서 HTTP 사용 시 true로 설정 (예: MinIO 로컬 배포)
 
 # ── 외부 DB 접속 정보 ─────────────────────────────────────────────────────────
 externalDatabase:
@@ -273,6 +284,7 @@ secrets:
   # adminToken 은 폐기돼 차트에서 없어졌습니다. 이 값을 주셔도 아무 데도 쓰이지 않습니다.
   # 이미 Secret 에 auth-admin-token 키를 들고 계시면 서버가 무시했다고 기동 로그에
   # 남깁니다 — 회전할 때 함께 지우십시오. 자세한 것은 CHANGELOG 0.1.31.
+
   # GC(POST /_internal/gc, GET /_api/gc/*) 전용 Bearer 토큰. 이 토큰으로 /_admin/* 은
   # 열리지 않으므로 GC CronJob 에는 이것을 쓰십시오. 켜기/끄기 값은 없습니다 —
   # Secret 에 auth-gc-token 이 있는지가 그대로 스위치입니다.
@@ -545,39 +557,43 @@ serviceAccount:
 # 이미지 0.1.18 이상은 요청이 끝날 때 즉시 회수하므로 이 완화가 필요 없다.
 gc:
   enabled: true
-  # cron 표현식 — 매주 일요일 새벽 2시 : 0 2 * * 0 — 분 시 일 월 요일(0=일요일).
-  schedule: "0 2 * * 0" 
-  # Job이 이 시간(초) 안에 완료되지 않으면 강제 종료        
+  # cron 표현식 — 분 시 일 월 요일(0=일요일).
+  # **UTC 다** (차트가 timeZone 을 렌더하지 않는다). 기본값은 일요일 02:00 UTC 이고
+  # UTC+9 에서는 일요일 오전 11 시다.
+  schedule: "0 2 * * 0"
+  # Job이 이 시간(초) 안에 완료되지 않으면 강제 종료
   activeDeadlineSeconds: 7200     # 블롭 많을 수 있으니 2시간으로 여유
 
-  # 이 CronJob 이 돌릴 GC 단계. 쉼표로 구분: multipart, orphan, purge.
-  # 빈 값이면 세 단계 모두 — 이 키가 없던 때와 같은 동작이다.
+  # 이 CronJob 이 돌릴 GC 단계. 쉼표로 구분.
   #
-  # 세 단계의 비용이 크게 다르다. blobs 200만 / object_versions 358만 환경에서 GC 를
-  # 실제로 돌려 완료 로그의 ms_* 로 받은 값이다.
+  # 이미지 0.1.20 이상이 이 파라미터를 해석하고, sweep 은 0.1.25 이상이다. 낮은
+  # 이미지에 보내면 서버가 400 으로 거절하고 그 Job 이 실패한다. 차트가 image.tag 를
+  # 핀하므로 그 값을 덮어 쓰는 경우에만 해당한다.
   #
-  #   multipart  2~5 ms        만료된 미완료 멀티파트의 파트 회수
-  #   orphan     13,729 ms     참조가 사라진 blob 물리 삭제
-  #   purge      213~319 ms    보존 기간 지난 soft-delete 레코드 삭제
+  #   multipart  만료된 미완료 멀티파트의 파트 회수
+  #   orphan     회수 후보 큐를 확인해 blob 물리 삭제. O(삭제 건수)
+  #   purge      보존 기간 지난 soft-delete 레코드 삭제
+  #   sweep      blobs 전량 안티조인. O(테이블 크기)
   #
-  # multipart,purge 편성은 324 ms, 전 단계는 13.9 초였다 — 43배다.
+  # 기본값은 넷 다이고, CronJob 하나가 전부 돈다 — 이 키가 없던 때와 같은 동작이다.
+  # **sweep 이 오래 걸리기 시작하면** 여기서 sweep 을 빼고 아래 fullSweep 으로 옮긴다.
   #
-  # orphan 만 blobs 전량을 훑으므로 데이터가 늘어나는 만큼 실행 시간이 함께 늘어난다.
-  # 나머지 둘은 인덱스로 처리되어 규모의 영향을 받지 않는다.
+  #   phases: "multipart,orphan,purge"   +   fullSweep.enabled: true
   #
-  # 주간 GC 가 오래 걸린다면 여기서 orphan 을 빼고 아래 fullSweep 으로 옮길 것.
-  # 서버가 모르는 이름을 적으면 Job 이 400 으로 실패한다 — 조용히 넘어가지 않는다.
-  #
-  #   phases: "multipart,purge"
-  phases: ""
+  # 렌더가 거부하는 조합 둘이다.
+  #   - orphan 이 없다 — 회수 후보 큐를 비우는 경로가 그것뿐이라, 빼면 회수가 돌지
+  #     않을 뿐 아니라 후보가 삭제 1 건당 1 행씩 쌓인다. fullSweep 은 대신이 되지 않는다
+  #   - sweep 이 여기에도 없고 fullSweep 도 꺼져 있다 — 전량 스캔이 사라진다
+  phases: "multipart,orphan,purge,sweep"
 
-  # orphan 스캔만 별도 주기로 돌리는 두 번째 CronJob.
+  # 전량 스캔(sweep)만 별도 주기로 돌리는 두 번째 CronJob.
+  # 이 Job 은 phases=sweep 을 보내므로 위 phases 의 이미지 요구가 그대로 걸린다.
   #
-  # 위 phases 에서 orphan 을 뺐다면 이것을 켜야 한다. 끄고 빼 두면 회수가 아예
-  # 돌지 않아 orphan blob 이 무한히 쌓인다.
+  # **켜지 않으면 렌더가 거부한다**(위 phases 에 sweep 을 직접 넣은 경우는 제외).
+  # 이 Job 은 미뤄도 되는 것이 아니다 — 마지막 두 참조가 서로 다른 키에서 동시에
+  # 지워지면 후보가 등록되지 않고, 그것을 찾는 경로가 sweep 뿐이다.
   #
-  # 이 Job 은 항상 전 단계를 돈다. 두 schedule 이 겹치면 뒤에 걸린 쪽이 409 로
-  # 건너뛰어지므로 시각을 벌려 둘 것.
+  # 두 schedule 이 겹치면 뒤에 걸린 쪽이 409 로 건너뛰어지므로 시각을 벌려 둘 것.
   #
   # schedule 은 데이터 크기가 아니라 **회수 대상이 쌓이는 속도**로 정한다. 스캔 비용은
   # 회수할 blob 이 0건이든 4건이든 같기 때문이다 — O(테이블 크기)이지 O(대상 수)가 아니다.
@@ -589,11 +605,13 @@ gc:
   # 1회로 늦춘다. 미루는 비용은 (주기당 평균 deleted_blobs) x (평균 blob 크기) x (늘린
   # 배수) 만큼이 디스크에 더 남는 것이다.
   #
-  # dry_run=true 로 대상 수를 먼저 세어 보는 것은 이 판단에 쓰지 말 것 — 그 조회도 같은
-  # 전수 스캔을 돈다. 지나간 이력을 보는 편이 공짜다.
+  # dry_run=true 로 대상 수를 먼저 세어 보는 것은 이 판단에 쓰지 말 것 — 기본 편성의
+  # dry_run 은 후보 큐를 세므로 sweep 이 찾는 「등록에서 빠진 blob」이 그 수에 없다.
+  # 지나간 이력을 보는 편이 낫다.
   fullSweep:
     enabled: false
-    # 매월 1일 새벽 3시
+    # UTC 다. 이 기본값은 매월 1 일 03:00 UTC = UTC+9 의 정오다.
+    # **그대로 쓰지 말 것** — 업무 시간과 백업·덤프 일정을 피해 정한다.
     schedule: "0 3 1 * *"
     # 비우면 위 activeDeadlineSeconds 를 그대로 쓴다. 전수 스캔이 주기당 한 번으로
     # 몰리므로 주간보다 길게 잡아야 할 수 있다.

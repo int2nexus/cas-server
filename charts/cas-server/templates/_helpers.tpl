@@ -6,10 +6,15 @@ storage 설정 검증 — 렌더 시점에 막는다.
 updateStrategy: Recreate 조합에서는 전면 장애가 된다. 클러스터에 닿기 전에
 읽을 수 있는 메시지로 죽는 편이 낫다.
 
-두 가지를 본다:
+세 가지를 본다:
 1. mode 화이트리스트 — 오타("nsf")나 대소문자 불일치("NFS")는 아래 eq 비교를
    모두 빗나가 백엔드 0개로 **조용히** 렌더된다. install 도 성공하고 파드만 죽는다.
 2. nfs 백엔드 목록 — mode 가 nfs 인데 목록이 비면 같은 결과다.
+3. 각 nfs 백엔드의 필수 필드 — 목록이 비지 않았어도 항목의 필드가 비면 조용히 어긋난다.
+   가장 나쁜 것이 storageClassName 이다. 비우면 렌더가 `storageClassName: `(null)이 되고
+   쿠버네티스는 그것을 "지정 안 함"으로 읽어 **클러스터 기본 StorageClass** 로 PVC 를
+   붙인다 — NFS 가 아닌 곳에 blob 이 쌓여도 install 은 성공한다. id 가 비면 PVC 이름이
+   "{fullname}-" → trimSuffix 로 fullname 자체가 되어 다른 리소스와 충돌한다.
 
 모든 템플릿이 이것을 첫 줄에서 부른다. 한 곳만 가드하면 helm 은 다른 템플릿에서
 먼저 실패해 엉뚱한 위치를 가리킨다(0.1.23 까지 pvc.yaml:2 의 nil pointer 가 그것이었다).
@@ -22,6 +27,17 @@ updateStrategy: Recreate 조합에서는 전면 장애가 된다. 클러스터�
 {{- if eq $mode "nfs" }}
 {{- if not (.Values.storage.nfs).backends }}
 {{- fail "storage.mode=nfs 인데 storage.nfs.backends 가 비어 있습니다. 최소 한 개가 필요합니다:\n  storage:\n    nfs:\n      backends:\n        - id: nas1\n          name: nas1\n          mountPath: /mnt/nas1\n          storageClassName: nfs-client\n          storage: 1Ti" }}
+{{- end }}
+{{- range $i, $b := .Values.storage.nfs.backends }}
+{{- $missing := list }}
+{{- if not $b.id }}{{- $missing = append $missing "id" }}{{- end }}
+{{- if not $b.name }}{{- $missing = append $missing "name" }}{{- end }}
+{{- if not $b.mountPath }}{{- $missing = append $missing "mountPath" }}{{- end }}
+{{- if not $b.storageClassName }}{{- $missing = append $missing "storageClassName" }}{{- end }}
+{{- if not $b.storage }}{{- $missing = append $missing "storage" }}{{- end }}
+{{- if $missing }}
+{{- fail (printf "storage.nfs.backends[%d](id=%q) 에 %s 가 없습니다. 다섯 필드가 모두 필요합니다 — id · name · mountPath · storageClassName · storage. 비워 두면 렌더는 통과하고 조용히 어긋납니다: storageClassName 을 빼면 PVC 가 클러스터 기본 StorageClass 로 붙고(NFS 가 아닐 수 있습니다), id 를 빼면 PVC 이름이 다른 리소스와 충돌하며, storage 를 빼면 API 서버가 PVC 를 거절합니다. pvcName 과 accessMode 는 선택입니다." $i (toString $b.id) (join ", " $missing)) }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- end }}

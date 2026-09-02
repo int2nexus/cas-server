@@ -5,9 +5,9 @@ HTTP API를 제공한다.
 
 ## 문서
 
-- [아키텍처](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.31/charts/cas-server/docs/architecture.md)
+- [아키텍처](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.32/charts/cas-server/docs/architecture.md)
   — 스토리지 모델(CAS·dedup·GC), 백엔드 구성, S3 호환 API 명세, 에러 코드
-- [사용법](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.31/charts/cas-server/docs/usage.md)
+- [사용법](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.32/charts/cas-server/docs/usage.md)
   — 배포 절차, 웹 UI 키 관리, AWS CLI/boto3 예제, 내부 API
 - [변경 이력](CHANGELOG.md)
   — 버전별 동작 변경·마이그레이션·설정 키. 각 항목은 해당 GitHub Release 본문과 동일하다
@@ -49,7 +49,7 @@ kubectl apply -f sealed-secret.yaml -n <namespace>
 배포에서 그 값이 없으면 스크레이프가 `401`** 이다. 용도는 [메트릭 스크레이프](#메트릭-스크레이프) 참고.
 
 `secrets.secretMasterKey`를 비우면 NoAuth 모드(인증 없음, 내부망 전용)로 동작한다. 상세 절차와 값 교체
-방법은 [`examples/sealed-secret.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.31/charts/cas-server/examples/sealed-secret.yaml) 참고.
+방법은 [`examples/sealed-secret.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.32/charts/cas-server/examples/sealed-secret.yaml) 참고.
 
 ## 설치
 
@@ -57,7 +57,7 @@ kubectl apply -f sealed-secret.yaml -n <namespace>
 helm install cas-server int2nexus/cas-server -n <namespace> -f values-prod.yaml
 ```
 
-`values-prod.yaml`은 직접 작성하거나 [`examples/values-prod.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.31/charts/cas-server/examples/values-prod.yaml)을
+`values-prod.yaml`은 직접 작성하거나 [`examples/values-prod.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.32/charts/cas-server/examples/values-prod.yaml)을
 내려받아 값을 채운 뒤 사용하세요(이 레포를 clone했다면 `charts/cas-server/examples/values-prod.yaml`).
 
 ### S3 / MinIO 모드 values 예시
@@ -148,8 +148,8 @@ storage:
 | `serviceAccount.annotations` | `{}` | `create: true` 일 때 SA 에 붙일 애노테이션. IRSA · Workload Identity 설정 자리 |
 | `resources.limits.memory` | `6Gi` | 2026-08-05 OOM 대응으로 올린 값. **당분간 유지할 것** — 하향 전제는 [values.yaml](values.yaml)의 `resources` 주석 참고 |
 | `gc.enabled` | `true` | GC CronJob 활성화. 초기 마이그레이션 중에는 `false` 권장. **이미지 `0.1.17` 이하에서는 끄면 메모리 회수 경로도 사라진다** (아래 참고) |
-| `gc.phases` | `""` | 이 CronJob 이 돌릴 GC 단계. 쉼표 구분 `multipart`·`orphan`·`purge`, 비우면 전부. `orphan` 만 데이터 크기를 따라간다 (아래 참고) |
-| `gc.fullSweep.enabled` | `false` | 전 단계를 도는 두 번째 CronJob. `gc.phases` 에서 `orphan` 을 뺐다면 **반드시 켤 것** |
+| `gc.phases` | `"multipart,orphan,purge,sweep"` | 이 CronJob 이 돌릴 GC 단계. 쉼표 구분. **기본값은 넷 다라 CronJob 하나가 전부 돈다.** `""` 로 두면 서버 기본값(`sweep` 을 뺀 셋)이 적용된다 — `sweep` 을 `fullSweep` 으로 뗄 때 쓰는 값이다. `sweep` 만 데이터 크기를 따라간다 (아래 참고). **`orphan` 을 빼면 렌더가 거부한다** |
+| `gc.fullSweep.enabled` | `false` | 전량 스캔(`sweep`)만 도는 두 번째 CronJob. **켜지 않으면 렌더가 거부한다**(`gc.phases` 에 `sweep` 을 직접 넣은 경우는 제외). `schedule` 은 UTC 이고 기본값을 그대로 쓰지 말 것 |
 | `config.multipartTtlSecs` | `86400` | GC 가 미완료 멀티파트를 만료로 보는 기준(초). **운영에서 줄이지 말 것** — 진행 중인 업로드가 `5xx` 로 실패한다 |
 | `config.consoleEnabled` | `true` | `/_ui` 와 콘솔용 `/_api/*` 마운트 여부. `false` 여도 `/_api/gc/*` 는 남으므로 GC CronJob 은 그대로 동작한다 |
 | `replicaCount` | `1` | **1을 유지할 것.** 늘리면 GC와 PUT 사이 durability 보호가 깨진다 (아래 참고) |
@@ -216,9 +216,14 @@ kubectl rollout restart -n <namespace> deploy/<fullname>   # 릴리스명이 아
 | `cas_blob_put_bytes_total` | counter | 바이트 | |
 | `cas_gc_deleted_blobs_total` | counter | 건수 | **GC 가 한 번 돌아야 등록됩니다** |
 | `cas_gc_freed_bytes_total` | counter | 바이트 | 〃 |
-| `cas_anonymous_get_total` | counter | 건수 | **`reason` 라벨이 붙습니다** — `unsigned` · `signed_valid` · `signed_invalid`. `anonymousGet` 을 끄기 전에 깨질 소비자를 세는 값입니다 (아래 참고). `anonymousGet: false` 면 늘지 않습니다. 이미지 `0.1.24` 이상 |
+| `cas_anonymous_get_total` | counter | 건수 | **`reason`·`cause` 라벨이 붙습니다.** `reason` 은 `unsigned` · `signed_valid` · `signed_invalid`, `cause` 는 `signed_invalid` 의 원인을 한 겹 더 가릅니다(나머지 둘은 `none`). `anonymousGet` 을 끄기 전에 깨질 소비자를 세는 값입니다 (아래 참고). `reason` 은 이미지 `0.1.24`, `cause` 는 `0.1.25` 이상 |
+| `cas_gc_last_ran_at_seconds{phase}` | gauge | 유닉스 초 | 그 단계를 포함한 마지막 성공 실행의 시각. **파드가 재기동해도 남습니다**(기동 시 이력에서 되살립니다). 이미지 `0.1.25` 이상 |
+| `cas_gc_last_duration_ms{phase}` | gauge | ms | 마지막 실행의 단계별 소요. 재기동 뒤 첫 실행까지 값이 없습니다 |
+| `cas_gc_last_reclaimed_blobs{phase}` | gauge | 건수 | 그 단계가 회수한 blob 수. `orphan`·`sweep` 에만 나갑니다. **`sweep` 쪽이 후보 등록 누락을 보는 값입니다** |
+| `cas_gc_last_status` | gauge | — | `0`=성공 `1`=오류 있음 `2`=실행 중. **`gc_runs.status` 와 다릅니다** — `errors > 0` 인 실행도 `1` 입니다 |
+| `cas_gc_candidates` / `cas_gc_candidate_bytes` | gauge | 건수 / 바이트 | 회수 후보 큐. GC 실행이 끝난 시점의 값이라 `orphan` 이 큐를 비운 직후를 가리킵니다 |
 
-**`cas_anonymous_get_total` 을 빼면 `cas_*` 에는 라벨이 없습니다.**
+**라벨이 붙는 `cas_*` 는 `cas_anonymous_get_total`(`reason`·`cause`)과 `cas_gc_last_*`(`phase`) 뿐입니다.**
 같은 엔드포인트에 `axum_http_requests_total` ·
 `axum_http_requests_duration_seconds` · `axum_http_requests_pending` 이 함께 나오고
 이쪽은 `endpoint`/`method`/`status` 라벨을 답니다(경로는 라우트 패턴으로 정규화되므로
@@ -353,41 +358,50 @@ Secret 전체를 마운트하면 파일 이름이 키 이름이 되므로 경로
 401 이 됩니다. 차트는 `prometheus.io/*` 애노테이션을 붙이지 않으므로, 과거에 손으로 붙여
 두었다면 제거하십시오. 남아 있으면 위 job 과 별개로 계속 401 을 냅니다.
 
-## GC가 오래 걸린다면 단계를 나누십시오
+## GC 단계와 두 CronJob
 
-GC는 세 단계로 나뉘고 비용이 크게 다릅니다. `orphan` 만 `blobs` 전체를 훑기 때문에 데이터가
-늘어나는 만큼 실행 시간이 함께 늘어납니다. 나머지 둘은 인덱스로 처리되어 규모의 영향을
-받지 않습니다.
+GC는 네 단계이고 `sweep` 만 `blobs` 전체를 훑습니다. 나머지 셋은 인덱스나 후보 큐로
+처리되어 규모의 영향을 받지 않습니다.
 
-blobs 200만 / object_versions 358만 환경에서 완료 로그의 `ms_*` 로 받은 값입니다.
+| 단계 | 무엇을 | 비용 |
+|---|---|---|
+| `multipart` | 만료된 미완료 멀티파트의 파트 회수 | 인덱스 |
+| `orphan` | 회수 후보 큐를 확인해 blob 물리 삭제 | O(삭제·덮어쓰기 건수) |
+| `purge` | 보존 기간 지난 삭제 레코드 정리 | 인덱스 |
+| `sweep` | `blobs` 전량 안티조인 | **O(테이블 크기)** |
 
-| 단계 | `ms_*` |
-|---|---|
-| `multipart` | 2~5 |
-| `orphan` | **13,729** |
-| `purge` | 213~319 |
-
-`gc.phases` 로 주간 CronJob 에서 `orphan` 을 빼고, `gc.fullSweep` 으로 월간에 돌리면
-주간 소요가 크게 줄어듭니다. 위 환경에서 `multipart,purge` 편성은 324 ms 로 끝났습니다.
+기본값은 CronJob 하나가 넷을 다 도는 것입니다. `sweep` 이 오래 걸리기 시작하면 이렇게 뗍니다.
 
 ```yaml
 gc:
-  schedule: "0 2 * * 0"
-  phases: "multipart,purge"
+  schedule: "0 2 * * 0"       # UTC. 주간 — multipart, orphan, purge
+  phases: ""
   fullSweep:
     enabled: true
-    schedule: "0 3 1 * *"
+    schedule: "0 3 1 * *"     # UTC. 월간 — sweep 만. 이 값을 그대로 쓰지 말 것
 ```
 
-**`orphan` 을 빼면서 `fullSweep` 을 켜지 않으면 회수가 아예 돌지 않습니다.** 차트 `0.1.28`
-부터 그 조합은 렌더에서 거부합니다 — `helm install`·`upgrade` 가 사유와 함께 실패합니다.
+`schedule` 은 둘 다 UTC 입니다. `0 3 1 * *` 는 UTC+9 에서 정오이고, 그 시각에 전량 스캔이
+돌면 같은 인스턴스의 다른 데이터베이스 페이지 캐시까지 밀려납니다. 백업·덤프 일정과
+겹치지 않는 시각으로 정하십시오.
+
+`gc.fullSweep` 은 미뤄도 되는 Job 이 아닙니다. 같은 내용을 가리키던 마지막 두 참조가 서로
+다른 키에서 동시에 지워지면 후보가 등록되지 않고, 그렇게 빠진 blob 을 찾는 경로가 `sweep`
+뿐입니다.
+
+`helm install`·`upgrade` 가 거부하는 조합 둘입니다.
+
+- `gc.phases` 에 `orphan` 이 없다 — 큐를 비우는 경로가 그것뿐입니다.
+- `fullSweep` 이 꺼져 있고 `gc.phases` 에도 `sweep` 이 없다 — 전량 스캔이 사라집니다.
+
 회수를 아예 돌리지 않을 의도라면 `gc.enabled: false` 로 두십시오.
 
 주기는 데이터 크기가 아니라 **회수 대상이 쌓이는 속도**로 정하십시오. 스캔 비용은 회수할
 blob 이 0건이든 수천 건이든 같습니다. 판단 기준과 미루는 비용 계산은
 [docs/usage.md](docs/usage.md) 의 "주기를 정하는 기준" 을 참고하십시오.
 
-이미지 `0.1.20` 이상이 필요합니다. 그 이하는 `phases` 를 무시하고 전 단계를 돕니다.
+`gc.phases` 는 이미지 `0.1.20` 이상이 해석합니다. **`sweep` 은 `0.1.25` 이상**이라,
+그보다 낮은 이미지에 보내면 서버가 `400` 으로 거절하고 그 Job 이 실패합니다.
 
 ## 관리 API 자격증명 (이미지 `0.1.21` 이상)
 
@@ -811,11 +825,9 @@ serviceAccount:
 
 Helm 은 쓰이지 않는 값에 오류를 내지 않습니다. 그래서 `values.yaml` 에 키를 선언하고
 템플릿에서 참조하지 않으면 **설정해도 조용히 무시되고, 운영자는 고쳤다고 믿습니다.**
-이 게이트가 실제로 잡은 것은 셋입니다 — cas-server 의 `serviceAccount.*`, nexus-server 의
-`serviceAccount.*`, 그리고 과거 cas-server 의 `terminationGracePeriodSeconds`.
-`config.requestTimeoutSecs`(문서가
-언급하는데 미렌더)와 `serviceAccount.*`, nexus-server 의 `serviceAccount.*`,
-그리고 과거 cas-server 의 `terminationGracePeriodSeconds`.
+이 게이트가 실제로 잡은 것은 넷입니다 — cas-server 의 `config.requestTimeoutSecs`(문서가
+언급하는데 미렌더)와 `serviceAccount.*`, nexus-server 의 `serviceAccount.*`, 그리고 과거
+cas-server 의 `terminationGracePeriodSeconds`.
 
 ```bash
 # 저장소 기준입니다 — 이 스크립트는 차트 tgz 에 들어가지 않습니다.

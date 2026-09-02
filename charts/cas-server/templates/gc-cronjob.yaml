@@ -4,12 +4,8 @@
 {{- /*
   GC CronJob 은 하나 또는 둘이다.
 
-  단계별 비용이 3~4자릿수 다르다(usage.md "단계를 나눠 실행하기" 참고). orphan 스캔만
-  blobs 전량을 훑어 규모를 따라가고, 나머지 둘은 인덱스가 덮는다. fullSweep 을 켜면
-  주 CronJob 에서 비싼 단계를 빼고 별도 주기로 돌릴 수 있다.
-
-  fullSweep 이 꺼져 있고 gc.phases 가 비어 있으면 CronJob 하나가 전 단계를 돈다 —
-  이 값들이 없던 때와 같은 동작이다.
+  네 단계 중 sweep 만 blobs 전량을 훑어 규모를 따라간다. 기본값은 CronJob 하나가 넷을
+  다 도는 것이고, fullSweep 을 켜면 sweep 만 별도 주기로 뗄 수 있다.
 */}}
 {{- /*
   gc.phases 검증. 잘못된 값은 여기서 막는다 — 통과시키면 CronJob 이 처음 도는 새벽에야
@@ -20,24 +16,37 @@
 {{- $phases := nospace (default "" .Values.gc.phases) }}
 {{- if $phases }}
 {{- range $p := splitList "," $phases }}
-{{- if not (has $p (list "multipart" "orphan" "purge")) }}
-{{- fail (printf "gc.phases 에 알 수 없는 단계 %q 가 있습니다. multipart, orphan, purge 중에서 고르십시오 (예: \"multipart,purge\"). 비워 두면 세 단계 모두 실행합니다." $p) }}
+{{- if not (has $p (list "multipart" "orphan" "purge" "sweep")) }}
+{{- fail (printf "gc.phases 에 알 수 없는 단계 %q 가 있습니다. multipart, orphan, purge, sweep 중에서 고르십시오 (예: \"multipart,purge\"). 비워 두면 sweep 을 뺀 셋을 실행합니다." $p) }}
 {{- end }}
 {{- end }}
 {{- end }}
 {{- /*
-  orphan 이 어느 Job 에서도 돌지 않는 조합을 막는다.
-  전에는 매 실행 경고만 남겼는데, 로그 보존 창이 짧은 환경에서 경고 한 줄은 없는 것과 같다.
-  그리고 오타(`orphn`)는 렌더가 거부하는데 의미상 더 위험한 이 조합은 통과해서, 가드가
-  일관되지 않았다(2026-08-21 고객 리포트 §2-3).
-  "성공했는데 아무 일도 안 한 상태" 가 가장 비싼 실패다 — 회수가 영영 돌지 않는다.
+  회수 단계 둘을 각각 지키는 가드다. 경고가 아니라 렌더 거부인 이유는 로그 보존 창이
+  짧은 환경에서 경고 한 줄이 없는 것과 같기 때문이다(2026-08-21 고객 리포트 §2-3 이
+  요청한 형태). 두 단계를 나눈 이유는 CHANGELOG 0.1.32 에 있다.
 */}}
-{{- if and $phases (not (contains "orphan" $phases)) (not .Values.gc.fullSweep.enabled) }}
-{{- fail "gc.phases 에서 orphan 을 빼면 gc.fullSweep.enabled 를 켜야 합니다. 둘 다 아니면 참조가 사라진 blob 이 회수되지 않고 계속 쌓입니다. 회수를 아예 돌리지 않으실 의도라면 gc.enabled: false 로 두십시오." }}
+{{- /* 가드 1 — `orphan` 이 어느 Job 에서도 돌지 않는 조합. */}}
+{{- if and $phases (not (has "orphan" (splitList "," $phases))) }}
+{{- fail "gc.phases 에 orphan 이 없습니다. 이 이미지부터 회수 후보 큐를 확인하는 단계가 orphan 이고, 큐를 비우는 경로가 그것뿐입니다 — 빼면 회수가 돌지 않을 뿐 아니라 후보가 삭제 1 건당 1 행씩 계속 쌓입니다. gc.fullSweep 은 대신이 되지 않습니다(그쪽은 sweep 만 돕니다). 회수를 아예 돌리지 않으실 의도라면 gc.enabled: false 로 두십시오." }}
+{{- end }}
+{{- /*
+  가드 2 — `sweep` 이 어느 Job 에서도 돌지 않는 조합. 기본값(빈 gc.phases)에 sweep 이
+  없으므로 fullSweep 을 켜지 않으면 전량 스캔이 사라진다.
+
+  fullSweep 을 기본으로 켜지 않는 이유: 이 스캔은 무겁고 도는 시각이 결정적이라,
+  기본으로 켜면 아무도 고르지 않은 시각에 생긴다(2026-08-31 고객 리포트 §3-1).
+*/}}
+{{- if and (not .Values.gc.fullSweep.enabled) (not (and $phases (has "sweep" (splitList "," $phases)))) }}
+{{- fail "gc.fullSweep.enabled 를 켜거나 gc.phases 에 sweep 을 넣으십시오. 이 이미지부터 orphan 은 회수 후보 큐만 확인하므로, sweep(blobs 전량 스캔)이 어디에서도 돌지 않으면 후보 등록이 빠진 blob 을 찾아낼 경로가 없어 조용히 쌓입니다. fullSweep 의 schedule 은 기본값을 그대로 쓰지 마시고 백업·덤프 일정과 겹치지 않는 시각으로 정하십시오 — UTC 로 해석됩니다." }}
 {{- end }}
 {{- $jobs := list (dict "suffix" "" "schedule" .Values.gc.schedule "phases" $phases "deadline" .Values.gc.activeDeadlineSeconds) }}
 {{- if .Values.gc.fullSweep.enabled }}
-{{- $jobs = append $jobs (dict "suffix" "-full" "schedule" .Values.gc.fullSweep.schedule "phases" "" "deadline" (default .Values.gc.activeDeadlineSeconds .Values.gc.fullSweep.activeDeadlineSeconds)) }}
+{{- /*
+  `sweep` 만 넘긴다. 빈 값을 넘기면 `orphan` 이 여기서도 돌아 큐를 비우는 주기가
+  월간이 된다.
+*/}}
+{{- $jobs = append $jobs (dict "suffix" "-full" "schedule" .Values.gc.fullSweep.schedule "phases" "sweep" "deadline" (default .Values.gc.activeDeadlineSeconds .Values.gc.fullSweep.activeDeadlineSeconds)) }}
 {{- end }}
 {{- range $job := $jobs }}
 ---
@@ -56,14 +65,19 @@ spec:
   # 같은 시각에 걸리면 서버가 409(GcAlreadyRunning)로 한쪽을 되돌린다 — 아래 스크립트가
   # 409를 정상 종료로 처리하므로 Job 이 실패로 남지는 않지만, 그 주기의 실행은 건너뛴다.
   # 두 schedule 이 겹치지 않게 잡을 것.
+  #
+  # 409 를 정상 종료로 읽어도 되는 것은 재시도가 없기 때문이다(아래 `backoffLimit`).
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
-      # Job 실패 시 최대 재시도 횟수
-      backoffLimit: 2
-      # Job이 이 시간 안에 완료되지 않으면 강제 종료
+      # 재시도하지 않는다. 재시도가 다시 트리거하면 시한 초과가 「Job 은 성공인데 GC 는
+      # 아직 돈다」 또는 「전량 스캔이 한 번 더 시작된다」로 끝난다(CHANGELOG 0.1.32).
+      # `restartPolicy: Never` 와 함께여야 한다 — `OnFailure` 는 kubelet 이 컨테이너를
+      # 다시 띄워 이 값과 무관하게 스크립트가 처음부터 돈다.
+      backoffLimit: 0
+      # 재시도가 없으므로 이 예산은 한 번의 실행만 덮는다.
       activeDeadlineSeconds: {{ $job.deadline }}
       template:
         metadata:
@@ -76,7 +90,8 @@ spec:
           serviceAccountName: {{ include "cas-server.serviceAccountName" $ }}
           # 이 Job은 GC 엔드포인트를 curl로 치는 것뿐이다. 쿠버네티스 API를 부르지 않는다.
           automountServiceAccountToken: {{ $.Values.serviceAccount.automountToken }}
-          restartPolicy: OnFailure
+          # 위 backoffLimit 참고. OnFailure 로 두면 재시작이 막히지 않는다.
+          restartPolicy: Never
           containers:
           - name: gc-trigger
             image: "{{ $.Values.gc.image.repository }}:{{ $.Values.gc.image.tag }}"
@@ -118,7 +133,12 @@ spec:
               echo "이전 실행: ${prev_id:-<none>}"
 
               # 2) GC 트리거 — 서버는 백그라운드로 실행하고 202를 즉시 반환한다.
-              echo "돌 단계: {{ $job.phases | default "전체" }}"
+              #
+              # gc.phases 가 비면 아래 curl 이 phases 파라미터를 아예 붙이지 않고, 서버가
+              # 자기 기본값(sweep 을 뺀 셋)을 쓴다. 차트 기본값은 sweep 까지 넷이라 그
+              # 경우 이 자리에 그 넷이 그대로 찍힌다 — 두 기본값이 다르므로 어느 쪽인지
+              # 로그에서 갈라 읽을 수 있어야 한다.
+              echo "돌 단계: {{ $job.phases | default "multipart,orphan,purge (phases 미지정 — 서버 기본값이라 sweep 없음)" }}"
               code=$(curl -sS --max-time 30 -o /tmp/resp -w '%{http_code}' -X POST "$@" "$BASE/_internal/gc?dry_run=false{{ if $job.phases }}&phases={{ $job.phases }}{{ end }}")
               echo "트리거 응답: $code $(cat /tmp/resp 2>/dev/null)"
               if [ "$code" = "409" ]; then echo "이미 GC 실행 중 — 스킵"; exit 0; fi
