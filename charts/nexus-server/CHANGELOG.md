@@ -104,7 +104,9 @@ GET    /api/v1/admin/robots/{user_id}/tokens
 DELETE /api/v1/admin/robots/{user_id}/tokens/{token_id}
 ```
 
-토큰은 `nxr_` 로 시작하는 47자 문자열이고 `Authorization: Bearer` 에 그대로 넣습니다. **평문은 발급 응답에만 한 번 실립니다** — 목록에는 `token_id`·`label`·`expires_at`·`revoked_at`·`last_used_at` 만 나옵니다.
+토큰은 `nxr_` 로 시작하는 47자 문자열이고 `Authorization: Bearer` 에 그대로 넣습니다. **평문은 발급 응답에만 한 번 실립니다** — 목록에는 `token_id`·`label`·`expires_at`·`revoked_at`·`last_used_at`·`created_at` 과, `revoked_at`·`expires_at` 으로 계산한 `is_active` 가 나옵니다. 평문도 해시도 나가지 않습니다.
+
+> 이 목록은 `nexus-server-0.3.7` 이 발행된 뒤에 고쳤습니다 — 처음에는 앞의 다섯만 적고 「만 나옵니다」로 끝냈는데 실제 응답에는 둘이 더 있습니다. **발행된 릴리스 본문과 패키지에는 옛 문장이 그대로 있습니다.**
 
 **계정 1 : 토큰 N 입니다.** 새 토큰을 발급하고, `last_used_at` 으로 배포가 끝난 것을 확인한 뒤, 옛 토큰을 폐기하면 중단 없이 회전합니다.
 
