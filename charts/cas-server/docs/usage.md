@@ -433,8 +433,18 @@ print(resp["ResponseMetadata"]["HTTPHeaders"].get("x-cas-already-existed"))
 
 ### 업로드 최적화 — x-cas-hash 헤더
 
-파일의 BLAKE3 hash를 미리 알고 있는 경우 `x-cas-hash` 헤더로 전달하면,
-중복 파일일 때 body를 전송하지 않고 즉시 완료됩니다.
+파일의 BLAKE3 hash를 미리 알고 있는 경우 `x-cas-hash` 헤더로 전달하면, 중복 파일일 때
+서버가 **본문을 읽지 않고** 즉시 완료합니다.
+
+> **이 헤더는 무결성 검사가 아닙니다.** 그 해시의 블롭이 이미 있으면 서버는 본문을 읽지
+> 않으므로, 본문이 해시와 달라도 `200` 이고 이후 `GET` 은 먼저 저장돼 있던 내용을
+> 돌려줍니다. 대조는 **처음 보는 해시**일 때만 일어나고 그때 다르면 `400 InvalidDigest`
+> 입니다. 해시 계산은 보내는 쪽 책임입니다.
+>
+> 아래 예시는 `--data-binary` 로 본문을 함께 보냅니다. 서버가 이미 그 블롭을 갖고 있으면
+> 그 본문은 읽히지 않으므로, 전송량까지 줄이시려면 먼저
+> `HEAD /_api/blobs/{hash}`(이 문서 끝의 「블롭 dedup 사전 확인」)로 존재를 확인하고
+> 있으면 본문 없이 보내십시오.
 
 이것도 평범한 `PutObject` 입니다 — **`auth.anonymousGet` 은 `GET`/`HEAD` 에만 걸리므로 이
 요청은 서명해야 합니다.** `curl` 은 `--aws-sigv4` 로 직접 서명할 수 있습니다(curl `7.75`
@@ -565,6 +575,19 @@ s3.delete_object(Bucket="my-bucket", Key="path/to/file.bin")
 ## Presigned URL
 
 인증 없이 일시적으로 접근 가능한 URL을 생성합니다.
+
+> ⚠ **`auth.anonymousGet: true`(차트 기본값) 인 배포에서는 `GET`·`HEAD` presigned URL 의
+> 만료와 서명이 강제되지 않습니다.** 그 배포에서 `GET`/`HEAD /{버킷}/{키}` 는 익명 분기로
+> 먼저 통과하므로, **만료된 URL 도 서명이 틀린 URL 도 `200`** 입니다. 즉 다운로드 링크에
+> 건 유효 시간이 지켜지지 않고 그 URL 은 사실상 영구 링크입니다.
+>
+> 서명 검증은 돌지만 판정에 쓰이지 않고 계수에만 남습니다 —
+> `cas_anonymous_get_total{reason="signed_invalid",cause="presigned_expired"}`.
+>
+> **시간을 실제로 제한하시려면 `auth.anonymousGet: false` 로 두십시오.** 그러면 아래 표의
+> 코드가 그대로 적용됩니다. `PUT`·`DELETE` presigned 는 익명 대상이 아니므로
+> `anonymousGet` 과 무관하게 항상 검증됩니다.
+
 
 ```bash
 # 기본값 3600초, --expires-in으로 조정 가능
@@ -702,7 +725,19 @@ curl -s -X POST --aws-sigv4 "aws:amz:cas-default:s3" --user "$KEY_ID:$SECRET" \
 
 조회(`GET /_api/gc/*`)에는 `cas:ReadGc` 로 충분하고, 실행에는 `cas:RunGc` 가 필요합니다.
 
-GC가 이미 실행 중이면 `409 GcAlreadyRunning`이 반환됩니다.
+실행을 시작하면 `202` 와 함께 이번 실행의 `id` 가 나옵니다 — `{"status":"started","id":1234}`.
+그 `id` 로 `GET /_api/gc/history` 에서 자기 실행 하나만 짚으십시오. 최신 행을 보면 그 사이에
+낀 다른 실행을 자기 것으로 읽습니다(이미지 `0.1.26` 이상에서 `id` 가 실립니다).
+
+GC 가 이미 실행 중이면 `409 GcAlreadyRunning` 입니다. **이미지 `0.1.26` 부터는 다른 파드가
+락을 쥐고 있어 이 호출이 아무것도 시작하지 못한 경우도 `409` 입니다**(그 미만은 `202` 였고,
+부르는 쪽이 남의 실행을 자기 것으로 읽었습니다). 상태 코드를 보는 CronJob 이 있으면 `409`
+를 정상 종료로 다루십시오.
+
+`202` 인데 `id` 가 `null` 이면 **돌고 있는지 이 응답으로는 알 수 없다**는 뜻입니다. 서버는
+시작 신호를 1 초만 기다리고, 그 안에 판정이 오지 않으면 이 형태로 답합니다. 그때
+`last-result` 의 최신 행으로 판단하지 마시고 다시 트리거하십시오 — 이미 돌고 있으면 `409`
+로 끝나므로 안전합니다.
 
 #### 단계를 나눠 실행하기
 
@@ -776,6 +811,9 @@ curl -s "http://localhost:8080/_api/gc/history" -H "Authorization: Bearer $GC_TO
 > 「후보 등록에서 빠진 blob」이 애초에 그 수에 없습니다. 반대로 `phases=sweep` 을 붙이면
 > 세어 보려고 전량 스캔 비용을 그대로 치릅니다.
 > 이미 지나간 실행 이력을 보는 편이 공짜입니다.
+>
+> **`dry_run` 은 동기 실행입니다.** `phases=sweep` 을 붙이면 전량 스캔이 요청 안에서 돌아
+> `config.requestTimeoutSecs`(기본 120 초)에 걸립니다. 큰 배포에서 그 스캔은 분 단위입니다.
 
 정의되지 않은 단계 이름은 `400`으로 거절합니다. 조용히 무시하면 오타 하나로 의도한
 단계가 빠진 채 성공한 것처럼 보이기 때문입니다.
@@ -912,10 +950,21 @@ curl -s http://localhost:8080/_api/gc/last-result \
 curl -s "http://localhost:8080/_api/gc/history?limit=90" \
   -H "Authorization: Bearer $GC_TOKEN"
 
-# 고아 블롭 수
-curl -s http://localhost:8080/_api/gc/orphan-count \
+# 회수 후보 큐 (이미지 `0.1.26` 이상)
+curl -s http://localhost:8080/_api/gc/candidates \
   -H "Authorization: Bearer $GC_TOKEN"
+# {"count": 1234, "estimated_bytes": 5678901}
 ```
+
+**`/_api/gc/orphan-count` 는 부르지 마십시오.** `blobs` 전량을 안티조인하므로 비용이 회수
+대상 수가 아니라 테이블 크기를 따릅니다 — 226 GB 규모에서 30 초
+`config.statsStatementTimeoutSecs` 를 넘겨 항상 `500` 이고, 그 30 초 동안 같은 전용 풀을
+쓰는 조회(`/_api/stats` · `/_api/buckets` · `/_api/buckets/{bucket}/objects` ·
+`/_api/backends`)가 함께 막힙니다. 이미지 `0.1.26` 부터 폐기이고 응답에
+`Deprecation: true` 가 실립니다(실패 응답에도 실립니다).
+
+지표 `cas_gc_candidates` 는 **마지막 GC 실행이 끝난 시점**의 값이고 이 엔드포인트는
+**조회 시점**의 값입니다. 두 값을 빼서 보지 마십시오.
 
 ### 메트릭 (Prometheus)
 
@@ -933,11 +982,14 @@ curl -s http://localhost:8080/_internal/metrics \
 **`metricsToken` 이 비면** auth 를 켠 배포에서는 `/_admin/*`·GC 와 같이 `401` 로 닫히고
 (이미지 `0.1.24` 이상), NoAuth 배포에서는 무인증으로 열립니다. 후자는 기동 시 경고가 뜹니다.
 
-**노출되는 지표는 `cas_*` 19종입니다.** 타입·단위와 각 값이 무엇을 보는지(특히
+**노출되는 지표는 `cas_*` 20종입니다**(이미지 `0.1.25` 이하는 `cas_gc_last_errors` 가 없어 19종)**.** 타입·단위와 각 값이 무엇을 보는지(특히
 `cas_db_pool_*` 가 어느 풀을 보고하는지)는 차트 README 의 "메트릭 스크레이프" 절에 표로
-정리했습니다. 라벨이 붙는 것은 `cas_anonymous_get_total`(`reason`·`cause`)과
-`cas_gc_last_*`(`phase`) 뿐입니다. 같은 엔드포인트에 `axum_http_*` 3종이 함께 나오고
-이쪽은 `endpoint`/`method`/`status` 라벨을 답니다.
+정리했습니다. 라벨이 붙는 것은 `cas_anonymous_get_total`(`reason`·`cause`)과 `cas_gc_last_*` 중
+**셋**(`ran_at_seconds`·`duration_ms`·`reclaimed_blobs` 에 `phase`) 뿐입니다 —
+**`cas_gc_last_status` 와 `cas_gc_last_errors` 에는 라벨이 없습니다.** 같은 엔드포인트에
+`axum_http_*` 3종이 함께 나오고, `axum_http_requests_total` 과 `_duration_seconds` 는
+`endpoint`/`method`/`status` 를, **`axum_http_requests_pending` 은 `endpoint`/`method` 만**
+답니다.
 
 먼저 볼 값 셋만 여기 적습니다.
 
@@ -960,6 +1012,11 @@ curl -s http://localhost:8080/_internal/metrics \
 
 `unsigned` 와 `signed_invalid` 가 끄는 순간 깨질 소비자입니다. **둘 다 늘지 않는 기간을
 확인한 뒤에 내리십시오.** `false` 로 두면 이 카운터는 늘지 않습니다.
+
+이미지 `0.1.26` 이상에서는 `anonymousGet: true` 인 배포에 `unsigned` 와 `signed_valid` 두
+계열이 **기동 직후 `0` 으로** 나옵니다 — 「아직 없었다」와 「지표가 사라졌다」가 갈립니다.
+`signed_invalid` 는 `cause` 값이 열려 있어 미리 등록하지 않으므로 그 원인이 처음 생길 때
+나타납니다.
 
 `signed_invalid` 는 `cause` 라벨로 한 겹 더 갈립니다(이미지 `0.1.25` 이상) — 키를 새로
 발급할 일인지(`key_expired`), 클라이언트 배선이 틀린 것인지(`signature_mismatch`), 그 키가

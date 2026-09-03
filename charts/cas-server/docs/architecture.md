@@ -1,4 +1,4 @@
-# CAS Server 시스템 기능 명세서
+# CAS Server 아키텍처
 
 <!-- ## 목차
 
@@ -23,7 +23,7 @@ CAS Server는 **Content-Addressable Storage(내용 기반 주소 지정 스토�
 | 특징 | 설명 |
 |------|------|
 | **자동 중복 제거** | 동일 내용의 파일은 백엔드에 한 번만 저장 — 스토리지 용량 절약 |
-| **콘텐츠 무결성 보장** | 업로드 시 BLAKE3 해시로 저장 내용을 검증하고, 응답의 `ETag`로 클라이언트가 대조 |
+| **콘텐츠 무결성 보장** | 서버가 **저장하는** 내용을 BLAKE3 로 해싱하고, 응답의 `ETag`로 클라이언트가 대조. `x-cas-hash` 로 중복이 확인돼 저장을 건너뛰는 요청은 본문을 읽지 않습니다 — 3.1 참고 |
 | **S3 호환 API** | AWS CLI, SDK, 기존 S3 연동 코드 그대로 사용 가능 |
 | **다중 백엔드 지원** | 로컬 NAS 또는 S3 호환 오브젝트 스토리지를 백엔드로 사용 |
 | **Zero-copy 복사** | 파일 복사 시 물리적 데이터 이동 없이 즉시 완료 |
@@ -158,7 +158,17 @@ PUT /{버킷}/{키}
 
 - `Content-Type` 헤더로 MIME 타입을 지정합니다.
 - 응답에 `x-cas-hash`(BLAKE3 해시), `x-cas-already-existed`(중복 여부) 헤더가 포함됩니다.
-- 해시를 미리 알고 있다면 `x-cas-hash` 요청 헤더로 전달해 검증 및 중복 건너뛰기를 활용할 수 있습니다.
+- 해시를 미리 알고 있다면 `x-cas-hash` 요청 헤더로 전달해 중복 건너뛰기를 쓸 수 있습니다.
+
+> **`x-cas-hash` 는 「이 내용의 해시가 이것이다」라는 클라이언트의 주장이고, 서버는 그
+> 주장대로 움직입니다.** 그 해시의 블롭이 이미 있으면 **본문을 읽지 않고** 그 블롭에 키를
+> 연결합니다(`x-cas-already-existed: true`). 본문이 그 해시와 달라도, 본문이 비어 있어도
+> `200` 이고 이후 `GET` 은 **먼저 저장돼 있던 내용**을 돌려줍니다.
+>
+> 해시가 처음 보는 값일 때만 서버가 본문을 해싱해 대조하고, 그때 다르면 `400 InvalidDigest`
+> 입니다. 즉 **이 헤더는 전송을 줄이는 수단이지 무결성 검사가 아닙니다.** 해시를 잘못
+> 계산하는 클라이언트는 키를 엉뚱한 내용에 조용히 묶을 수 있으므로, 이 헤더를 쓰는 쪽에서
+> 해시 계산을 책임져야 합니다.
 
 **응답 예시**:
 ```
@@ -190,6 +200,18 @@ GET /{버킷}/{키}
 
 서명에는 발급 시 지정한 메서드·경로·유효기간이 포함됩니다. 만료된 URL 은 `403 AccessDenied`,
 메서드나 경로가 다른 요청은 `403 SignatureDoesNotMatch` 입니다.
+
+> ⚠ **`auth.anonymousGet: true`(차트 기본값) 인 배포에서는 `GET`·`HEAD` presigned URL 의
+> 만료와 서명이 강제되지 않습니다.** 그 배포에서 `GET`/`HEAD /{버킷}/{키}` 는 익명 분기로
+> 먼저 통과하므로, **만료된 URL 도 서명이 틀린 URL 도 `200`** 입니다. 즉 다운로드 링크에
+> 건 유효 시간이 지켜지지 않고 그 URL 은 사실상 영구 링크입니다.
+>
+> 서명 검증은 돌지만 판정에 쓰이지 않고 계수에만 남습니다 —
+> `cas_anonymous_get_total{reason="signed_invalid",cause="presigned_expired"}`.
+>
+> **시간을 실제로 제한하시려면 `auth.anonymousGet: false` 로 두십시오.** 그러면 아래 표의
+> 코드가 그대로 적용됩니다. `PUT`·`DELETE` presigned 는 익명 대상이 아니므로
+> `anonymousGet` 과 무관하게 항상 검증됩니다.
 
 ### 3.3 복사
 
@@ -374,7 +396,7 @@ S3 표준에 없는 CAS 전용 헤더가 업로드 응답에 추가됩니다.
 | `x-cas-hash` | 저장된 파일의 BLAKE3 해시 (64자 hex) | `a3f8d2c1e7b946...` |
 | `x-cas-already-existed` | 중복 블롭 여부 — `true`면 물리 저장 건너뜀 | `true` / `false` |
 
-`x-cas-hash`를 저장해 두면, 다음 업로드 시 `x-cas-hash` **요청** 헤더로 전달해 서버가 물리 전송 없이 즉시 등록하도록 할 수 있습니다.
+`x-cas-hash`를 저장해 두면, 다음 업로드 시 `x-cas-hash` **요청** 헤더로 전달해 서버가 물리 전송 없이 즉시 등록하도록 할 수 있습니다. 그 경로에서 서버가 본문을 읽지 않는다는 것과 그 뜻은 3.1 에 적었습니다.
 
 ### 5.4 지원 API 범위
 
@@ -393,7 +415,7 @@ S3 표준에 없는 CAS 전용 헤더가 업로드 응답에 추가됩니다.
 | **대시보드** | 전체 오브젝트 수·버킷 수·총 용량 요약. Last GC 결과는 `cas:ReadGc` 또는 `cas:RunGc` 일 때 표시 |
 | **버킷 / 오브젝트** | 버킷 목록, 오브젝트 탐색, 버전 이력 조회, 블롭 상세(해시·크기·참조 수) 확인 |
 | **백엔드** | 각 스토리지 백엔드의 디스크 사용량·블롭 수 현황 |
-| **GC** | `cas:ReadGc` 또는 `cas:RunGc` 로 열림. 고아 블롭 수 조회, 실행 이력 확인. 수동 실행·Dry-run 버튼은 `cas:RunGc` |
+| **GC** | `cas:ReadGc` 또는 `cas:RunGc` 로 열림. 회수 후보 수 조회, 실행 이력 확인. 수동 실행·Dry-run 버튼은 `cas:RunGc` |
 | **액세스 키** | `cas:ReadAccessKeys` 또는 `cas:ManageAccessKeys` 로 열림. 발급·비활성화·정책 관리 버튼은 `cas:ManageAccessKeys` |
 
 > 화면은 로그인한 키의 정책으로 열리고, 권한이 없는 화면은 탭이 표시되지 않습니다. root 키는
@@ -413,9 +435,11 @@ CronJob 은 그대로 동작합니다.
 
 ## 6. 에러 코드 및 대응
 
-데이터 평면과 `/_api/*` 의 에러는 S3 표준 XML 형식으로 반환됩니다. Bearer 토큰으로 여는
-경로(`/_internal/metrics`, GC 의 토큰 경로)의 `401` 만 예외로, 본문이 XML 이 아니라
-`Unauthorized` 문자열입니다.
+데이터 평면과 `/_api/*` 의 에러는 S3 표준 XML 형식으로 반환됩니다. **관리 평면의 `401`
+만 예외로, 본문이 XML 이 아니라 `Unauthorized` 문자열입니다** — `/_internal/metrics`,
+GC 의 토큰 경로, 그리고 **`/_admin/*`** 입니다. `/_admin/*` 은 SigV4 가 아닌 요청이 bearer
+게이트로 가는데 그 평면이 받는 bearer 토큰이 없어 같은 형태로 닫힙니다. XML 파싱으로
+오류를 다루는 자동화는 이 셋을 예외로 두어야 합니다.
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -428,7 +452,7 @@ CronJob 은 그대로 동작합니다.
 | HTTP 상태 | 에러 코드 | 원인 및 대응 |
 |-----------|-----------|--------------|
 | 400 | `InvalidArgument` | 요청 파라미터 오류 |
-| 400 | `InvalidDigest` | `x-cas-hash` 로 넘긴 해시와 실제 본문이 다름 |
+| 400 | `InvalidDigest` | `x-cas-hash` 로 넘긴 해시와 실제 본문이 다름. **서버가 본문을 저장하는 경로에서만 납니다** — 그 해시의 블롭이 이미 있으면 본문을 읽지 않으므로 이 오류도 나지 않습니다(3.1) |
 | 400 | `InvalidPart` | 멀티파트 파트 번호·구성 오류 |
 | 400 | `AuthorizationHeaderMalformed` | Authorization 헤더/presigned 쿼리 형식 오류 — 서명을 계산할 수조차 없음. `service` 가 `s3` 가 아닌 경우도 여기입니다 |
 | 401 | — | 관리 평면(`/_admin/*`·GC·`/_internal/metrics`)에 Bearer 로 접근했는데 그 경로가 받는 토큰이 설정되지 않았거나 값이 다름. 본문은 `Unauthorized` 문자열입니다 |
@@ -442,7 +466,7 @@ CronJob 은 그대로 동작합니다.
 | 405 | `MethodNotAllowed` | 삭제 마커인 버전을 GET/HEAD |
 | 408 | — | `config.requestTimeoutSecs`(기본 120초) 초과. **이 시점에도 DB 쪽 쿼리는 계속 돕니다** |
 | 409 | `BucketNotEmpty` | 비어 있지 않은 버킷 삭제 시도 |
-| 409 | `GcAlreadyRunning` | GC 가 이미 실행 중 |
+| 409 | `GcAlreadyRunning` | GC 가 이미 실행 중. 이미지 `0.1.26` 이상에서는 **다른 파드가 락을 쥐고 있어 이 호출이 아무것도 시작하지 못한 경우**도 이 코드입니다 (그 미만은 `202` 였습니다) |
 | 412 | `PreconditionFailed` | `If-None-Match: *` 인데 객체가 이미 있음 |
 | 413 | `EntityTooLarge` | `config.maxUploadSizeBytes` 초과 |
 | 500 | `InternalError` | 서버 내부 오류 (DB 오류 포함) |

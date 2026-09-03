@@ -5,9 +5,9 @@ HTTP API를 제공한다.
 
 ## 문서
 
-- [아키텍처](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.32/charts/cas-server/docs/architecture.md)
+- [아키텍처](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.33/charts/cas-server/docs/architecture.md)
   — 스토리지 모델(CAS·dedup·GC), 백엔드 구성, S3 호환 API 명세, 에러 코드
-- [사용법](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.32/charts/cas-server/docs/usage.md)
+- [사용법](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.33/charts/cas-server/docs/usage.md)
   — 배포 절차, 웹 UI 키 관리, AWS CLI/boto3 예제, 내부 API
 - [변경 이력](CHANGELOG.md)
   — 버전별 동작 변경·마이그레이션·설정 키. 각 항목은 해당 GitHub Release 본문과 동일하다
@@ -49,7 +49,7 @@ kubectl apply -f sealed-secret.yaml -n <namespace>
 배포에서 그 값이 없으면 스크레이프가 `401`** 이다. 용도는 [메트릭 스크레이프](#메트릭-스크레이프) 참고.
 
 `secrets.secretMasterKey`를 비우면 NoAuth 모드(인증 없음, 내부망 전용)로 동작한다. 상세 절차와 값 교체
-방법은 [`examples/sealed-secret.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.32/charts/cas-server/examples/sealed-secret.yaml) 참고.
+방법은 [`examples/sealed-secret.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.33/charts/cas-server/examples/sealed-secret.yaml) 참고.
 
 ## 설치
 
@@ -57,7 +57,7 @@ kubectl apply -f sealed-secret.yaml -n <namespace>
 helm install cas-server int2nexus/cas-server -n <namespace> -f values-prod.yaml
 ```
 
-`values-prod.yaml`은 직접 작성하거나 [`examples/values-prod.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.32/charts/cas-server/examples/values-prod.yaml)을
+`values-prod.yaml`은 직접 작성하거나 [`examples/values-prod.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.33/charts/cas-server/examples/values-prod.yaml)을
 내려받아 값을 채운 뒤 사용하세요(이 레포를 clone했다면 `charts/cas-server/examples/values-prod.yaml`).
 
 ### S3 / MinIO 모드 values 예시
@@ -176,10 +176,14 @@ OOMKilled 되거나(예산 > 한도) 방어선이 실효 없이 낮게 남습니
 참조하므로 추가하지 않아도 파드는 기동하지만, **auth 를 켠 배포에서는 그때 스크레이프가
 `401`** 입니다. **cas-server 이미지 `0.1.18` 이상**이 필요합니다.
 
-**auth 가 꺼진 배포(`secrets.secretMasterKey` 가 빔)에서 `metricsToken` 만 채우고 admin·GC
-토큰을 둘 다 비우지 마세요.** 그 조합에서는 서버가 기동을 거부합니다 — metrics 만 잠기고
-`POST /_internal/gc`(blob 물리 삭제)가 무인증으로 열려, 401 을 보고 보호된다고 오해하게 되기
-때문입니다. `replicaCount: 1` 이라 기동 실패는 곧 전면 중단입니다.
+**auth 가 꺼진 배포(`secrets.secretMasterKey` 가 빔)에서 `metricsToken` 만 채우고
+`secrets.gcToken` 을 비우지 마세요.** 그 조합에서는 서버가 기동을 거부합니다 — metrics 만
+잠기고 `POST /_internal/gc`(blob 물리 삭제)가 무인증으로 열려, 401 을 보고 보호된다고
+오해하게 되기 때문입니다. `replicaCount: 1` 이라 기동 실패는 곧 전면 중단입니다.
+
+**`adminToken` 은 이 판정에 들어가지 않습니다.** 폐기되어 어떤 경로도 열지 않으므로 그
+값이 있어도 GC 는 잠기지 않습니다. 「admin 토큰이 차 있으니 해당 없다」로 읽고 `gcToken`
+을 비우시면 **파드가 뜨지 않습니다.**
 
 auth 를 켠 배포에서는 관리 평면이 토큰 없이도 401 로 닫히므로 해당하지 않습니다.
 
@@ -205,25 +209,56 @@ kubectl rollout restart -n <namespace> deploy/<fullname>   # 릴리스명이 아
 | 지표 | 타입 | 단위 | 어느 풀·무엇 |
 |---|---|---|---|
 | `cas_upload_in_flight` | gauge | 건수 | 동시 업로드 |
-| `cas_upload_in_flight_bytes` | gauge | 바이트 | 인플라이트 바디 합(Content-Length 기준) |
+| `cas_upload_in_flight_bytes` | gauge | 바이트 | 인플라이트 업로드가 **예약한** 바이트. Content-Length 를 아는 요청은 그 값이지만 **모르는 요청(chunked)과 멀티파트 조립은 건당 5 MiB 고정으로 계상**됩니다. 실제 상주와 두 방향으로 어긋납니다 — 크기를 모르는 요청의 실제 상주는 스트리밍 경로 상한(파트 하나) 이내이고, dedup 히트는 메타 커밋 전에 해제되어 과대 계상됩니다. `maxUploadBytesInFlight` 의 판정 기준은 이 값이지 실측 RSS 가 아닙니다 |
 | `cas_upload_limit` | gauge | 건수 | `maxConcurrentUploads` (`0`=무제한). **바이트 예산의 상한 게이지는 없습니다** |
 | `cas_upload_rejected_total` | counter | 건수 | 건수·바이트 거절을 **함께** 셉니다. 구분하려면 위 두 게이지를 함께 보십시오 |
 | `cas_blob_lock_map_entries` | gauge | 건수 | 진행 중인 쓰기가 걸린 **고유 해시 수**(대기자 포함). 이미지 `0.1.18` 이상에서 **유휴 시 `0`** |
 | `cas_db_pool_connections` | gauge | 건수 | **요청 경로 풀만.** 현재값이고 max 가 아닙니다 |
 | `cas_db_pool_idle_connections` | gauge | 건수 | 요청 경로 풀만 |
 | `cas_db_pool_acquire_timeouts_total` | counter | 건수 | HTTP 오류 응답이 된 것만. 요청 경로 풀 + 집계 풀 + `dry_run=true` 의 GC 풀을 **합산**하며, `/_internal/health` 의 풀 타임아웃은 **세지 않습니다** |
-| `cas_blob_dedup_total` | counter | 건수 | **PUT 이 기존 blob 에 맞은 횟수.** 데이터셋 중복률이 아닙니다 — 아래 참고 |
-| `cas_blob_put_bytes_total` | counter | 바이트 | |
-| `cas_gc_deleted_blobs_total` | counter | 건수 | **GC 가 한 번 돌아야 등록됩니다** |
+| `cas_blob_dedup_total` | counter | 건수 | **PUT 이 기존 blob 에 맞은 횟수.** 데이터셋 중복률이 아닙니다 — 아래 참고. 이미지 `0.1.26` 이상에서 기동 직후 `0` 으로 나옵니다 |
+| `cas_blob_put_bytes_total` | counter | 바이트 | 〃 |
+| `cas_gc_deleted_blobs_total` | counter | 건수 | 이미지 `0.1.26` 이상에서 기동 직후 `0` 으로 나옵니다. 그 미만은 GC 가 한 번 돌아야 등록됐습니다 |
 | `cas_gc_freed_bytes_total` | counter | 바이트 | 〃 |
 | `cas_anonymous_get_total` | counter | 건수 | **`reason`·`cause` 라벨이 붙습니다.** `reason` 은 `unsigned` · `signed_valid` · `signed_invalid`, `cause` 는 `signed_invalid` 의 원인을 한 겹 더 가릅니다(나머지 둘은 `none`). `anonymousGet` 을 끄기 전에 깨질 소비자를 세는 값입니다 (아래 참고). `reason` 은 이미지 `0.1.24`, `cause` 는 `0.1.25` 이상 |
-| `cas_gc_last_ran_at_seconds{phase}` | gauge | 유닉스 초 | 그 단계를 포함한 마지막 성공 실행의 시각. **파드가 재기동해도 남습니다**(기동 시 이력에서 되살립니다). 이미지 `0.1.25` 이상 |
+| `cas_gc_last_ran_at_seconds{phase}` | gauge | 유닉스 초 | 그 단계를 포함한 마지막 성공 실행의 시각. **파드가 재기동해도 남습니다**(기동 시 이력에서 되살립니다). 이미지 `0.1.25` 이상 — 다만 `0.1.25` 는 그 버전으로 올린 **직후의 재기동**에서 복원하지 못했습니다(이전 이력에 단계 축이 없습니다). `0.1.26` 이 그 행들도 되살립니다 |
 | `cas_gc_last_duration_ms{phase}` | gauge | ms | 마지막 실행의 단계별 소요. 재기동 뒤 첫 실행까지 값이 없습니다 |
 | `cas_gc_last_reclaimed_blobs{phase}` | gauge | 건수 | 그 단계가 회수한 blob 수. `orphan`·`sweep` 에만 나갑니다. **`sweep` 쪽이 후보 등록 누락을 보는 값입니다** |
-| `cas_gc_last_status` | gauge | — | `0`=성공 `1`=오류 있음 `2`=실행 중. **`gc_runs.status` 와 다릅니다** — `errors > 0` 인 실행도 `1` 입니다 |
+| `cas_gc_last_status` | gauge | — | `0`=성공 `1`=**실행** 실패 `2`=실행 중. 항목 몇 건이 실패한 실행은 `0` 입니다 — 그 수는 `cas_gc_last_errors` 입니다 (이미지 `0.1.26` 이상). `0.1.25` 이하에서는 `errors > 0` 인 실행도 `1` 이었습니다 |
+| `cas_gc_last_errors` | gauge | 건수 | 마지막 실행이 회수하지 못한 **항목** 수. **이미지 `0.1.26` 에서 새로 생겼습니다** — 그 미만에는 이 지표가 없습니다. 같은 값이 `GET /_api/gc/last-result`·`/history` 의 `errors` 필드로도 나가며, 그 계수가 `0.1.26` 에서 양방향으로 바뀌었습니다(같은 blob 이 두 단계에서 실패해도 1, 그리고 회수 직전 재확인 실패를 새로 셉니다 — CHANGELOG `0.1.33` 절). **재기동 뒤 첫 GC 실행까지 시리즈가 없습니다** |
 | `cas_gc_candidates` / `cas_gc_candidate_bytes` | gauge | 건수 / 바이트 | 회수 후보 큐. GC 실행이 끝난 시점의 값이라 `orphan` 이 큐를 비운 직후를 가리킵니다 |
 
-**라벨이 붙는 `cas_*` 는 `cas_anonymous_get_total`(`reason`·`cause`)과 `cas_gc_last_*`(`phase`) 뿐입니다.**
+### 지표가 나타나는 시점 — `absent()` 알림을 걸기 전에
+
+**시리즈가 없는 것과 값이 `0` 인 것은 다릅니다.** 그 구분이 안 되면 「아무 일도 없었다」와
+「지표가 사라졌다」와 「서버가 이상하다」가 화면에서 같아집니다.
+
+| 지표 | 언제 나타나는가 | `absent()` |
+|---|---|---|
+| `cas_upload_in_flight` · `_bytes` · `cas_upload_limit` | 기동 직후 | 걸어도 됩니다 |
+| `cas_blob_lock_map_entries` | 기동 직후 | 걸어도 됩니다 |
+| `cas_db_pool_connections` · `_idle_connections` | 기동 직후 | 걸어도 됩니다 |
+| `cas_upload_rejected_total` · `cas_db_pool_acquire_timeouts_total` | 기동 직후 | 걸어도 됩니다 |
+| `cas_blob_put_bytes_total` · `cas_blob_dedup_total` · `cas_gc_deleted_blobs_total` · `cas_gc_freed_bytes_total` | 이미지 `0.1.26` 이상에서 기동 직후. 그 미만은 첫 이벤트 뒤 | `0.1.26` 이상에서 걸어도 됩니다 |
+| `cas_anonymous_get_total{reason="unsigned"}` · `{reason="signed_valid"}` | `anonymousGet: true` 이고 이미지 `0.1.26` 이상이면 기동 직후 | 위와 같습니다. 끈 배포에는 나오지 않습니다 |
+| `cas_anonymous_get_total{reason="signed_invalid"}` | 그 원인이 처음 생겼을 때 | **걸지 마십시오** — `cause` 라벨 값이 열려 있어 미리 등록하지 않습니다 |
+| `cas_gc_last_ran_at_seconds{phase}` | 기동 시 이력에서 복원 | 걸어도 됩니다. **GC 정지를 보는 알림은 이 값으로 겁니다** |
+| `cas_gc_last_duration_ms{phase}` · `cas_gc_last_reclaimed_blobs{phase}` · `cas_gc_last_status` · `cas_gc_last_errors` | **재기동 뒤 첫 GC 실행까지 없습니다** | **걸지 마십시오** — 재기동마다 울립니다 |
+| `cas_gc_candidates` · `cas_gc_candidate_bytes` | 첫 GC 실행 뒤 | **걸지 마십시오** — 같은 이유 |
+
+카운터와 달리 **`cas_gc_last_*` 게이지는 `0` 으로 등록하지 않습니다.** `cas_gc_last_status`
+의 `0` 은 「마지막 실행이 성공」이고 `cas_gc_last_ran_at_seconds` 의 `0` 은 1970-01-01
+입니다 — 없는 것보다 나쁜 값입니다.
+
+`cas_gc_last_ran_at_seconds` 하나만 복원하는 이유도 같습니다. 그 값은 절대 시각이라 옛
+실행의 것이어도 뜻이 그대로지만, 나머지는 「마지막 실행이 이랬다」라서 그 실행이 이
+프로세스의 것이 아니면 틀린 말이 됩니다.
+
+**라벨이 붙는 `cas_*` 는 `cas_anonymous_get_total`(`reason`·`cause`)과 `cas_gc_last_*` 중
+셋(`phase`) 뿐입니다.** `phase` 가 붙는 것은 `cas_gc_last_ran_at_seconds` ·
+`cas_gc_last_duration_ms` · `cas_gc_last_reclaimed_blobs` 이고, **`cas_gc_last_status` 와
+`cas_gc_last_errors` 에는 라벨이 없습니다**(실행 단위 값이라 단계로 갈리지 않습니다).
+그 둘에 `sum by (phase)` 를 쓰면 빈 라벨이 나옵니다.
 같은 엔드포인트에 `axum_http_requests_total` ·
 `axum_http_requests_duration_seconds` · `axum_http_requests_pending` 이 함께 나오고
 이쪽은 `endpoint`/`method`/`status` 라벨을 답니다(경로는 라우트 패턴으로 정규화되므로
@@ -395,6 +430,34 @@ gc:
 - `fullSweep` 이 꺼져 있고 `gc.phases` 에도 `sweep` 이 없다 — 전량 스캔이 사라집니다.
 
 회수를 아예 돌리지 않을 의도라면 `gc.enabled: false` 로 두십시오.
+
+### 지금 회수 대기 중인 것을 보는 방법 (이미지 `0.1.26` 이상)
+
+```bash
+curl -s -H "Authorization: Bearer $GC_TOKEN" \
+  http://cas-server:8080/_api/gc/candidates
+# {"count": 1234, "estimated_bytes": 5678901}
+```
+
+**`/_api/gc/orphan-count` 는 쓰지 마십시오.** `blobs` 전량을 안티조인하므로 비용이 회수
+대상 수가 아니라 테이블 크기를 따릅니다 — 226 GB 규모에서 30 초
+`config.statsStatementTimeoutSecs` 를 넘겨 항상 `500` 이고, 그동안 집계 조회가 함께
+막힙니다(「집계 조회 격리」 절). 이미지 `0.1.26` 부터 폐기이고 응답에
+`Deprecation: true` 가 실립니다.
+
+지표 `cas_gc_candidates` 는 **마지막 GC 실행이 끝난 시점**의 값이고 이 엔드포인트는
+**조회 시점**의 값입니다. 둘을 빼서 보지 마십시오 — 그 사이에 생긴 정상 후보가 차이에
+그대로 잡힙니다.
+
+### `sweep` 이 회수하는 것이 후보 등록 누락 신호입니다
+
+후보 등록이 완전하면 전량 스캔이 회수할 것이 없으므로
+`cas_gc_last_reclaimed_blobs{phase="sweep"}` 이 `0` 에 수렴합니다. `0` 이 아닌 만큼이
+등록에서 빠진 것입니다.
+
+**다만 알림은 두 번째 `sweep` 실행부터 거십시오.** 첫 실행의 값에는 후보 큐가 생기기
+전부터 있던 존량이 함께 들어 있어 갈리지 않습니다. `sweep` 은 배치 상한 없이 전량을 한
+실행에 훑으므로 존량은 그 한 번에 전부 빠집니다.
 
 주기는 데이터 크기가 아니라 **회수 대상이 쌓이는 속도**로 정하십시오. 스캔 비용은 회수할
 blob 이 0건이든 수천 건이든 같습니다. 판단 기준과 미루는 비용 계산은
