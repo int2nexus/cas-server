@@ -2,7 +2,7 @@
 
 image:
   repository: jiwonkim97/nexus-client
-  tag: "0.1.12"
+  tag: "0.1.13"
   # digest 로 핀하려면 여기에 넣으십시오 (`sha256:...`). 값이 있으면 tag 대신 이것이
   # 쓰이고, 렌더 결과가 `repository@sha256:...` 가 됩니다.
   #
