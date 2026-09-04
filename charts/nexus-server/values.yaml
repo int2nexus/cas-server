@@ -5,16 +5,16 @@
 #
 # ── 문서 ─────────────────────────────────────────────────────────────────────
 #   아키텍처 (도메인 모델·버전 관리·스냅샷 구조)
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.7/charts/nexus-server/docs/architecture.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.8/charts/nexus-server/docs/architecture.md
 #   사용법 (설치·SDK 연결·Dataset 워크플로우)
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.7/charts/nexus-server/docs/usage.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.8/charts/nexus-server/docs/usage.md
 #   차트 README
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.7/charts/nexus-server/README.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.8/charts/nexus-server/README.md
 # ─────────────────────────────────────────────────────────────────────────────
 
 image:
   repository: int2jieun/nexus-server
-  tag: "0.1.10"
+  tag: "0.1.11"
   # digest 로 핀하려면 여기에 넣으십시오 (`sha256:...`). 값이 있으면 tag 대신 이것이
   # 쓰이고, 렌더 결과가 `repository@sha256:...` 가 됩니다.
   #
@@ -176,6 +176,44 @@ auth:
   # false로 하면 세 경로가 **404**가 된다(403이 아니다).
   # 스펙 자체는 이미 전 경로에 인증이 걸려 있어 노출되는 것은 경로 목록뿐이다.
   docsEnabled: true
+  # ── OIDC 발급자 (선택) ─────────────────────────────────────────────
+  # 외부 IdP가 발급한 토큰을 그대로 인증 자격증명으로 받는 갈래를 연다.
+  # **비어 있으면 기능이 꺼지고 기존 동작과 같다.**
+  #
+  # 항목마다:
+  #   issuer    필수. 토큰의 iss와 같아야 하고 https:// 로 시작해야 한다
+  #   audience  필수. 토큰 aud 안에 이 값이 있으면 통과한다(포함 검사).
+  #             **aud가 없는 토큰은 거부한다.** azp는 보지 않는다.
+  #             **비우면 서버가 기동에 실패한다** — 비운 채로 통과시키면 같은 발급자가
+  #             낸 아무 토큰이나 받게 된다
+  #   exchange  선택(기본 false). POST /api/v1/auth/oidc/exchange를 이 발급자에게 열지.
+  #             워크로드가 자동으로 갈아 끼우는 토큰(쿠버네티스 SA 토큰)에는 켜지 말 것 —
+  #             켜면 1시간짜리 토큰이 jwt.ttlHours짜리 nexus 토큰으로 바뀌어 자동 회전이
+  #             사라진다
+  #   jwksUri   선택. 없으면 {issuer}/.well-known/openid-configuration에서 찾는다.
+  #             issuer와 JWKS 호스트가 다른 클러스터에서 필요하다. https:// 필수
+  #   jwksAuth  선택. "serviceaccount" 하나만 받는다. JWKS를 조회할 때 파드 자신의
+  #             ServiceAccount 토큰을 실어 보낸다 — 디스커버리·JWKS가 익명으로 403인
+  #             쿠버네티스 클러스터에 필요하다
+  #
+  # 같은 issuer를 두 번 적으면 기동에 실패한다.
+  #
+  # **발급자만 설정하면 아무도 인증되지 않는다.** 신원은 관리자가 API로 등록한다
+  # (POST /api/v1/admin/oidc-identities) — 자동 생성은 없다.
+  #
+  # 호환성: 이 차트가 요구하는 이미지 이상. 그 이전 이미지는 이 env를 무시하므로
+  #   기동이 깨지지는 않지만 기능도 켜지지 않는다.
+  oidc:
+    issuers: []
+    # 예:
+    # issuers:
+    #   - issuer: https://sso.example.com/realms/<realm>
+    #     audience: <IdP 쪽에서 정한 값>
+    #     exchange: true
+    #   - issuer: https://kubernetes.default.svc.cluster.local
+    #     audience: <파드 스펙의 projected 볼륨 audience와 같은 값>
+    #     jwksUri: https://<API 서버>:6443/openid/v1/jwks
+    #     jwksAuth: serviceaccount
   # ── superuser (선택) ───────────────────────────────────────────────
   # 설정으로 지정하는 관리 계정이다. **비우면 관리자를 만들 부트스트랩 수단이 없다** —
   # users.role = admin 은 마이그레이션이 백필하지 않으므로, 최초 한 명을 이 계정으로

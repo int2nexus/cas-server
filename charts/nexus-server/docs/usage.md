@@ -274,6 +274,7 @@ superuser 외에 인증 관련 설정을 helm 값으로 조정할 수 있다.
 | `auth.registrationEnabled` | `true` | `false`로 하면 `POST /api/v1/auth/register`만 403이 되고, 로그인·토큰 갱신·기존 계정은 영향을 받지 않는다. **끄기 전에 필요한 계정을 모두 만들어 둘 것** — 끈 뒤에는 계정을 새로 만들 방법이 없다(계정 생성 API가 register 하나뿐이라 superuser도 새 계정을 만들 수 없다). |
 | `auth.docsEnabled` | `true` | `false`로 하면 `/api-docs/openapi.json`, `/swagger-ui`, `/swagger-ui/` 세 경로가 **404**가 된다(라우트 자체가 등록되지 않아서다 — 403이 아니다). 스펙은 이미 전 경로가 인증 뒤에 있으므로, 이걸로 감추는 것은 API 경로 목록뿐이다. |
 | `auth.approvalRequired` (0.3.4+) | `false` | `true`로 하면 가입은 열어 둔 채 **승인 전까지 아무것도 할 수 없다.** 가입 요청은 계정을 만들되 **토큰을 주지 않고** `202`와 `{"status": "pending"}`을 반환하며, 승인 전에는 로그인·토큰 갱신이 `403`이다(본문 `pending_approval`). 승인은 `POST /api/v1/admin/users/approve`(본문에 `email`·`role` 필수), 대기 목록은 `GET /api/v1/admin/users/pending`. **켜기 전에 가입 화면이 `202`를 처리해야 하고**, 승인 엔드포인트가 관리자 전용이라 `auth.superuserEmail`도 함께 설정해야 한다. 켜기 전에 가입한 계정은 영향받지 않는다. |
+| `auth.oidc.issuers` (0.3.8+) | `[]` (기능 꺼짐) | 외부 IdP가 발급한 토큰을 인증 자격증명으로 받을 발급자 목록. 항목마다 `issuer`(필수, `https://`, 토큰의 `iss`와 같아야 한다) · `audience`(필수, 토큰 `aud` **안에 있으면** 통과하는 포함 검사) · `exchange`(기본 `false`, `POST /api/v1/auth/oidc/exchange`를 이 발급자에게 여는 스위치 — 자동 회전하는 토큰에는 켜지 말 것) · `jwksUri`(선택, 발급자와 JWKS 호스트가 다를 때) · `jwksAuth`(선택, `serviceaccount` 하나만 — 파드 자신의 SA 토큰을 실어 JWKS를 읽는다). **`audience`가 비었거나 `issuer`가 비-https·중복이면 기동에 실패한다.** 목록이 비면 기능이 꺼질 뿐 기동은 정상이다. **발급자만 설정하면 아무도 인증되지 않는다** — 신원 `(issuer, subject)` → 계정 매핑을 `POST /api/v1/admin/oidc-identities`로 관리자가 등록해야 하고 자동 생성은 없다. 이 갈래로 온 요청은 `POST /api/v1/auth/refresh`가 `403`이다. |
 | `auth.revocationCacheTtlSecs` (0.3.4+) | 빈 값 (서버 기본 **5**초) | 인증이 사용자 행(역할·승인·활성 상태)을 읽고 캐시하는 시간. **이 값이 곧 권한 회수·계정 정지·계정 삭제가 듣기까지의 상한이다.** `0`이면 매 요청 조회가 되어 즉시 반영되지만 적재 처리량이 20~33% 떨어진다(측정치). 조회 자체를 끄는 옵션은 없다 — 쓰기가 역할로 막히므로 요청마다 역할을 알아야 한다. |
 
 ```bash
@@ -895,6 +896,10 @@ PUT    /api/v1/datasets/favorites/layout              그룹 순서·소속·그
 
 `GET /datasets` 응답에 `favorite_group_id`와 `favorite_position`이 함께 온다(즐겨찾기가 아니면 둘 다 `null`).
 
+**`created_by_kind`도 함께 온다**(차트 0.3.8~). 만든 계정이 사람인지 로봇인지를 `human` / `robot`으로 주고, 만든 사람 기록이 없으면 `null`이다. 목록(`GET /datasets`)·단건(`GET /datasets/{dataset_id}`)·생성(`POST /datasets`)·수정(`PATCH /datasets/{dataset_id}`)·태그 추가·태그 삭제 응답 여섯에 모두 실린다.
+
+`created_by`는 계정 ID(정수)뿐이고 그것을 이름으로 푸는 경로는 관리자 전용(`GET /api/v1/admin/users`)이라, 일반 사용자에게는 이 필드가 「누가 만들었나」에 답할 수 있는 유일한 값이다. **이름과 이메일은 주지 않는다** — 종만 준다. `null`의 뜻은 하나이고(만든 사람 기록 없음), `datasets.created_by`가 계정 삭제 시 `NULL`이 되므로 값이 있으면 종은 항상 풀린다.
+
 - **레이아웃은 한 요청이 셋을 다 정한다.** 배열 순서가 곧 순서다. 멱등이라 두 탭이 각각 옮겨도 마지막 쓰기가 정해진다.
 - **전체를 보내야 한다.** 즐겨찾기한 dataset이 하나라도 빠지거나 중복되면 400이고 본문에 그 목록이 담긴다. 다른 탭이 그 사이 즐겨찾기를 추가했으면 400을 받고 다시 받아 보내면 된다.
 - 그룹을 지우면 안의 즐겨찾기는 **미분류로 빠진다**(사라지지 않는다). 새 즐겨찾기는 미분류 맨 뒤에 붙는다.
@@ -1034,7 +1039,9 @@ Draft 버전의 샘플을 **CVAT으로 보내 사람이 편집**하고, 그 결�
 | CVAT이 CAS 이미지를 받을 수 있는 네트워크 | 세션이 `failed`가 되고 사유가 예외에 실린다 |
 | 그 샘플을 잡고 있는 다른 세션 없음 | `NexusError(409)` - 어느 세션이 잡고 있는지 메시지에 담긴다 |
 
-**세션 관련 작업은 모두 `editor` 이상이면 할 수 있다**(서버 0.1.7). 담당자가 아니어도 되고, 세션을 만든 사람이 아니어도 된다.
+**세션 관련 작업은 `editor` 이상이면 할 수 있다**(서버 0.1.7). 담당자가 아니어도 되고, 세션을 만든 사람이 아니어도 된다.
+
+**예외는 삭제 하나다**(서버 0.1.11 / 차트 0.3.8~). `.delete()`는 **사람** `editor` 이상이어야 하고 로봇 계정은 403이다 — 회수하지 않은 편집이 함께 사라지는데 그것은 nexus 밖의 상태라 Seal도 백업도 지켜 주지 않는다. `.close()`는 로봇도 부를 수 있어 잠금이 영구히 남지는 않는다.
 
 ### 6.2 세션 생성
 
@@ -1226,11 +1233,11 @@ nx.connect(nexus_url=..., robot_token="nxr_...")   # 또는 환경변수 NEXUS_R
 토큰 발급은 관리자가 `POST /api/v1/admin/robots/{user_id}/tokens`로 한다(`expires_in_days` 필수, 1~365). **평문은 발급 응답에만 한 번 실린다.**
 
 - **계정 1 : 토큰 N이다.** 새 토큰을 발급하고 `last_used_at`으로 배포를 확인한 뒤 옛 토큰을 폐기하면 중단 없이 회전한다.
-- **로봇은 dataset·version·sample을 지울 수 없다**(403). 적재·수정·seal·이름 변경·fork는 된다.
+- **로봇은 dataset·version·sample과 CVAT 세션, 저장된 explorer 필터(subset)를 지울 수 없다**(403). CVAT 세션과 subset은 차트 0.3.8에서 더해졌다. 적재·수정·seal·이름 변경·fork와 세션 생성·`close`·`import`는 된다.
 - **`refresh`가 403이다.** 로봇 토큰으로 24시간 JWT를 받아 만료 강제를 우회하는 경로를 막는다.
 - 폐기는 캐시 수명(기본 5초)만큼 늦게 듣고, **만료는 늦지 않는다.**
 
-**조회를 포함한 모든 요청에 토큰이 필요하다.** 쓰기는 역할이 가른다(서버 0.1.7) — 적재(`flush`), annotation 수정, 샘플 추가, seal, 이름 변경은 **`editor` 이상이면 다른 사람이 담당인 dataset에도** 된다. **삭제도 서버 0.1.9부터 같다** — 담당자 조건이 빠졌고, `viewer`만 지울 수 없다.
+**조회를 포함한 모든 요청에 토큰이 필요하다.** 쓰기는 역할이 가른다(서버 0.1.7) — 적재(`flush`), annotation 수정, 샘플 추가, seal, 이름 변경은 **`editor` 이상이면 다른 사람이 담당인 dataset에도** 된다. **삭제도 서버 0.1.9부터 같다** — 담당자 조건이 빠졌다. **다만 삭제는 역할 위에 종을 하나 더 본다**: `viewer`가 못 지우는 것에 더해 **로봇 계정도 지울 수 없다**(서버 0.1.10~, 바로 위 로봇 절 참고).
 
 `403` 본문은 셋으로 갈린다.
 
@@ -1303,7 +1310,7 @@ nx.connect(nexus_url=..., robot_token="nxr_...")   # 또는 환경변수 NEXUS_R
 |`.refresh()`|	서버에서 다시 읽어 상태 갱신|
 |`.pull()`|	CVAT 결과를 draft에 반영(멱등) → 요약 dict|
 |`.close(force=False)`|	작업 종료(CVAT project 보존)|
-|`.delete()`|	세션 + CVAT project 완전 삭제(`editor` 이상)|
+|`.delete()`|	세션 + CVAT project 완전 삭제(**사람** `editor` 이상 — 로봇 계정은 `403`)|
 
 ### 그 외
 |||

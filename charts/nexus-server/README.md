@@ -4,9 +4,9 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
 
 ## 문서
 
-- [아키텍처](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.7/charts/nexus-server/docs/architecture.md)
+- [아키텍처](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.8/charts/nexus-server/docs/architecture.md)
   — 도메인 모델, Version 생명주기, Annotation CoW, 스냅샷·Manifest 구조
-- [사용법](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.7/charts/nexus-server/docs/usage.md)
+- [사용법](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.8/charts/nexus-server/docs/usage.md)
   — 설치, Python SDK 연결, Dataset 적재·검색·seal 워크플로우, API 레퍼런스
 - [변경 이력](CHANGELOG.md)
   — 버전별 동작 변경·마이그레이션·설정 키. 각 항목은 해당 GitHub Release 본문과 동일하다
@@ -25,7 +25,14 @@ DB 마이그레이션은 바이너리에 임베드되어 **기동 시 자동 적
 
 > **업그레이드 전에 [CHANGELOG](CHANGELOG.md)를 읽을 것.**
 
-**차트 0.3.7 / appVersion 0.1.10** — 마이그레이션 `019`·`020`이 붙는다(**`0.1.9` 이하로 롤백 불가**). 지금까지와 달라지는 것은 둘이고, 그 밖은 모두 새로 더해지는 것이다.
+**차트 0.3.8 / appVersion 0.1.11** — 마이그레이션 `021`·`022`가 붙는다(**`0.1.10` 이하로 롤백 불가**). 지금까지와 달라지는 것은 둘이고, 그 밖은 모두 새로 더해지는 것이다.
+
+1. **nexus가 발급하는 CAS 자격증명에 만료가 붙는다.** 요청자 토큰의 만료를 그대로 물려받는다 — 사람은 `jwt.ttlHours`, 로봇은 그 토큰의 남은 수명이다. `0.3.7` 문서의 「CAS 자격증명이 토큰보다 오래 산다」가 이 버전부터 성립하지 않는다. **SDK를 `0.1.11`로 함께 올릴 것** — 구 SDK는 클라이언트당 한 번만 재발급해서, 오래 도는 잡이 자격증명의 **두 번째** 만료에서 그대로 실패한다. 이 마이그레이션 이전에 발급된 자격증명은 여전히 무만료이고 재발급으로만 없어진다(소급해 채우지 않는다 — 그러면 nexus만 만료로 알고 cas는 계속 받아 준다).
+2. 로봇 계정의 `DELETE .../annotation-sessions/{session_id}`와 `DELETE /subsets/{subset_id}`가 `403`이다. 사람 계정은 그대로이고, 세션 생성·`close`·`import`와 subset 생성·수정은 로봇도 그대로 부를 수 있다.
+3. 새로 더해지는 것: 외부 IdP 토큰(OIDC)을 인증 자격증명으로 받는 **세 번째 갈래**(`auth.oidc.issuers`. **비우면 기능이 꺼지고 기존 동작과 같다**), dataset을 돌려주는 응답의 `created_by_kind`(`human`/`robot`, 만든 계정 기록이 없으면 `null` — 필드 추가뿐이라 기존 클라이언트는 그대로 동작한다).
+4. **발급자만 설정하면 아무도 인증되지 않는다.** 신원 `(issuer, subject)` → 계정 매핑을 관리자가 `POST /api/v1/admin/oidc-identities`로 등록해야 하고 **자동 생성은 없다.** 이 갈래로 온 요청은 `POST /api/v1/auth/refresh`가 `403`이다 — 열어 두면 짧은 수명의 IdP 토큰이 `jwt.ttlHours`짜리 nexus 토큰으로 바뀌어 자동 회전이 사라진다.
+
+**0.3.7 / 0.1.10** — 마이그레이션 `019`·`020`이 붙는다(**`0.1.9` 이하로 롤백 불가**). 지금까지와 달라지는 것은 둘이고, 그 밖은 모두 새로 더해지는 것이다.
 
 1. **SDK `nexus.connect()`의 `save_cas_credentials` 기본값이 `True` → `False`**(SDK `0.1.10`. 서버가 아니라 SDK의 변경이다). 자동 발급은 그대로 받고 설정 파일에 남기지 않는다. `True`는 옵션으로 남는다.
 2. `POST /api/v1/admin/users/password-reset`이 superuser 계정을 대상으로 삼으면 `403`이다 — `0.1.9`까지 막지 않던 자리다. `role = admin` 계정이 superuser 비밀번호를 가져가 **강등도 정지도 되지 않는 관리자**가 될 수 있었다(무인증 상승은 아니다).
@@ -109,6 +116,7 @@ helm install nexus-server int2nexus/nexus-server -n <namespace> \
 | `auth.registrationEnabled` / `auth.docsEnabled` | `true` / `true` | 공개 회원가입 / API 문서 3경로. 각각 끄면 `register`만 403, 문서 경로는 **404**(403이 아니다) |
 | `auth.approvalRequired` | `false` | `true`면 가입은 열어 둔 채 승인 전까지 아무것도 할 수 없다. 가입이 토큰 없이 `202`를 반환하므로 **가입 화면이 그것을 처리해야 한다.** 승인·대기목록 엔드포인트가 관리자 전용이라 `auth.superuserEmail`을 함께 설정해야 한다 |
 | `auth.revocationCacheTtlSecs` | `""` | 비우면 서버 기본 5초. 인증이 사용자 행(역할·승인·활성)을 읽고 캐시하는 시간이며, **곧 권한 회수·계정 정지·계정 삭제가 듣기까지의 상한**이다. `0`이면 매 요청 조회(적재 처리량 20~33% 감소). 조회 자체는 끌 수 없다 |
+| `auth.oidc.issuers` (0.3.8+) | `[]` | 외부 IdP 토큰을 인증 자격증명으로 받을 발급자 목록. **비우면 기능이 꺼지고 기존 동작과 같다.** 항목마다 `issuer`(필수, https) · `audience`(필수, `aud` 포함 검사) · `exchange`(기본 `false`) · `jwksUri`(선택) · `jwksAuth`(선택, `serviceaccount`). **`audience`가 비었거나 `issuer`가 중복이면 기동 실패다.** 발급자만 설정하면 아무도 인증되지 않는다 — 신원은 `POST /api/v1/admin/oidc-identities`로 관리자가 등록한다 |
 | `auth.superuserEmail` | `""` | **비우면 관리자를 만들 부트스트랩 수단이 없다.** 채우면 시크릿의 `NEXUS__AUTH__SUPERUSER_PASSWORD`도 **반드시 함께** 있어야 한다 |
 | Secret `NEXUS__METRICS__TOKEN` | (없음) | 넣으면 `GET /_internal/metrics`가 열리고 없으면 **404**다. values 스위치는 없다 — 이 차트는 Secret 전체를 `envFrom`으로 받으므로 키를 넣는 것이 곧 켜는 것 |
 | `serviceAccount.automountToken` | `false` | ServiceAccount 토큰 마운트 여부. **차트 0.3.1부터 이 값이 실제로 적용된다** — 그 전에는 `serviceAccount.create: true`일 때만 렌더돼 기본 설치에서 효과가 없었다. 기본 설치의 동작이 "마운트됨"에서 "마운트 안 됨"으로 뒤집히고 **롤링 재시작이 한 번 일어난다.** 파드 토큰에 기대는 사이드카가 있으면 `--set serviceAccount.automountToken=true` |
@@ -145,10 +153,14 @@ CVAT 연동은 `cvat.baseUrl`·`cvat.user`·시크릿의 `NEXUS__CVAT__PASSWORD`
 | `DELETE /api/v1/admin/robots/{user_id}` | 로봇 계정 삭제 |
 | `POST /api/v1/admin/robots/{user_id}/tokens` · `GET` | 토큰 발급·목록 |
 | `DELETE /api/v1/admin/robots/{user_id}/tokens/{token_id}` | 토큰 폐기 |
+| `POST /api/v1/admin/oidc-identities` · `GET` | OIDC 신원 `(issuer, subject)` → 계정 매핑 등록·목록(appVersion 0.1.11+). 목록은 `?user_id=`로 좁힌다 |
+| `DELETE /api/v1/admin/oidc-identities/{identity_id}` | 매핑 삭제. 그 신원 하나만 막는다 |
 
 감사 로그는 없다.
 
-**로봇 계정에는 `admin`을 줄 수 없다**(appVersion 0.1.10+). 위 표의 관리 권한이 `role = admin`으로도 열리므로, `admin` 로봇의 장수명 토큰은 그대로 관리 평면 전권이 된다. 로봇은 dataset·version·sample을 지울 수도 없다(적재·수정·seal·이름 변경·fork는 된다) — 사람 토큰은 최대 `jwt.ttlHours`인데 로봇 토큰은 최장 365일이라, 그 값 하나로 sealed가 아닌 모든 dataset을 지울 수 있는 것은 장수명 자격증명에 붙일 권한이 아니라는 판단이다. 로봇 토큰으로 `POST /api/v1/auth/refresh`는 403이다(열어 두면 만료 강제가 우회된다).
+**로봇 계정에는 `admin`을 줄 수 없다**(appVersion 0.1.10+). 위 표의 관리 권한이 `role = admin`으로도 열리므로, `admin` 로봇의 장수명 토큰은 그대로 관리 평면 전권이 된다. 로봇은 dataset·version·sample을 지울 수도 없고, appVersion 0.1.11부터는 **CVAT 세션과 저장된 explorer 필터(subset)의 삭제도 같이 막힌다**(적재·수정·seal·이름 변경·fork와 세션 `close`·subset 생성·수정은 된다) — 사람 토큰은 최대 `jwt.ttlHours`인데 로봇 토큰은 최장 365일이라, 그 값 하나로 되돌릴 수 없는 삭제가 되는 것은 장수명 자격증명에 붙일 권한이 아니라는 판단이다. 로봇 토큰으로 `POST /api/v1/auth/refresh`는 403이다(열어 두면 만료 강제가 우회된다).
+
+**OIDC 신원은 superuser와 `role = admin` 계정에 붙일 수 없다**(appVersion 0.1.11+). 등록할 때와 인증할 때 두 자리에서 막는다 — 위 표의 관리 권한이 설정 superuser 이메일 **또는** `role = admin` 둘 중 하나로 열리므로, 한쪽만 막으면 「먼저 붙여 두고 나중에 그 주소를 superuser로 지정」이 그대로 통과한다. 붙일 수 있었다면 IdP 침해가 곧 관리 평면 전권이 된다.
 
 **담당자가 있는 dataset을 넘기는 데는 관리 권한이 필요하지 않다**(appVersion 0.1.6+). 담당자 본인이 `PUT /api/v1/datasets/{dataset_id}/owner`로 넘긴다. 관리 경로가 필요한 경우는 **담당자가 없는** dataset을 인수할 때와, 이미 떠난 사람의 담당분을 일괄로 넘길 때다.
 

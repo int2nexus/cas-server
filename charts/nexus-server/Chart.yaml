@@ -2,8 +2,11 @@ apiVersion: v2
 name: nexus-server
 description: ML 학습 데이터 카탈로그 서버 (cas-server 위 Sample→Dataset 버전 관리)
 type: application
-version: 0.3.7
-appVersion: "0.1.10"
+# 발행 시 이 둘과 values.yaml의 image.tag·image.digest를 함께 올린다. 올리지 않으면
+# 차트가 광고하는 auth.oidc.issuers를 고객이 넣어도 그 이미지가 그 env를 몰라 에러
+# 없이 기능만 꺼진다.
+version: 0.3.8
+appVersion: "0.1.11"
 # NOTE: ingest.batchItemConcurrency를 설정하려면 IngestConfig 전 필드 serde default가 든
 # 새 이미지(> 0.0.3)가 필요하다. 그 전 이미지엔 database.maxConnections만 주입해도 안전.
 # NOTE: cvat.baseUrl을 설정하려면 CvatConfig 전 필드 serde default가 든 새 이미지(0.1.1 이상)가
@@ -27,3 +30,6 @@ appVersion: "0.1.10"
 # 기동을 거부한다. 그 조합에서는 부하가 0이어도 /ingest/batch가 항상 429이기 때문이다.
 # 기본값(16/3)은 자리 12라 안전하고, maxConnections를 6 이하로 내릴 때 처음 걸린다.
 # 구 이미지는 이 검사가 없어 조용히 뜨고 배치 적재만 전부 실패한다.
+# NOTE: auth.oidc.issuers(OIDC 발급자 목록)를 설정하려면 appVersion 0.1.11 이상이
+# 필요하다. 구 이미지는 이 env를 무시하므로 기동은 깨지지 않지만 기능도 켜지지 않는다.
+# 비워두면(기본값) 어떤 이미지에서도 안전하다.
