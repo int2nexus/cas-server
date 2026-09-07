@@ -83,6 +83,153 @@ cas-server 는 기동 시 `CREATE TABLE IF NOT EXISTS` 만 실행하므로 보�
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.1.34
+
+image: `int2jieun/cas-server:0.1.27`
+digest: `sha256:d730c37668bfad12cc54867b0010f3172f971985bf5fb5f4c7b9738cf0946c22`
+
+**마이그레이션** — 없음. `0.1.27` 은 스키마를 건드리지 않습니다
+
+DB 조치 없이 이미지만 되돌리시면 됩니다. **다만 auth 를 끈 배포는 `0.1.27` 이 하한입니다**
+— `0.1.26` 이하는 auth 값이 비어 있으면 설정 로드에 실패해 파드가 뜨지 않습니다(아래
+「auth 를 끈 배포가 기동합니다」). auth 를 켠 배포의 하한은 `0.1.25` 그대로입니다.
+
+**설정 키** — 없음
+
+**동작 변경** — `Content-Encoding: aws-chunked` 바디의 전송 프레이밍을 풉니다
+
+AWS SDK 가 체크섬을 **트레일러**로 실어 보낼 때 바디에 청크 프레이밍이 붙습니다.
+`boto3`·AWS CLI 는 **기본 설정에서, `https` 로 보낼 때** 그렇게 합니다 — 크기와 무관하게
+5 바이트짜리 `PUT` 에도 붙습니다. `http://` 로 보내면 붙지 않습니다.
+
+`0.1.26` 까지는 그 프레이밍이 **오브젝트 내용으로 저장**됐고 `PUT` 은 `200` 이었습니다.
+`PutObject` 와 `UploadPart` 둘 다이고, 멀티파트는 **파트마다 프레이밍이 섞여** 들어갔습니다.
+
+영향받은 객체는 **크기로 가리십시오.** `HEAD` 가 올리신 것보다 큰 값을 돌려주면 그
+객체입니다.
+
+서명 청크 변형(`STREAMING-AWS4-HMAC-SHA256-PAYLOAD`)도 같이 풀립니다.
+
+**운영 조치** — 클라이언트에서 체크섬 계산을 끄셨다면 되돌리셔도 됩니다
+
+`AWS_REQUEST_CHECKSUM_CALCULATION=when_required` 같은 우회를 걸어 두셨으면 이 버전부터
+필요 없습니다.
+
+**운영 조치** — 이미 저장된 것은 이 버전이 되돌리지 않습니다
+
+`0.1.27` 은 **새로 저장되는 것만** 고칩니다. 프레이밍이 붙은 채 저장된 오브젝트는
+그대로입니다.
+
+**같은 파일을 다시 올리면 새 blob 이 생깁니다.** 프레이밍이 빠지면서 BLAKE3 가 달라지므로
+중복제거가 걸리지 않고, `ETag` 도 바뀝니다.
+
+비버저닝 버킷이면 **다시 올리는 것으로 끝납니다** — 같은 키의 낡은 행이 덮어써지면서 그
+시점에 참조가 0 이 되고, 다음 GC 가 낡은 blob 을 가져갑니다. 버저닝을 켠 버킷은 낡은 버전이
+참조로 남으므로 **그 버전을 지우는 것까지** 하셔야 합니다.
+
+**영향받은 객체를 찾으실 때의 지문입니다.**
+
+```
+앞   ^[0-9a-f]{1,8}(;[^\r\n]*)?\r\n
+뒤   트레일러형   \r\n0\r\nx-amz-checksum-<alg>:<base64>\r\n\r\n
+     서명 청크형   \r\n0;chunk-signature=<64 hex>\r\n\r\n
+```
+
+**동작 변경** — 깨진 청크 프레이밍이 `400 InvalidArgument` 입니다
+
+전에는 프레이밍을 내용으로 보아 `200` 이었습니다. 프레이밍을 잘못 만드는 클라이언트가
+있으면 이제 그 요청이 실패합니다. 상한도 함께 생겼습니다 — 프레이밍 한 줄은 1 KiB,
+트레일러는 16 줄까지입니다(SDK 가 보내는 것은 한둘입니다).
+
+**바디가 선언한 길이와 다르면 `400 IncompleteBody` 입니다** — 많아도 적어도, 종료 청크
+전에 끊겨도 그렇습니다. 프레이밍 자체가 깨진 것(`InvalidArgument`)과 코드를 가릅니다.
+
+프레이밍 여부는 `x-amz-content-sha256` 이 `STREAMING-` 으로 시작하거나
+`x-amz-decoded-content-length` 가 있으면 그렇다고 봅니다. `Content-Encoding` 의
+`aws-chunked` 토큰은 **그 둘 중 하나와 함께일 때만** 봅니다 — SDK 가 그 값을 기존
+인코딩에 이어붙이므로(`gzip,aws-chunked`), 그렇게 저장된 메타데이터를 실어 재업로드하는
+이관 도구를 프레이밍으로 오인하지 않기 위해서입니다.
+
+**동작 변경** — `aws-chunked` 요청에 `x-amz-decoded-content-length` 가 필수입니다
+
+없으면 `411 MissingContentLength` 입니다. 그 헤더가 없으면 서버가 본문 길이를 알 수 없어
+길이 검사가 꺼지고 업로드 상한도 제대로 잡히지 않습니다.
+
+**`boto3` 도 이 헤더를 빠뜨리는 경우가 하나 있습니다** — 길이를 알 수 없는 스트림을
+`put_object(Body=…)` 에 그대로 넘기면 프레이밍은 붙고 이 헤더는 빠집니다(실측). 그 요청은
+`0.1.26` 에서 프레이밍째 저장되던 것이고 `0.1.27` 에서는 `411` 입니다.
+**`upload_file`·`upload_fileobj` 는 언제나 이 헤더를 붙입니다.**
+
+**동작 변경** — `aws-chunked` 업로드의 길이 판정이 바뀝니다. 배포에 따라 메모리가 오릅니다
+
+**올리시기 전에 이 항목을 보십시오.** 위 변경의 부수 효과입니다.
+
+`0.1.27` 은 본문 길이를 `x-amz-decoded-content-length` 에서 읽습니다. `0.1.26` 은 그 헤더를
+보지 않고 `Content-Length` 만 봤습니다.
+
+**그래서 `x-amz-decoded-content-length` 는 있고 `Content-Length` 는 없는 요청에서
+달라집니다.** `0.1.26` 은 길이를 몰라 tmp 파일로 흘려보냈고, `0.1.27` 은 크기를 알아
+`config.inlineHashLimitBytes`(기본 256 MiB) 미만이면 메모리에 버퍼링합니다. `boto3` 는
+트레일러를 붙일 때 `Content-Length` 를 지우므로 그 모양으로 옵니다.
+
+**어느 쪽인지는 서버가 받는 요청에 `Content-Length` 가 있는지로 갈립니다.** 요청을
+버퍼링하는 경로가 그 헤더를 다시 붙이면 `0.1.26` 도 이미 버퍼링했으므로 변화가 없습니다.
+이 차트의 인그레스를 쓰시면 `ingress.annotations` 의
+`nginx.ingress.kubernetes.io/proxy-request-buffering` 이 그 값입니다(기본 `"off"` —
+다시 붙이지 않습니다).
+
+**해당하시면 둘을 보셔야 합니다.**
+
+⑴ **파드 메모리가 오릅니다.** 200 MiB 파일 하나가 스트리밍에서 **200 MiB 상주**로 바뀝니다.
+`config.inlineHashLimitBytes`(기본 256 MiB)를 내리면 그 경계가 내려갑니다.
+
+⑵ **`503 SlowDown` 이 새로 날 수 있습니다.** 전에는 그런 업로드가 요청당 5 MiB 로만 과금돼
+`config.maxUploadBytesInFlight` 를 사실상 우회했습니다. 이제 실제 크기로 물립니다.
+그 값은 `resources.limits.memory` 의 0.5 배가 기준입니다(values.yaml 의 그 항목 주석 참고).
+
+**동작 변경** — `GET /_api/gc/candidates` 가 집계 전용 풀을 씁니다
+
+`0.1.26` 에서 이 경로는 **요청 풀**을 썼습니다.
+
+```
+0.1.26  요청 풀      statement_timeout 없음 · 업로드와 커넥션을 다툰다
+0.1.27  집계 풀      커넥션 1 개 · config.statsStatementTimeoutSecs(기본 30 초)
+```
+
+이제 이 경로가 **집계 풀의 다른 조회들과 서로를 막습니다.** `/_api/stats` ·
+`/_api/buckets` · `/_api/buckets/{bucket}/objects` · `/_api/backends`, 그리고 폐기된
+`/_api/gc/orphan-count` 입니다. 자동화에서 부르신다면 콘솔을 여는 사람이 있을 때 같은
+취급으로 묶으십시오.
+
+GC 실행 경로는 영향받지 않습니다 — GC 는 자기 전용 풀을 씁니다.
+
+**동작 변경** — auth 를 끈 배포가 기동합니다
+
+차트 `0.1.11`(2026-06-02) 이후 마스터 키를 비운 배포는 **파드가 뜨지 못했습니다.** 이제
+뜹니다.
+
+auth 를 켠 배포는 영향이 없습니다. 「auth 를 켜면 root 자격증명이 필수」는 그대로입니다.
+
+**동작 변경** — root 자격증명만 있고 마스터 키가 없으면 기동을 거부합니다
+
+위 변경의 짝입니다. 마스터 키만 비면 서버는 그것을 **NoAuth 배포**로 읽어 인증 없이
+서비스하므로, root 자격증명이 남아 있으면 「auth 를 켜려던 것」으로 보고 거부합니다.
+의도한 NoAuth 배포라면 root 자격증명도 함께 비워 두십시오. **어디를 비우는지는
+`secrets.useExternalSecret` 에 달렸습니다** — 기본값 `true` 로 외부 Secret 을 쓰시면 그
+Secret 의 `auth-root-access-key-id` · `auth-root-secret-key` 이고, `false` 로 차트가 Secret 을
+만들게 하셨으면 `secrets.rootAccessKeyId` · `secrets.rootSecretKey` 입니다(차트 기본값이
+빈 값입니다).
+
+**외부 Secret 에서는 키를 지우지 마시고 값만 비우십시오.** deployment 가 그 세 키를
+`optional` 없이 참조하므로, 키 자체가 없으면 파드가 `CreateContainerConfigError` 에서
+멈춥니다.
+
+**정정** — `0.1.31`·`0.1.33` 이 예고한 GC CronJob 변경을 거둡니다
+
+차트가 싣는 CronJob 의 판정이 `config.gcIntervalSecs: 0`(차트 기본값)에서 정확합니다.
+**그 값을 켜시면 알려 주십시오** — 파드 자체 GC 가 함께 돌면 CronJob 이 남의 실행을 자기
+것으로 읽어 완료·실패 판정이 틀어지고, 그때는 차트를 고쳐야 합니다.
+
 ## 0.1.33
 
 image: `int2jieun/cas-server:0.1.26`

@@ -950,7 +950,7 @@ curl -s http://localhost:8080/_api/gc/last-result \
 curl -s "http://localhost:8080/_api/gc/history?limit=90" \
   -H "Authorization: Bearer $GC_TOKEN"
 
-# 회수 후보 큐 (이미지 `0.1.26` 이상)
+# 회수 후보 큐 (이미지 `0.1.26` 이상. `0.1.27` 부터 집계 전용 풀)
 curl -s http://localhost:8080/_api/gc/candidates \
   -H "Authorization: Bearer $GC_TOKEN"
 # {"count": 1234, "estimated_bytes": 5678901}
@@ -960,7 +960,7 @@ curl -s http://localhost:8080/_api/gc/candidates \
 대상 수가 아니라 테이블 크기를 따릅니다 — 226 GB 규모에서 30 초
 `config.statsStatementTimeoutSecs` 를 넘겨 항상 `500` 이고, 그 30 초 동안 같은 전용 풀을
 쓰는 조회(`/_api/stats` · `/_api/buckets` · `/_api/buckets/{bucket}/objects` ·
-`/_api/backends`)가 함께 막힙니다. 이미지 `0.1.26` 부터 폐기이고 응답에
+`/_api/backends`, 그리고 이미지 `0.1.27` 부터 `/_api/gc/candidates`)가 함께 막힙니다. 이미지 `0.1.26` 부터 폐기이고 응답에
 `Deprecation: true` 가 실립니다(실패 응답에도 실립니다).
 
 지표 `cas_gc_candidates` 는 **마지막 GC 실행이 끝난 시점**의 값이고 이 엔드포인트는

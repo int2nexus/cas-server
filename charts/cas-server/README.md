@@ -5,9 +5,9 @@ HTTP API를 제공한다.
 
 ## 문서
 
-- [아키텍처](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.33/charts/cas-server/docs/architecture.md)
+- [아키텍처](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.34/charts/cas-server/docs/architecture.md)
   — 스토리지 모델(CAS·dedup·GC), 백엔드 구성, S3 호환 API 명세, 에러 코드
-- [사용법](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.33/charts/cas-server/docs/usage.md)
+- [사용법](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.34/charts/cas-server/docs/usage.md)
   — 배포 절차, 웹 UI 키 관리, AWS CLI/boto3 예제, 내부 API
 - [변경 이력](CHANGELOG.md)
   — 버전별 동작 변경·마이그레이션·설정 키. 각 항목은 해당 GitHub Release 본문과 동일하다
@@ -49,7 +49,7 @@ kubectl apply -f sealed-secret.yaml -n <namespace>
 배포에서 그 값이 없으면 스크레이프가 `401`** 이다. 용도는 [메트릭 스크레이프](#메트릭-스크레이프) 참고.
 
 `secrets.secretMasterKey`를 비우면 NoAuth 모드(인증 없음, 내부망 전용)로 동작한다. 상세 절차와 값 교체
-방법은 [`examples/sealed-secret.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.33/charts/cas-server/examples/sealed-secret.yaml) 참고.
+방법은 [`examples/sealed-secret.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.34/charts/cas-server/examples/sealed-secret.yaml) 참고.
 
 ## 설치
 
@@ -57,7 +57,7 @@ kubectl apply -f sealed-secret.yaml -n <namespace>
 helm install cas-server int2nexus/cas-server -n <namespace> -f values-prod.yaml
 ```
 
-`values-prod.yaml`은 직접 작성하거나 [`examples/values-prod.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.33/charts/cas-server/examples/values-prod.yaml)을
+`values-prod.yaml`은 직접 작성하거나 [`examples/values-prod.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.34/charts/cas-server/examples/values-prod.yaml)을
 내려받아 값을 채운 뒤 사용하세요(이 레포를 clone했다면 `charts/cas-server/examples/values-prod.yaml`).
 
 ### S3 / MinIO 모드 values 예시
@@ -209,7 +209,7 @@ kubectl rollout restart -n <namespace> deploy/<fullname>   # 릴리스명이 아
 | 지표 | 타입 | 단위 | 어느 풀·무엇 |
 |---|---|---|---|
 | `cas_upload_in_flight` | gauge | 건수 | 동시 업로드 |
-| `cas_upload_in_flight_bytes` | gauge | 바이트 | 인플라이트 업로드가 **예약한** 바이트. Content-Length 를 아는 요청은 그 값이지만 **모르는 요청(chunked)과 멀티파트 조립은 건당 5 MiB 고정으로 계상**됩니다. 실제 상주와 두 방향으로 어긋납니다 — 크기를 모르는 요청의 실제 상주는 스트리밍 경로 상한(파트 하나) 이내이고, dedup 히트는 메타 커밋 전에 해제되어 과대 계상됩니다. `maxUploadBytesInFlight` 의 판정 기준은 이 값이지 실측 RSS 가 아닙니다 |
+| `cas_upload_in_flight_bytes` | gauge | 바이트 | 인플라이트 업로드가 **예약한** 바이트. 본문 길이를 아는 요청은 그 값이지만 **길이를 모르는 요청과 멀티파트 조립은 건당 5 MiB 고정으로 계상**됩니다. `aws-chunked` 요청의 본문 길이는 `x-amz-decoded-content-length` 에서 읽습니다(이미지 `0.1.27` 이상. 그 미만은 `Content-Length` 만 봤습니다 — 그 헤더가 없는 요청은 길이를 모르는 것으로 다뤘습니다). 실제 상주와 두 방향으로 어긋납니다 — 크기를 모르는 요청의 실제 상주는 스트리밍 경로 상한(파트 하나) 이내이고, dedup 히트는 메타 커밋 전에 해제되어 과대 계상됩니다. `maxUploadBytesInFlight` 의 판정 기준은 이 값이지 실측 RSS 가 아닙니다 |
 | `cas_upload_limit` | gauge | 건수 | `maxConcurrentUploads` (`0`=무제한). **바이트 예산의 상한 게이지는 없습니다** |
 | `cas_upload_rejected_total` | counter | 건수 | 건수·바이트 거절을 **함께** 셉니다. 구분하려면 위 두 게이지를 함께 보십시오 |
 | `cas_blob_lock_map_entries` | gauge | 건수 | 진행 중인 쓰기가 걸린 **고유 해시 수**(대기자 포함). 이미지 `0.1.18` 이상에서 **유휴 시 `0`** |
@@ -546,6 +546,13 @@ CronJob 이 둘 다 그것을 씁니다. 비면 auth 를 켠 배포에서 GC 의
 (`cas:RunGc` 를 가진 키의 SigV4 경로는 그대로입니다).
 `useExternalSecret: false` 로 차트가 Secret 을 만드는 경우에만 `secrets.gcToken` 에 넣습니다.
 
+**`secrets.rootAccessKeyId` / `secrets.rootSecretKey` 를 채우셨으면 `secrets.secretMasterKey`
+도 채워야 합니다**(이미지 `0.1.27` 이상). 마스터 키만 비면 서버는 그것을 **NoAuth 배포**로
+읽어 인증 없이 서비스하므로, `0.1.27` 부터 그 조합을 기동에서 거부합니다.
+의도한 NoAuth 배포라면 셋을 모두 비우십시오. `useExternalSecret: true`(기본값)면 비울
+자리는 외부 Secret 의 `auth-secret-master-key` · `auth-root-access-key-id` ·
+`auth-root-secret-key` 이고, `false` 면 위의 `secrets.*` 입니다.
+
 **admin 토큰은 폐기됐습니다**(이미지 `0.1.24` 이상). **새 배포에서는 `auth-admin-token` 을
 만들지 마십시오** — 차트 `0.1.31` 부터 기본 설치가 그 키를 만들지 않고, deployment 도
 `optional` 로 참조합니다.
@@ -665,7 +672,7 @@ kubectl get deploy "$REL" -n "$NS" \
 ## 집계 조회 격리 (이미지 `0.1.18` 이상)
 
 `/_api/stats`, `/_api/buckets`, `/_api/backends` 의 blob 집계, `/_api/gc/orphan-count` 는
-전 테이블 집계입니다.
+전 테이블 집계입니다. **`/_api/gc/candidates` 도 이미지 `0.1.27` 부터 이 풀에서 돕니다.**
 
 `/_api/buckets/{bucket}/objects` 의 서브폴더 조회도 이미지 `0.1.23` 까지는 그랬습니다.
 **`0.1.24` 부터 비용이 그 레벨의 항목 수에 비례합니다** — 하위 폴더를 subtree 째 건너뛰므로
@@ -796,10 +803,18 @@ GC 가 회수하지 못하고 새는 객체가 세 자리에 있습니다. 스�
 스토리지 자신의 네이티브 멀티파트 상태에만 듣는데, cas-server 는 파트를 **평범한 객체로**
 그 프리픽스 아래 씁니다. 프리픽스로 열거되는 것이 그 증거입니다.
 
-**`tmp/` 는 스트리밍 경로에서만 씁니다.** `Content-Length` 가 `config.inlineHashLimitBytes`
-(기본 256 MiB)를 넘거나 아예 없을 때(chunked)입니다. 그 밖의 `PUT` 은 최종 키에 바로 쓰므로
-이 프리픽스를 거치지 않습니다. **그런 요청이 없는 배포에서는 이 아래에 아무것도 생기지
-않습니다** — 규칙을 걸기 전에 실제로 무엇이 있는지 보십시오.
+**`tmp/` 는 스트리밍 경로에서만 씁니다.** 본문 길이가 `config.inlineHashLimitBytes`
+(기본 256 MiB)를 넘거나, 서버가 그 길이를 알 수 없을 때입니다. 그 밖의 `PUT` 은 최종 키에
+바로 쓰므로 이 프리픽스를 거치지 않습니다. **스트리밍 경로로 가는 요청이 없는 배포에서는
+이 아래에 아무것도 생기지 않습니다** — 규칙을 걸기 전에 실제로 무엇이 있는지 보십시오.
+
+여기서 「본문 길이」는 `aws-chunked` 요청에서 `x-amz-decoded-content-length` 입니다(이미지
+`0.1.27` 이상). 그 요청의 `Content-Length` 는 전송 프레이밍을 포함하므로 실제 본문보다 크고,
+`boto3` 는 아예 그 헤더를 지우고 보냅니다 — 버퍼링하는 프록시가 다시 붙이기도 합니다.
+
+**전송 계층의 체크섬은 검증하지 않습니다.** `aws-chunked` 요청의 트레일러 체크섬과 청크
+서명은 읽고 버립니다. 페이로드 무결성은 BLAKE3 가 담당합니다 — `x-cas-hash` 를 함께 보내면
+서버가 그 값과 대조하고, 어긋나면 저장하지 않습니다.
 
 **`objects/` 에는 절대 `Expiration` 을 걸지 마십시오.** 살아 있는 blob 이 그 아래 있습니다.
 그 프리픽스에 필요한 것은 대용량 쓰기가 중간에 죽었을 때 남는 네이티브 멀티파트 상태를
