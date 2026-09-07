@@ -37,10 +37,11 @@ helm install nexus-client int2nexus/nexus-client -n <namespace>
 ## SDK 설치 (Python)
 
 int2nexus SDK는 wheel/sdist 파일로 이 레포의 GitHub Pages(`sdk/simple/`, PEP 503 simple index)에
-게시됩니다:
+게시됩니다. 이 인덱스에는 `int2nexus-sdk` 하나만 있으므로 `--index-url`이 아니라
+`--extra-index-url`을 씁니다 — 의존성(requests·blake3·tqdm·pillow)은 PyPI에서 받습니다:
 
 ```bash
-pip install int2nexus-sdk --index-url https://int2nexus.github.io/cas-server/sdk/simple/
+pip install int2nexus-sdk --extra-index-url https://int2nexus.github.io/cas-server/sdk/simple/
 ```
 
 ## 릴리즈 방법
