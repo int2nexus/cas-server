@@ -138,12 +138,19 @@ kubectl port-forward -n <namespace> svc/cas-server 8080:http
 
 | 화면 | 필요한 권한 |
 |---|---|
+| Dashboard · Buckets 탭 · Backends | `ListBuckets` (`bucket: "*"`) |
+| 버킷 안의 오브젝트 목록 · 버전 이력 | `ListObjects` — 정책 `prefix` 가 `*` 여야 최상위가 보입니다 |
 | Keys 탭 (목록) | `cas:ReadAccessKeys` 또는 `cas:ManageAccessKeys` |
 | 키 발급 · revoke 버튼 | `cas:ManageAccessKeys` |
 | GC 탭 · Dashboard 의 Last GC | `cas:ReadGc` 또는 `cas:RunGc` |
 | GC 실행 · Dry-run 버튼 | `cas:RunGc` |
 
 root 키는 전부 열립니다. 권한이 없는 화면은 탭이 표시되지 않습니다.
+
+**앞의 두 줄은 이미지 `0.1.28` 이상입니다.** 그 이하에서는 `/_api/*` 가 유효한 서명만
+보고 정책을 보지 않아, 정책이 하나도 없는 키로도 이 화면들이 열립니다. 올리신 뒤 화면이
+비어 보이면 그 키의 정책을 먼저 보십시오 — 위 "5. 액션 목록" 의 `ListObjects` 항목에
+`prefix` 규칙이 있습니다.
 
 `secrets.gcToken` 과 `auth.metricsToken` 은 GC CronJob 과 스크레이프 용입니다 — 콘솔은
 어느 쪽도 쓰지 않습니다.
@@ -242,7 +249,8 @@ auth 를 켠 배포에서 root 는 필수 부트스트랩 신원이라, 비활�
 | 대상 | 해당 액션 | `bucket` | `prefix` |
 |---|---|---|---|
 | 서비스 | `ListBuckets` | **`"*"` 여야만 통과** | 보지 않음 |
-| 버킷 | `CreateBucket` · `DeleteBucket` · `ListObjects` | 이름 일치 또는 `"*"` | **보지 않음** |
+| 버킷 | `CreateBucket` · `DeleteBucket` | 이름 일치 또는 `"*"` | **보지 않음** |
+| 목록 | `ListObjects` | 이름 일치 또는 `"*"` | **요청의 `?prefix=`** |
 | 오브젝트 | 나머지 전부 | 이름 일치 또는 `"*"` | `key` 의 접두사 또는 `"*"` |
 | 관리 | 관리 액션 4개 | 보지 않음 | 보지 않음 |
 
@@ -251,10 +259,25 @@ auth 를 켠 배포에서 root 는 필수 부트스트랩 신원이라, 비활�
 - **`ListBuckets` 는 버킷을 지정한 정책으로 열리지 않습니다.** 버킷 목록은 특정 버킷의
   자원이 아니므로 `bucket: "images"` 정책이 걸리지 않습니다. 버킷 목록이 필요한 소비자에게는
   `{"action": "ListBuckets", "bucket": "*"}` 를 따로 주십시오.
-- **`ListObjects` 에는 `prefix` 가 걸리지 않습니다.**
-  `{"action": "ListObjects", "bucket": "images", "prefix": "upload/"}` 로 발급해도 그 키는
-  `images` 버킷 **전체**를 나열합니다. prefix 로 좁혀지는 것은 오브젝트 액션뿐입니다.
-  목록을 실제로 가리려면 버킷을 나누셔야 합니다.
+- **`ListObjects` 의 `prefix` 는 `key` 가 아니라 요청의 `?prefix=` 파라미터에 걸립니다**
+  (이미지 `0.1.28` 이상). `{"action": "ListObjects", "bucket": "images", "prefix":
+  "upload/"}` 로 발급한 키는 `?prefix=upload/` 이하로 부를 때만 통과하고, `?prefix=` 를
+  주지 않거나(버킷 전체 나열) 바깥을 부르면 `403` 입니다. **결과를 거르는 것이 아니라
+  요청을 거절합니다** — AWS 의 `s3:prefix` 조건 키와 같은 동작입니다.
+
+`ListObjects` 의 `prefix` 에는 딸린 규칙이 넷 있습니다.
+
+- **`deny` 도 같은 규칙입니다.** `deny ListObjects images upload/secret/` 는 `?prefix=` 가
+  그 안쪽일 때만 걸리므로 `?prefix=upload/` 요청은 막지 못하고, 그 응답에 `upload/secret/`
+  아래 키가 실립니다. 목록을 확실히 막으시려면 그 `deny` 의 `prefix` 를 `*` 로 두십시오.
+  AWS 의 `StringNotLike` 에 해당하는 표현이 이 정책 모델에는 없습니다.
+- **정책의 `prefix` 가 빈 문자열이면 `*` 와 같게 봅니다.**
+- `?uploads`(미완료 멀티파트 목록)와 `?versions` 도 같은 판정을 받습니다.
+- **`prefix` 를 좁힌 키로 `/_ui` 를 여시면 버킷 탭의 최상위가 빈 것으로 보입니다.** 콘솔이
+  루트를 빈 `prefix=` 로 부르는데 그것이 버킷 전체 나열이라 거절되기 때문입니다. 그 키로
+  콘솔을 쓰시려면 정책 `prefix` 가 `*` 여야 합니다.
+
+이미지 `0.1.27` 이하에서는 `prefix` 가 목록에 걸리지 않고 그 키가 버킷 전체를 나열합니다.
 
 ---
 
@@ -332,6 +355,95 @@ awscurl --service s3 --region cas-default \
 `/_admin/*` 은 **auth 를 켠 배포에만 존재합니다.** NoAuth 배포에는 액세스 키라는 개념이
 없어 이 경로가 마운트되지 않습니다.
 
+**키 목록의 기본값은 `?kind=static,template` 입니다**(이미지 `0.1.28` 이상). 아래 STS 가
+만드는 `kind=session` 키는 `?kind=session` 으로 명시하셔야 나옵니다.
+
+---
+
+## STS 임시 자격증명 (이미지 `0.1.28` 이상)
+
+파드가 자기 OIDC 토큰(쿠버네티스 ServiceAccount 토큰 등)으로 수명 있는 CAS 자격증명을
+받습니다. 파드 스펙과 Secret 에서 장수명 액세스 키가 없어집니다.
+
+**켜는 순서와 운영상 알아 두실 것은 차트 README 의 "STS 임시 자격증명" 절에 있습니다.**
+여기에는 붙이는 쪽 예시만 둡니다.
+
+### boto3 — 환경변수 넷
+
+붙임코드는 없습니다. `boto3` 내장 web identity 제공자가 아래 넷을 보고 스스로 교환하고,
+만료 전에 스스로 갱신합니다.
+
+```yaml
+# 워크로드 파드 스펙
+spec:
+  serviceAccountName: loader
+  containers:
+    - name: app
+      env:
+        - name: AWS_WEB_IDENTITY_TOKEN_FILE
+          value: /var/run/secrets/tokens/cas
+        - name: AWS_ROLE_ARN               # 값은 무시됩니다. SDK 가 넷을 다 요구합니다
+          value: arn:aws:iam::000000000000:role/cas
+        - name: AWS_ROLE_SESSION_NAME
+          value: loader
+        - name: AWS_ENDPOINT_URL_STS       # cas-server 자신입니다
+          value: http://cas-server
+      volumeMounts:
+        - name: cas-token
+          mountPath: /var/run/secrets/tokens
+          readOnly: true
+  volumes:
+    - name: cas-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: cas
+              audience: <auth.oidc.issuers 의 audience 와 같은 값>
+              expirationSeconds: 3600
+```
+
+```python
+import boto3
+
+# 자격증명 인자를 주지 않습니다 — 위 환경변수에서 SDK 가 스스로 받아옵니다
+s3 = boto3.client("s3", endpoint_url="http://cas-server", region_name="cas-default")
+s3.upload_file("a.jpg", "images", "upload/a.jpg")
+```
+
+받은 자격증명은 `X-Amz-Security-Token` 을 함께 실어 서명합니다. presigned URL 로도
+동작합니다 — 토큰이 쿼리 파라미터로 실립니다.
+
+### 직접 호출
+
+```bash
+curl -X POST "$CAS/" \
+  -d 'Action=AssumeRoleWithWebIdentity' \
+  --data-urlencode "WebIdentityToken=$(cat /var/run/secrets/tokens/cas)"
+```
+
+```xml
+<AssumeRoleWithWebIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
+  <AssumeRoleWithWebIdentityResult>
+    <Credentials>
+      <AccessKeyId>CASSa1b2c3...</AccessKeyId>
+      <SecretAccessKey>sk-d4e5f6...</SecretAccessKey>
+      <SessionToken>...</SessionToken>
+      <Expiration>2026-09-08T12:00:00.000000Z</Expiration>
+    </Credentials>
+  </AssumeRoleWithWebIdentityResult>
+</AssumeRoleWithWebIdentityResponse>
+```
+
+`DurationSeconds` 는 `900`~`43200`, 기본 `3600` 입니다. `RoleArn`·`RoleSessionName`·
+`Version` 은 받고 무시합니다 — SDK 가 실어 보내므로 거절하지 않습니다.
+
+**`DurationSeconds=900` 을 명시하지 마십시오.** 세션 재사용 조건이 "남은 수명 900초 이상"
+이라 그 값으로는 방금 만든 세션도 재사용되지 않고, 호출마다 세션 키 행이 하나씩 늡니다.
+`boto3` 는 이 값을 보내지 않으므로 SDK 로 붙는 워크로드에는 해당하지 않습니다.
+
+**실제 만료는 `min(now + DurationSeconds, 토큰의 exp)` 입니다.** 잘린 수명이 900초 미만이면
+발급하지 않고 `ExpiredToken`(400)으로 거절합니다.
+
 ---
 
 ## 버킷
@@ -382,6 +494,10 @@ resp = s3.list_objects_v2(Bucket="my-bucket", Prefix="logs/")
 for obj in resp.get("Contents", []):
     print(obj["Key"], obj["Size"])
 ```
+
+**키에 `prefix` 를 좁힌 `ListObjects` 정책이 붙어 있으면 `--prefix` 가 필수입니다**
+(이미지 `0.1.28` 이상). 주지 않으면 버킷 전체 나열로 보아 `403` 입니다 — 위
+"5. 액션 목록" 의 `ListObjects` 항목을 보십시오.
 
 `--max-keys 0` 은 빈 목록을 돌려줍니다 — `IsTruncated` 는 `false` 이고 이어받을 커서도
 없습니다. 0건을 요청했으므로 「더 있음」 을 참으로 두지 않습니다. 콘솔 API
@@ -982,10 +1098,11 @@ curl -s http://localhost:8080/_internal/metrics \
 **`metricsToken` 이 비면** auth 를 켠 배포에서는 `/_admin/*`·GC 와 같이 `401` 로 닫히고
 (이미지 `0.1.24` 이상), NoAuth 배포에서는 무인증으로 열립니다. 후자는 기동 시 경고가 뜹니다.
 
-**노출되는 지표는 `cas_*` 20종입니다**(이미지 `0.1.25` 이하는 `cas_gc_last_errors` 가 없어 19종)**.** 타입·단위와 각 값이 무엇을 보는지(특히
+**노출되는 지표는 `cas_*` 20종입니다**(이미지 `0.1.25` 이하는 `cas_gc_last_errors` 가 없어 19종. `0.1.28` 이상에서 **STS 를 켜면** `cas_sts_issue_total`·`cas_sts_reject_total` 이 더해져 22종)**.** 타입·단위와 각 값이 무엇을 보는지(특히
 `cas_db_pool_*` 가 어느 풀을 보고하는지)는 차트 README 의 "메트릭 스크레이프" 절에 표로
-정리했습니다. 라벨이 붙는 것은 `cas_anonymous_get_total`(`reason`·`cause`)과 `cas_gc_last_*` 중
-**셋**(`ran_at_seconds`·`duration_ms`·`reclaimed_blobs` 에 `phase`) 뿐입니다 —
+정리했습니다. 라벨이 붙는 것은 `cas_anonymous_get_total`(`reason`·`cause`), `cas_gc_last_*` 중
+**셋**(`ran_at_seconds`·`duration_ms`·`reclaimed_blobs` 에 `phase`), 그리고 STS 둘
+(`cas_sts_issue_total` 에 `result`, `cas_sts_reject_total` 에 `reason`)입니다 —
 **`cas_gc_last_status` 와 `cas_gc_last_errors` 에는 라벨이 없습니다.** 같은 엔드포인트에
 `axum_http_*` 3종이 함께 나오고, `axum_http_requests_total` 과 `_duration_seconds` 는
 `endpoint`/`method`/`status` 를, **`axum_http_requests_pending` 은 `endpoint`/`method` 만**
@@ -1041,9 +1158,11 @@ curl -s http://localhost:8080/_internal/metrics \
 
 업로드 전 BLAKE3 해시를 미리 확인하여 이미 존재하는 blob이면 물리 전송을 생략할 수 있습니다.
 
-`/_api/blobs/{hash}` 는 콘솔 경로라 **유효한 키의 SigV4 서명이 필요합니다.** 대응하는 정책
-액션은 없으므로 데이터 전용 키로도 열립니다. `config.consoleEnabled: false` 인 배포에는 이
-경로가 없습니다.
+`/_api/blobs/{hash}` 는 콘솔 경로라 **유효한 키의 SigV4 서명이 필요합니다.** `HEAD` 에는
+대응하는 정책 액션이 없으므로 범위를 좁힌 업로드 키로도 열립니다 — 업로드 전 확인이
+목적인 경로입니다. **같은 경로의 `GET` 은 `ListBuckets`(`bucket: "*"`)를
+요구합니다**(이미지 `0.1.28` 이상). 응답의 `references` 가 그 내용을 참조하는 모든 버킷·키를
+싣기 때문입니다. `config.consoleEnabled: false` 인 배포에는 이 경로가 없습니다.
 
 ```bash
 HASH=$(b3sum --no-names file.bin)

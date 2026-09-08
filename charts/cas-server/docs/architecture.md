@@ -314,6 +314,7 @@ aws s3 presign s3://documents/2026/report.pdf \
 |------|------|
 | **NoAuth** | 인증 없음, 내부망 전용 운용 시 사용 |
 | **SigV4** | AWS 표준 서명(AWS4-HMAC-SHA256). Access Key + Secret Key 필요 |
+| **SigV4 (임시 자격증명)** | 위에 더해 `X-Amz-Security-Token` 을 요구. STS 가 발급하며 수명이 있습니다 — 아래 "STS" |
 
 SigV4 사용 시 region 은 아무 값이나 됩니다 — 서버가 클라이언트의 선언 값으로 서명 키를
 유도하므로, 지정하지 않아 SDK 기본값(boto3 는 `us-east-1`)이 들어가도 동작합니다.
@@ -338,17 +339,21 @@ aws configure set region                cas-default
 
 정책에 쓸 수 있는 이름은 **열다섯 개와 `"*"` 가 전부**이고, 목록 밖의 문자열은 `400` 으로
 거절합니다. 전체 목록, 어떤 API 가 어느 액션으로 판정되는지, `bucket`·`prefix` 가 걸리는
-깊이는 `docs/usage.md` 의 "액션 목록" 절에 있습니다. 그중 정책을 좁힐 때 어긋나는 자리 둘은
-`ListBuckets`(`bucket: "*"` 여야 열림)와 `ListObjects`(`prefix` 를 보지 않아 버킷 전체를
-나열)입니다.
+깊이는 `docs/usage.md` 의 "액션 목록" 절에 있습니다. 그중 정책을 좁힐 때 어긋나는 자리는
+`ListBuckets` 입니다 — `bucket: "*"` 인 정책으로만 열립니다.
+
+**`ListObjects` 의 `prefix` 는 `key` 가 아니라 요청의 `?prefix=` 파라미터에 걸립니다**
+(이미지 `0.1.28` 이상). 정책 안쪽을 부르지 않으면 결과를 거르는 것이 아니라 요청을
+거절하며, `?prefix=` 없이 부르는 것은 버킷 전체 나열로 봅니다. `deny` 도 같은 규칙입니다.
+그 이하 이미지에서는 이 액션이 `prefix` 를 보지 않고 버킷 전체를 나열합니다.
 
 관리 API(`/_admin/*`)는 SigV4 로만 열립니다. 액세스 키에 관리 정책을 붙여 사람마다 하나씩
 주면, 조작마다 그 키가 로그에 남고 회수는 그 키만 폐기하면 됩니다.
 
 | 액션 | 대상 |
 |------|------|
-| `cas:ReadAccessKeys` | 키·정책 목록 조회 |
-| `cas:ManageAccessKeys` | 키 발급·폐기, 정책 추가·삭제 + 목록 조회 |
+| `cas:ReadAccessKeys` | 키·정책 목록 조회, STS 신원 매핑 조회 |
+| `cas:ManageAccessKeys` | 키 발급·폐기, 정책 추가·삭제, STS 신원 매핑 등록·삭제 + 목록 조회 |
 | `cas:ReadGc` | GC 조회(`GET /_api/gc/*`) |
 | `cas:RunGc` | GC 실행(`POST /_internal/gc`) + GC 조회 |
 
@@ -383,9 +388,49 @@ SigV4 분기가 없어 root 키로도 `401` 이고, 토큰이 비면 auth 를 �
 SigV4 를 켜면 데이터 API 뿐 아니라 **관리 콘솔이 쓰는 조회 API(`/_api/*`)도 같은 서명을
 요구합니다.** 자격증명 없이 호출하면 `403` 입니다.
 
-예외 둘은 의도적으로 열려 있습니다. `/_api/auth-mode` 는 콘솔이 로그인 화면을 띄울지
-판단하는 입구라 서명할 자격증명이 아직 없는 시점에 호출되며, 응답은 인증 활성 여부
-하나뿐입니다. `/_ui` 는 페이지 골격이고 그 안의 데이터는 모두 위 서명 요청으로 받아옵니다.
+**그리고 데이터 평면과 같은 인가를 받습니다**(이미지 `0.1.28` 이상). 버킷 안을 보는 둘은
+`ListObjects`, 버킷 경계를 넘는 넷(`buckets` · `stats` · `backends` · `config-effective`)과
+`GET /_api/blobs/{hash}` 는 `ListBuckets` 입니다. 그 이하 이미지에서는 서명만 맞으면
+정책과 무관하게 열립니다.
+
+무인증으로 열려 있는 것은 `/_api/auth-mode` 와 `/_ui` 둘입니다. 앞은 콘솔이 로그인 화면을
+띄울지 판단하는 입구라 서명할 자격증명이 아직 없는 시점에 호출되며 응답은 인증 활성 여부
+하나뿐이고, 뒤는 페이지 골격이라 그 안의 데이터는 모두 위 서명 요청으로 받아옵니다.
+
+서명은 요구하지만 **인가를 보지 않는 것이 둘** 있습니다 — `GET /_api/whoami` 는 주체 자신의
+권한을 비추는 것이고, `HEAD /_api/blobs/{hash}` 는 업로드 전 중복 확인 경로라 범위를 좁힌
+업로드 키로도 열려 있어야 합니다. 같은 경로의 `GET` 은 응답의 참조 목록이 버킷 경계를
+넘으므로 위 `ListBuckets` 쪽입니다.
+
+#### STS — 임시 자격증명 (이미지 `0.1.28` 이상)
+
+워크로드가 OIDC 토큰(쿠버네티스 ServiceAccount 토큰 등)을 수명 있는 CAS 자격증명으로
+바꿉니다. 파드 스펙과 Secret 에서 장수명 액세스 키를 없애는 것이 목적입니다.
+
+```
+POST /   Action=AssumeRoleWithWebIdentity   WebIdentityToken=<JWT>
+→ AccessKeyId · SecretAccessKey · SessionToken · Expiration
+```
+
+액션 이름이 AWS 와 같으므로 주요 SDK 의 내장 web identity 제공자가 그대로 붙습니다.
+
+받은 자격증명은 이후 요청에 `X-Amz-Security-Token` 을 함께 실어 서명합니다. 값이 없거나
+틀리면 `403` 입니다. 기존 키(`kind=static`)는 이 헤더가 있어도 무시합니다.
+
+키는 `kind` 로 셋으로 갈립니다.
+
+| `kind` | 무엇인가 | 인증 |
+|---|---|---|
+| `static` | 사람·시스템이 쓰는 키. 기본값 | 됨 |
+| `template` | 정책만 사는 자리. STS 가 이 정책을 임시 자격증명에 복사 | **안 됨** — `403` |
+| `session` | STS 가 발급한 임시 자격증명 | 세션 토큰을 함께 요구 |
+
+권한은 `(issuer, subject)` → 템플릿 키 매핑에서 옵니다. **매핑은 관리자가
+`/_admin/sts-identities` 로 미리 만들며 자동 등록은 없습니다.** 붙이는 절차와 운영상
+제약은 차트 README 의 "STS 임시 자격증명" 절에 있습니다.
+
+**`auth.oidc.issuers` 가 비거나 auth 를 켜지 않으면 라우트를 마운트하지 않습니다** — 그
+배포에서 `POST /` 는 `405` 가 아니라 `403` 입니다.
 
 ### 5.3 CAS 전용 응답 헤더
 
@@ -405,6 +450,7 @@ S3 표준에 없는 CAS 전용 헤더가 업로드 응답에 추가됩니다.
 - 오브젝트: `PutObject`, `GetObject`, `HeadObject`, `DeleteObject`, `CopyObject`
 - 멀티파트: `CreateMultipartUpload`, `UploadPart`, `CompleteMultipartUpload`, `AbortMultipartUpload`, `ListMultipartUploads`
 - Presigned URL: `GET`, `PUT`, `DELETE` 방식
+- STS: `AssumeRoleWithWebIdentity` (이미지 `0.1.28` 이상. `auth.oidc.issuers` 를 설정한 배포에만 존재)
 
 ### 5.5 웹 관리 UI
 
@@ -412,9 +458,9 @@ S3 표준에 없는 CAS 전용 헤더가 업로드 응답에 추가됩니다.
 
 | 메뉴 | 제공 기능 |
 |------|-----------|
-| **대시보드** | 전체 오브젝트 수·버킷 수·총 용량 요약. Last GC 결과는 `cas:ReadGc` 또는 `cas:RunGc` 일 때 표시 |
-| **버킷 / 오브젝트** | 버킷 목록, 오브젝트 탐색, 버전 이력 조회, 블롭 상세(해시·크기·참조 수) 확인 |
-| **백엔드** | 각 스토리지 백엔드의 디스크 사용량·블롭 수 현황 |
+| **대시보드** | 전체 오브젝트 수·버킷 수·총 용량 요약. `ListBuckets`(`bucket: "*"`) 로 열림. Last GC 결과는 `cas:ReadGc` 또는 `cas:RunGc` 일 때 표시 |
+| **버킷 / 오브젝트** | 버킷 목록(`ListBuckets`), 오브젝트 탐색·버전 이력(`ListObjects`), 블롭 상세(`ListBuckets`). 정책 `prefix` 가 `*` 가 아니면 최상위가 빈 것으로 보입니다 — 5.2 |
+| **백엔드** | 각 스토리지 백엔드의 디스크 사용량·블롭 수 현황. `ListBuckets`(`bucket: "*"`) 로 열림 |
 | **GC** | `cas:ReadGc` 또는 `cas:RunGc` 로 열림. 회수 후보 수 조회, 실행 이력 확인. 수동 실행·Dry-run 버튼은 `cas:RunGc` |
 | **액세스 키** | `cas:ReadAccessKeys` 또는 `cas:ManageAccessKeys` 로 열림. 발급·비활성화·정책 관리 버튼은 `cas:ManageAccessKeys` |
 

@@ -5,9 +5,9 @@ HTTP API를 제공한다.
 
 ## 문서
 
-- [아키텍처](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.34/charts/cas-server/docs/architecture.md)
+- [아키텍처](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.35/charts/cas-server/docs/architecture.md)
   — 스토리지 모델(CAS·dedup·GC), 백엔드 구성, S3 호환 API 명세, 에러 코드
-- [사용법](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.34/charts/cas-server/docs/usage.md)
+- [사용법](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.35/charts/cas-server/docs/usage.md)
   — 배포 절차, 웹 UI 키 관리, AWS CLI/boto3 예제, 내부 API
 - [변경 이력](CHANGELOG.md)
   — 버전별 동작 변경·마이그레이션·설정 키. 각 항목은 해당 GitHub Release 본문과 동일하다
@@ -49,7 +49,7 @@ kubectl apply -f sealed-secret.yaml -n <namespace>
 배포에서 그 값이 없으면 스크레이프가 `401`** 이다. 용도는 [메트릭 스크레이프](#메트릭-스크레이프) 참고.
 
 `secrets.secretMasterKey`를 비우면 NoAuth 모드(인증 없음, 내부망 전용)로 동작한다. 상세 절차와 값 교체
-방법은 [`examples/sealed-secret.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.34/charts/cas-server/examples/sealed-secret.yaml) 참고.
+방법은 [`examples/sealed-secret.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.35/charts/cas-server/examples/sealed-secret.yaml) 참고.
 
 ## 설치
 
@@ -57,7 +57,7 @@ kubectl apply -f sealed-secret.yaml -n <namespace>
 helm install cas-server int2nexus/cas-server -n <namespace> -f values-prod.yaml
 ```
 
-`values-prod.yaml`은 직접 작성하거나 [`examples/values-prod.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.34/charts/cas-server/examples/values-prod.yaml)을
+`values-prod.yaml`은 직접 작성하거나 [`examples/values-prod.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.35/charts/cas-server/examples/values-prod.yaml)을
 내려받아 값을 채운 뒤 사용하세요(이 레포를 clone했다면 `charts/cas-server/examples/values-prod.yaml`).
 
 ### S3 / MinIO 모드 values 예시
@@ -88,17 +88,24 @@ storage:
 |---|---|
 | `GET`/`HEAD /{bucket}/{key}` | `auth.anonymousGet: true`(기본값)이면 없음 |
 | 그 밖의 데이터 평면 | 키 정책 |
-| `/_api/stats` · `buckets` · `backends` · `blobs/{hash}` · `config-effective` | 유효한 키의 SigV4 서명 |
+| `/_api/buckets/{b}/objects` · `object-versions` | `ListObjects` 키 — 요청 `prefix` 가 정책 `prefix` 안에 |
+| `/_api/stats` · `buckets` · `backends` · `config-effective` · `GET blobs/{hash}` | `ListBuckets` 키 (`bucket: *`) |
+| `HEAD /_api/blobs/{hash}` · `/_api/whoami` | 유효한 키의 SigV4 서명 (인가 없음) |
 | `/_api/gc/*` | `cas:ReadGc`·`cas:RunGc` 키, root 키, GC 토큰 |
 | `POST /_internal/gc` | `cas:RunGc` 키, root 키, GC 토큰 |
 | `/_admin/*` | `cas:*AccessKeys` 키, root 키 |
+| `POST /` (STS) | 없음 — OIDC 토큰이 자격증명입니다 (아래 「STS 임시 자격증명」) |
 | `/_internal/metrics` | metrics 토큰 **뿐** |
 | `/_api/auth-mode` · `/_ui` | 없음 |
 
 예외 셋을 알아 두십시오.
 
-- **`/_api/*` 는 인증만 보고 인가는 보지 않습니다.** 대응 액션이 없어 데이터 전용 키로도
-  열립니다. 키별로 좁히는 수단은 없습니다. 자격증명 값은 나가지 않습니다
+- **`/_api/*` 중 인가를 보지 않는 것은 `HEAD /_api/blobs/{hash}` 와 `/_api/whoami`
+  둘뿐입니다.** 앞은 업로드 전 중복 확인 경로라(아래 「블롭 dedup 사전 확인」), 뒤는 주체
+  자신의 권한을 비추는 것이라 그렇습니다. `HEAD` 와 같은 경로의 `GET` 은 `ListBuckets` 를
+  요구합니다 — 응답의 `references` 가 그 내용을 참조하는 모든 버킷·키를 싣기 때문입니다.
+  `/_api/*` 전체에 인가가 걸리는 것은 **이미지 `0.1.28` 이상**입니다. 그 이하에서는 유효한
+  서명만 있으면 정책과 무관하게 열립니다. 자격증명 값은 어느 쪽이든 나가지 않습니다
   (`<set>`/`<unset>` 과 가려진 `db_url`).
 - **`/_internal/metrics` 는 키로 열리지 않습니다.** `auth.metricsToken` 하나만 받고,
   그 값이 비면 auth 를 켠 배포에서는 `401`, NoAuth 배포에서는 무인증으로 열립니다.
@@ -143,8 +150,9 @@ storage:
 | `config.gcDbMaxConnections` | `2` | GC 전용 풀 크기 |
 | `config.softDeleteRetentionSecs` | `604800` | soft-delete된 `object_versions` **행** 중 GC 가 blob 과 함께 치우지 못한 것의 보존 기간. **되돌림 창이 아니다** (아래 참고) |
 | `auth.cacheTtlSecs` | `10` | 자격증명 캐시 TTL. 폐기된 키·좁힌 정책이 실제로 막히기까지의 지연. 유출 대응 시 `0` |
+| `auth.oidc.issuers` | `[]` | STS(`POST /`) 발급자 목록. **비우면 라우트를 마운트하지 않습니다.** 이미지 `0.1.28` 이상 (아래 「STS 임시 자격증명」) |
 | `serviceAccount.create` | `false` | `true` 면 차트가 ServiceAccount 를 만든다. `false` 면 기존 것을 쓴다 |
-| `serviceAccount.automountToken` | `false` | 토큰 자동 마운트. 이 서버는 쿠버네티스 API 를 부르지 않으므로 기본 `false`. IRSA/Workload Identity 를 쓸 때만 `true` |
+| `serviceAccount.automountToken` | `false` | 토큰 자동 마운트. 이 서버는 쿠버네티스 API 를 부르지 않으므로 기본 `false`. IRSA/Workload Identity 를 쓸 때, 그리고 `auth.oidc.issuers` 항목에 `jwksAuth: serviceaccount` 를 쓸 때만 `true` |
 | `serviceAccount.annotations` | `{}` | `create: true` 일 때 SA 에 붙일 애노테이션. IRSA · Workload Identity 설정 자리 |
 | `resources.limits.memory` | `6Gi` | 2026-08-05 OOM 대응으로 올린 값. **당분간 유지할 것** — 하향 전제는 [values.yaml](values.yaml)의 `resources` 주석 참고 |
 | `gc.enabled` | `true` | GC CronJob 활성화. 초기 마이그레이션 중에는 `false` 권장. **이미지 `0.1.17` 이하에서는 끄면 메모리 회수 경로도 사라진다** (아래 참고) |
@@ -227,6 +235,8 @@ kubectl rollout restart -n <namespace> deploy/<fullname>   # 릴리스명이 아
 | `cas_gc_last_status` | gauge | — | `0`=성공 `1`=**실행** 실패 `2`=실행 중. 항목 몇 건이 실패한 실행은 `0` 입니다 — 그 수는 `cas_gc_last_errors` 입니다 (이미지 `0.1.26` 이상). `0.1.25` 이하에서는 `errors > 0` 인 실행도 `1` 이었습니다 |
 | `cas_gc_last_errors` | gauge | 건수 | 마지막 실행이 회수하지 못한 **항목** 수. **이미지 `0.1.26` 에서 새로 생겼습니다** — 그 미만에는 이 지표가 없습니다. 같은 값이 `GET /_api/gc/last-result`·`/history` 의 `errors` 필드로도 나가며, 그 계수가 `0.1.26` 에서 양방향으로 바뀌었습니다(같은 blob 이 두 단계에서 실패해도 1, 그리고 회수 직전 재확인 실패를 새로 셉니다 — CHANGELOG `0.1.33` 절). **재기동 뒤 첫 GC 실행까지 시리즈가 없습니다** |
 | `cas_gc_candidates` / `cas_gc_candidate_bytes` | gauge | 건수 / 바이트 | 회수 후보 큐. GC 실행이 끝난 시점의 값이라 `orphan` 이 큐를 비운 직후를 가리킵니다 |
+| `cas_sts_issue_total{result}` | counter | 건수 | STS 발급. `result` 는 `issued`(새로 발급) · `reused`(살아 있는 세션 재사용). **STS 를 켠 배포에만 나옵니다** (이미지 `0.1.28` 이상) |
+| `cas_sts_reject_total{reason}` | counter | 건수 | STS 거절. `reason` 은 `invalid_token` · `expired_token` · `no_mapping` · `template_unusable` · `idp_unavailable` · `validation`. 〃 |
 
 ### 지표가 나타나는 시점 — `absent()` 알림을 걸기 전에
 
@@ -245,6 +255,7 @@ kubectl rollout restart -n <namespace> deploy/<fullname>   # 릴리스명이 아
 | `cas_gc_last_ran_at_seconds{phase}` | 기동 시 이력에서 복원 | 걸어도 됩니다. **GC 정지를 보는 알림은 이 값으로 겁니다** |
 | `cas_gc_last_duration_ms{phase}` · `cas_gc_last_reclaimed_blobs{phase}` · `cas_gc_last_status` · `cas_gc_last_errors` | **재기동 뒤 첫 GC 실행까지 없습니다** | **걸지 마십시오** — 재기동마다 울립니다 |
 | `cas_gc_candidates` · `cas_gc_candidate_bytes` | 첫 GC 실행 뒤 | **걸지 마십시오** — 같은 이유 |
+| `cas_sts_issue_total` · `cas_sts_reject_total` | STS 를 켠 배포에서 기동 직후 | 켠 배포에만 걸으십시오. `auth.oidc.issuers` 가 비었거나 auth 를 켜지 않으면 **시리즈가 없습니다** |
 
 카운터와 달리 **`cas_gc_last_*` 게이지는 `0` 으로 등록하지 않습니다.** `cas_gc_last_status`
 의 `0` 은 「마지막 실행이 성공」이고 `cas_gc_last_ran_at_seconds` 의 `0` 은 1970-01-01
@@ -479,10 +490,14 @@ blob 이 0건이든 수천 건이든 같습니다. 판단 기준과 미루는 �
 
 | 액션 | 여는 것 |
 |---|---|
-| `cas:ReadAccessKeys` | 키·정책 목록 조회, 키 단건 조회 |
-| `cas:ManageAccessKeys` | 키 발급·폐기, 정책 추가·삭제 **+ 위 조회 전부** |
+| `cas:ReadAccessKeys` | 키·정책 목록 조회, 키 단건 조회, `GET /_admin/sts-identities` |
+| `cas:ManageAccessKeys` | 키 발급·폐기, 정책 추가·삭제, 신원 매핑 등록·삭제 **+ 위 조회 전부** |
 | `cas:ReadGc` | `GET /_api/gc/*` |
 | `cas:RunGc` | `POST /_internal/gc` **+ GC 조회** |
+
+**신원 매핑(`/_admin/sts-identities`)에는 새 액션을 두지 않았습니다.**
+`cas:ManageAccessKeys` 를 가진 주체는 이미 아무 정책이나 붙인 키를 만들 수 있으므로, 외부
+신원을 템플릿에 잇는 능력이 새 권한을 주지 않습니다.
 
 정책의 `"*"` 는 데이터 평면 액션에만 걸립니다 — 관리 권한은 이름을 적은 정책에만 붙습니다.
 정의되지 않은 액션 이름은 `400` 으로 거절합니다.
@@ -518,6 +533,14 @@ curl -X POST "$BASE/_admin/access-keys/$KEY_ID/policies" -H "$SIGV4" \
 curl "$BASE/_admin/access-keys"              -H "$SIGV4"
 curl "$BASE/_admin/access-keys?active=true"  -H "$SIGV4"
 curl "$BASE/_admin/access-keys/$KEY_ID"      -H "$SIGV4"
+```
+
+**목록의 기본값은 `?kind=static,template` 입니다**(이미지 `0.1.28` 이상). STS 가 만드는
+`kind=session` 키는 명시하셔야 나옵니다 — 이 API 에는 커서도 LIMIT 도 없어서, 발급 횟수만큼
+느는 목록을 기본에 넣지 않습니다.
+
+```bash
+curl "$BASE/_admin/access-keys?kind=session" -H "$SIGV4"
 ```
 
 **단건 조회는 폐기된 키도 `200` 으로 돌려줍니다** (`is_active: false`). `404` 는 그 `key_id`
@@ -567,6 +590,143 @@ CronJob 이 둘 다 그것을 씁니다. 비면 auth 를 켠 배포에서 GC 의
 
 NoAuth 배포(`secretMasterKey` 가 빔)에는 액세스 키가 없으므로 `gcToken` 이 GC 의 유일한
 자격증명입니다. 그 모드에서 `metricsToken` 이 비면 메트릭은 무인증으로 열립니다.
+
+## STS 임시 자격증명 (이미지 `0.1.28` 이상)
+
+워크로드가 OIDC 토큰(쿠버네티스 ServiceAccount 토큰 등)을 수명 있는 CAS 자격증명으로
+바꿉니다. 파드 스펙과 Secret 에서 장수명 액세스 키를 없애는 것이 목적입니다.
+
+액션 이름을 AWS 와 맞췄으므로 **SDK 의 내장 web identity 제공자가 그대로 붙습니다** —
+붙임코드는 없습니다.
+
+```
+POST /  ·  Action=AssumeRoleWithWebIdentity
+```
+
+`auth.oidc.issuers` 가 비어 있으면 라우트를 마운트하지 않습니다. auth 를 켜지 않으신
+배포에서도 뜨지 않습니다 — 판정할 정책이 없기 때문입니다.
+
+### 켜는 순서
+
+**⑴ 발급자를 설정합니다.**
+
+```yaml
+auth:
+  oidc:
+    issuers:
+      - issuer: https://kubernetes.default.svc          # 토큰의 iss 와 같아야 합니다
+        audience: <projected 볼륨의 audience 와 같은 값>
+        jwksUri: https://<API 서버>:6443/openid/v1/jwks  # issuer 와 호스트가 다를 때
+        jwksAuth: serviceaccount                        # JWKS 가 익명에 403 일 때
+
+serviceAccount:
+  automountToken: true    # jwksAuth: serviceaccount 를 쓰시면 필수입니다
+```
+
+`jwksUri` 를 비우시면 `{issuer}/.well-known/openid-configuration` 에서 찾습니다.
+광고된 주소가 `https` 가 아니면 거부하고, `https` → `http` 리다이렉트도 거부합니다.
+
+**`jwksAuth: serviceaccount` 는 파드의 SA 토큰을 디스커버리 요청과 JWKS 요청에 `Bearer`
+로 싣습니다.** 광고된 JWKS 호스트는 발급자와 달라도 됩니다 — **발급자를 신뢰하는 만큼
+그 문서가 가리키는 호스트도 신뢰하게 됩니다.** 좁히시려면 `jwksUri` 를 명시하십시오.
+
+**⑵ 템플릿 키를 만들고 정책을 붙입니다.** 임시 자격증명이 받을 권한이 이 키의 정책입니다.
+
+```bash
+curl -X POST "$BASE/_admin/access-keys" -H "$SIGV4" \
+  -H "Content-Type: application/json" \
+  -d '{"description":"team-a workload","kind":"template"}'
+# → key_id 를 받습니다. 이 키 자체는 인증에 쓸 수 없습니다(헤더 서명·presigned 모두 403)
+
+curl -X POST "$BASE/_admin/access-keys/$TEMPLATE_KEY_ID/policies" -H "$SIGV4" \
+  -H "Content-Type: application/json" \
+  -d '{"effect":"allow","action":"PutObject","bucket":"images","prefix":"upload/"}'
+```
+
+**⑶ 신원을 템플릿에 잇습니다.** 이 매핑이 없으면 토큰이 유효해도 `AccessDenied` 입니다 —
+자동 등록은 없습니다.
+
+```bash
+curl -X POST "$BASE/_admin/sts-identities" -H "$SIGV4" \
+  -H "Content-Type: application/json" \
+  -d '{"issuer":"https://kubernetes.default.svc",
+       "subject":"system:serviceaccount:ml:loader",
+       "template_key_id":"'"$TEMPLATE_KEY_ID"'"}'
+# → 201 {"id": 7}
+
+curl "$BASE/_admin/sts-identities" -H "$SIGV4"          # 목록
+curl -X DELETE "$BASE/_admin/sts-identities/7" -H "$SIGV4"   # 삭제. {id} 는 불투명한 정수입니다
+```
+
+같은 `(issuer, subject)` 를 다시 등록하시면 `409` 입니다. 템플릿을 바꾸시려면 지우고 다시
+등록하십시오.
+
+**⑷ 워크로드를 붙입니다.** `boto3` 는 환경변수 넷이면 됩니다.
+
+```yaml
+env:
+  - name: AWS_WEB_IDENTITY_TOKEN_FILE
+    value: /var/run/secrets/tokens/cas
+  - name: AWS_ROLE_ARN            # 값은 무시됩니다. SDK 가 넷을 다 요구합니다
+    value: arn:aws:iam::000000000000:role/cas
+  - name: AWS_ROLE_SESSION_NAME
+    value: loader
+  - name: AWS_ENDPOINT_URL_STS
+    value: http://<cas-server 서비스>
+```
+
+토큰은 projected 볼륨으로 마운트하시고, `audience` 를 ⑴ 의 값과 맞추십시오.
+SDK 가 만료 전에 스스로 갱신합니다.
+
+### 알아 두실 것
+
+- **STS 를 부르는 시점에 토큰의 남은 수명이 900초 이상이어야 합니다.** 미만이면
+  `ExpiredToken`(400)이고 **SDK 는 400 을 재시도하지 않습니다.** Keycloak realm 의 기본
+  액세스 토큰 수명은 300초라 이 하한보다 짧습니다 — IdP 쪽을 올리십시오
+- **`botocore`(boto3)는 `DurationSeconds` 를 보내지 않습니다.** 서버 기본값 3600초를
+  받습니다. 프로파일의 `duration_seconds` 도 이 제공자는 읽지 않습니다
+- **같은 `(issuer, subject)` 는 살아 있는 세션을 재사용합니다**(남은 수명 900초 이상).
+  AWS 는 호출마다 새로 발급합니다. 같은 ServiceAccount 의 파드 여럿이 같은 자격증명을
+  받으므로 감사 로그에서 파드를 가르실 수 없습니다
+- **템플릿의 정책을 고쳐도 이미 나간 세션의 권한은 바뀌지 않습니다.** 발급 시점의
+  스냅샷이 그 세션의 권한입니다. 매핑을 다른 템플릿으로 다시 겨누시면 재사용이 끊기고
+  다음 호출이 새 정책으로 새 세션을 받습니다
+- **`auth.anonymousGet: true`(차트 기본값)에서는 세션 바인딩이 쓰기 경로에만 걸립니다.**
+  `GET`/`HEAD` 는 인증기에 닿기 전에 익명으로 통과합니다
+- 세션 키의 정책은 목록·단건·`/policies` 세 응답이 모두 스냅샷을 싣습니다. **세션 키에는
+  정책을 붙이거나 뗄 수 없습니다** — `400` 입니다
+
+### 이미 나간 세션을 끊으려면
+
+템플릿 폐기와 매핑 삭제는 **새 발급과 재사용만** 막습니다. 나가 있는 자격증명은 자기
+만료까지(최대 12시간) 삽니다. 즉시 끊으시려면 그 세션 키를 찾아 개별 폐기하십시오.
+
+```bash
+curl "$BASE/_admin/access-keys?kind=session" -H "$SIGV4"
+# description 이 "sts:{issuer}\n{subject}\n{template_key_id}" 인 행을 찾습니다
+curl -X DELETE "$BASE/_admin/access-keys/$SESSION_KEY_ID" -H "$SIGV4"
+```
+
+**만료된 세션 키는 자동으로 지워지지 않습니다.** 행은 쌓이지만 기본 목록에서 빠지므로
+목록 길이는 늘지 않습니다.
+
+### 응답이 이상할 때
+
+| 증상 | 원인 |
+|---|---|
+| `403` (`POST /` 자체) | `auth.oidc.issuers` 가 비어 라우트가 없습니다. `405` 가 아닙니다 |
+| `AccessDenied` (403) | 토큰은 유효한데 `(issuer, subject)` 매핑이 없거나 템플릿이 폐기·만료됐습니다 |
+| `InvalidIdentityToken` (400) | 서명·발급자·`audience` 불일치. **`aud` 가 없는 토큰은 거부합니다. `azp` 는 보지 않습니다** |
+| `ExpiredToken` (400) | `exp` 가 지났거나 남은 수명이 900초 미만입니다 |
+| `IDPCommunicationError` (500) | JWKS 를 가져오지 못했습니다. **파드가 막 뜬 직후에도 납니다** — 첫 조회가 끝날 때까지 다른 요청이 여기로 옵니다 |
+
+`500` 의 사유는 응답에 실리지 않습니다. `kubectl logs` 에서 `JWKS 조회 실패` 줄을
+보십시오. `jwksAuth: serviceaccount` 인데 `serviceAccount.automountToken` 이 `false` 면
+이 오류만 반복됩니다.
+
+지표 둘이 함께 늡니다 — `cas_sts_issue_total{result}`(`issued`·`reused`)와
+`cas_sts_reject_total{reason}`. **`auth.oidc.issuers` 가 비면 등록되지 않으므로**
+`absent()` 알림을 거실 때 그 조건을 함께 보십시오.
 
 ## 대량 적재 중에는 GC를 끄십시오 (모든 이미지 버전)
 

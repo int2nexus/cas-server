@@ -83,6 +83,170 @@ cas-server 는 기동 시 `CREATE TABLE IF NOT EXISTS` 만 실행하므로 보�
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.1.35
+
+image: `int2jieun/cas-server:0.1.28`
+digest: `sha256:fe4a08db6c87748776e6f5c15de598e1474273b936eece8524f2931522df7f94`
+
+**동작 변경** — `ListObjects` 가 정책의 `prefix` 를 봅니다. **올리시기 전에 정책을 확인하십시오**
+
+지금까지 정책의 `prefix` 는 오브젝트 액션(`GetObject`·`PutObject` 등)에만 걸렸고 목록
+조회에는 걸리지 않았습니다. 이제 `ListObjects` 판정이 요청의 `?prefix=` 파라미터를 봅니다.
+
+**결과를 거르는 것이 아니라 요청을 거절합니다** — AWS 의 `s3:prefix` 조건 키와 같은
+동작입니다. 요청의 `?prefix=` 가 정책 `prefix` 안에 들어가지 않으면 `403` 이고,
+`?prefix=` 없는 요청(버킷 전체 나열)은 정책 `prefix` 가 `*`(또는 빈 값) 가 아닌 한
+`403` 입니다.
+
+확인하실 정책은 둘입니다.
+
+```
+⑴ effect=allow · action=ListObjects 또는 * · prefix != *
+   지금  그 키가 버킷 전체를 나열할 수 있었습니다
+   뒤    ?prefix= 를 그 prefix 안으로 주어야 통과합니다
+   유지  그 정책의 prefix 를 * 로
+
+⑵ effect=deny · action=ListObjects 또는 * · prefix != *
+   지금  그 버킷의 목록 조회를 전부 막고 있습니다
+   뒤    그 prefix 안쪽만 막습니다 — 바깥은 통과합니다
+   유지  그 deny 의 prefix 를 * 로
+```
+
+⑵ 는 **넓어지는 방향**입니다. `allow ListObjects images upload/` 에
+`deny ListObjects images upload/secret/` 로 예외를 파 두신 구성이면, `?prefix=upload/`
+요청이 allow 에 걸리고 deny 는 빗나가 `upload/secret/` 아래 키가 목록에 실립니다.
+
+**빈 `prefix` 는 `*` 와 같게 봅니다.** 콘솔이 프리픽스를 빈칸으로 권해 왔으므로, 그렇게
+저장된 행은 동작이 바뀌지 않습니다.
+
+`?uploads`(미완료 멀티파트 목록)도 같은 판정을 받고 응답에 `<Prefix>` 가 실립니다.
+`?versions` 는 이미 요청 `prefix` 를 반영하고 있었습니다.
+
+`prefix` 를 좁힌 키로 `/_ui` 를 여시면 **버킷 탭의 최상위가 빈 것으로 보입니다.**
+콘솔이 루트를 빈 `prefix=` 로 부르는데 그것이 버킷 전체 나열이라 거절되기 때문입니다.
+그 키로 콘솔을 쓰시려면 정책 `prefix` 가 `*` 여야 합니다.
+
+**동작 변경** — `/_api/*` 콘솔 API 에 데이터 평면과 같은 인가가 걸립니다
+
+`config.consoleEnabled: true`(차트 기본값) 배포에 해당합니다. 지금까지 `/_api/*` 는 SigV4
+서명만 검사하고 **정책을 보지 않았습니다** — 정책이 하나도 없는 키로도 열렸습니다.
+`GET /probe-bucket` 이 `403` 인 키가 `GET /_api/buckets/probe-bucket/objects` 로 `200` 을
+받았습니다.
+
+| 엔드포인트 | 필요한 액션 |
+|---|---|
+| `/_api/buckets/{b}/objects` | `ListObjects` — 요청 `prefix` 가 정책 `prefix` 안에 |
+| `/_api/buckets/{b}/object-versions?key=` | `ListObjects` — `key` 가 prefix 자리입니다 |
+| `/_api/buckets` · `/_api/stats` · `/_api/backends` · `/_api/config-effective` | `ListBuckets` — `bucket` 이 `*` 인 정책 |
+| `GET /_api/blobs/{hash}` | `ListBuckets` |
+| `HEAD /_api/blobs/{hash}` | 없음. 그대로 열려 있습니다 |
+
+`GET /_api/blobs/{hash}` 를 막은 것은 응답의 `references` 가 그 내용을 참조하는 **모든
+버킷·키**를 싣기 때문입니다. 해시는 업로드 응답의 `x-cas-hash` 로 얻으므로, 버킷 하나만
+가진 키가 같은 내용이 어디에 또 있는지 셀 수 있었습니다.
+
+`HEAD` 는 남겼습니다. 업로드 전 중복 확인 경로라 **범위를 좁힌 업로드 키가 이것을 쓸 수
+있어야 합니다.** `GET` 과 달리 존재 여부만 답합니다.
+
+`/_api/whoami` · `/_api/auth-mode` 는 그대로입니다. root 키는 위 전부를 엽니다.
+
+**콘솔을 쓰시는 분의 키에 `ListBuckets`(`bucket: *`)가 없으면 버킷·통계 화면이 닫힙니다.**
+올리시기 전에 그 키의 정책을 보십시오.
+
+**동작 변경** — `GET /_admin/access-keys` 기본 목록에서 세션 키가 빠집니다
+
+아래 STS 가 만드는 `kind='session'` 키입니다. 기본값이 `?kind=static,template` 이고,
+`session` 은 명시하셔야 나옵니다. 이 API 는 커서도 LIMIT 도 없이 전량을 읽으므로 세션 키를
+기본에 넣으면 훑는 양이 발급 횟수만큼 늡니다.
+
+`POST /_admin/access-keys` 에 `kind` 필드가 늘었습니다(`static` 기본 · `template`).
+`session` 은 받지 않습니다 — `400` 입니다.
+
+**동작 변경** — STS 지표 둘이 늘었습니다
+
+`cas_sts_issue_total{result}`(`issued`·`reused`)와 `cas_sts_reject_total{reason}`
+(`invalid_token`·`expired_token`·`no_mapping`·`template_unusable`·`idp_unavailable`·
+`validation`)입니다. **STS 가 꺼진 배포에는 등록되지 않습니다** — `auth.oidc.issuers` 가 비었거나 auth 를
+켜지 않은 배포입니다. `absent()` 알림을 거실 때 그 조건을 함께 보셔야 합니다.
+
+`POST /` 가 `500`(`IDPCommunicationError`)을 내면 `cas_sts_reject_total{reason="idp_unavailable"}`
+가 오르고, 사유는 `kubectl logs` 의 `JWKS 조회 실패` 줄에 있습니다. 응답 본문은 사유를
+싣지 않습니다.
+
+**마이그레이션** — `0013_sts.sql` 이 추가됩니다
+
+- **영향받는 테이블** — `access_keys` (컬럼 셋 추가: `kind`·`session_token_enc`·
+  `policy_snapshot`, CHECK 제약 둘, 인덱스 둘), 신규 테이블 `sts_identities`
+- **예상 소요시간** — 초 단위입니다. 추가되는 컬럼이 DEFAULT 가 있거나 nullable 이라
+  테이블 재작성이 없고, 인덱스도 `access_keys` 크기(운영 규모 수백 행)에서 만듭니다
+- **롤백** — **이 버전은 마이그레이션 `0013` 을 추가하며, 이미지 `0.1.27` 이하로 롤백할 수
+  없습니다.** 롤백 하한이 `0.1.28` 로 올라갑니다 — auth 를 켠 배포와 끈 배포가 같습니다
+  (`0.1.34` 에서 갈라져 있던 것이 여기서 다시 합쳐집니다). 되돌리시려면
+  `_sqlx_migrations` 에서 해당 행을 지우시거나, 업그레이드 전 `pg_dump` 스냅샷을
+  복원하셔야 합니다
+
+**운영 조치** — 롤백하실 때 미만료 세션 키를 함께 폐기하십시오
+
+`0.1.27` 이하는 세션 토큰을 대조하지 않습니다. STS 를 켜신 뒤에 내리시면 나가 있던 임시
+자격증명이 **최대 12시간 동안 AccessKeyId + SecretAccessKey 만으로 통과합니다.**
+
+```sql
+UPDATE access_keys SET is_active = FALSE
+ WHERE kind = 'session' AND is_active AND expires_at > now();
+```
+
+STS 를 켜신 적이 없으면 해당하는 행이 없습니다.
+
+**설정 키** — `auth.oidc.issuers` 가 추가됩니다 (기본 `[]`)
+
+STS(`POST /` · `AssumeRoleWithWebIdentity`)를 엽니다. 워크로드가 OIDC 토큰(쿠버네티스
+ServiceAccount 토큰 등)을 수명 있는 CAS 임시 자격증명으로 바꿉니다. 붙이는 절차는 README
+「STS 임시 자격증명」 절에 있습니다.
+
+```yaml
+auth:
+  oidc:
+    issuers:
+      - issuer: https://kubernetes.default.svc
+        audience: <파드 스펙의 projected 볼륨 audience 와 같은 값>
+        jwksUri: https://<API 서버>:6443/openid/v1/jwks
+        jwksAuth: serviceaccount
+```
+
+- **비우면 라우트를 마운트하지 않습니다** — 표면 자체가 없고 기존 동작과 같습니다. 목록이
+  있어도 auth 를 켜지 않으시면(`auth-secret-master-key` 가 비면) 역시 뜨지 않고 기동
+  로그에 경고가 남습니다
+- **`jwksAuth: serviceaccount` 를 쓰시면 `serviceAccount.automountToken` 을 `true` 로
+  함께 올리셔야 합니다.** 차트 기본값이 `false` 라 토큰이 마운트되지 않고, 그 상태에서는
+  익명으로 조회해 STS 가 `500` 만 냅니다
+- nexus-server 차트를 함께 쓰신다면 **`issuer`·`audience` 값이 두 차트에서 같아야
+  합니다.** 설정 경로도 양쪽 다 `auth.oidc.issuers` 입니다. cas 는 `exchange` 를 받지
+  않습니다
+- 같은 `issuer` 를 두 번 적으시거나 `audience` 를 비우시면 기동에 실패합니다
+- **발급자만 설정하면 아무도 자격증명을 받지 못합니다.** 템플릿 키와 신원 매핑을 관리
+  API 로 등록하셔야 합니다
+
+**주의** — STS 를 켜시기 전에 보실 것
+
+버전과 무관한 제약이고, 이 릴리스에서 처음 문서화합니다.
+
+- **STS 를 부르는 시점에 OIDC 토큰의 남은 수명이 900초 이상이어야 합니다.** 미만이면
+  `ExpiredToken`(400)이고 **SDK 는 400 을 재시도하지 않습니다** — 그 워크로드는 자격증명
+  없이 멈춥니다. Keycloak realm 의 기본 액세스 토큰 수명은 300초라 이 하한보다 짧습니다
+- **`botocore`(boto3)는 `DurationSeconds` 를 보내지 않습니다.** SDK 로 붙는 배포는 언제나
+  서버 기본값 3600초를 받습니다. 프로파일의 `duration_seconds` 도 이 제공자는 읽지
+  않습니다 — 세션 수명을 줄이시려면 SDK 설정이 아니라 서버 쪽 기본값을 바꾸셔야 합니다
+- **같은 `(issuer, subject)` 는 살아 있는 세션을 재사용합니다.** AWS 는 호출마다 새로
+  발급합니다. 같은 ServiceAccount 의 파드 여럿이 같은 자격증명을 받으므로, 감사 로그에서
+  파드를 가르실 수 없습니다
+- **`auth.anonymousGet: true`(차트 기본값) 배포에서는 세션 바인딩이 쓰기 경로에만
+  걸립니다.** `GET`/`HEAD` 는 인증기에 닿기 전에 익명으로 통과합니다
+- **이미 나간 세션에는 만료 외의 폐기 수단이 없습니다.** 템플릿 폐기와 매핑 삭제는 새
+  발급·재사용만 막습니다. 개별 폐기 절차는 README 에 있습니다
+- **`POST /` 는 `auth.oidc.issuers` 가 비면 `405` 가 아니라 `403` 입니다.** 그 경로에 등록된
+  메서드가 하나도 없으면 인증 미들웨어보다 먼저 걸러지기 때문입니다. "STS 가 켜졌는가"
+  를 이 응답으로 떠보시는 도구는 `403` 을 "꺼짐"으로 읽으셔야 합니다
+
 ## 0.1.34
 
 image: `int2jieun/cas-server:0.1.27`

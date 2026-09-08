@@ -6,19 +6,23 @@
 #
 # ── 문서 ─────────────────────────────────────────────────────────────────────
 #   아키텍처 (스토리지 모델·백엔드·API 명세)
-#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.34/charts/cas-server/docs/architecture.md
+#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.35/charts/cas-server/docs/architecture.md
 #   사용법 (배포·키 관리·AWS CLI/boto3 예제)
-#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.34/charts/cas-server/docs/usage.md
+#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.35/charts/cas-server/docs/usage.md
 #   차트 README
-#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.34/charts/cas-server/README.md
+#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.35/charts/cas-server/README.md
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── 이미지 ────────────────────────────────────────────────────────────────────
 image:
   repository: int2jieun/cas-server # Docker Hub에 미리 빌드된 이미지 사용
-  # **0.1.25 미만으로는 내릴 수 없다.** 그 버전의 마이그레이션이 DB 에 적용되고 나면
+  # **0.1.28 미만으로는 내릴 수 없다.** 그 버전의 마이그레이션이 DB 에 적용되고 나면
   # 이전 이미지가 _sqlx_migrations 대조에서 기동을 거부한다 — 스키마 호환과 무관하다.
-  # 되돌리려면 업그레이드 전 pg_dump 스냅샷을 복원해야 한다(CHANGELOG 0.1.32).
+  # 되돌리려면 업그레이드 전 pg_dump 스냅샷을 복원해야 한다(CHANGELOG 0.1.35).
+  #
+  # **STS 를 켠 배포는 내려갈 때 미만료 세션 키를 먼저 폐기해야 한다.** 이전 이미지는
+  # 세션 토큰을 대조하지 않으므로, 남겨 두면 최대 12시간 동안 AccessKeyId+Secret
+  # 만으로 통과한다. SQL 은 CHANGELOG 0.1.35 의 「운영 조치」 항목에 있다.
   #
   # 아래 둘은 그 하한 **아래**의 이야기다. 스냅샷을 복원해 실제로 내려가는 경우에만 쓴다.
   #
@@ -29,7 +33,7 @@ image:
   #  - 해시별 쓰기 락 테이블의 즉시 회수. GC 실행 시에만 회수되므로,
   #    gc.enabled: false 배포에서는 유휴 바닥값이 상승한다 (gc 섹션 주석 참고)
   #  - auth.metricsToken. 그 토큰으로 스크레이프하면 401 이 된다
-  tag: "0.1.27"
+  tag: "0.1.28"
   # digest 로 핀하려면 여기에 넣으십시오 (`sha256:...`). 값이 있으면 tag 대신 이것이
   # 쓰이고, 렌더 결과가 `repository@sha256:...` 가 됩니다.
   #
@@ -322,6 +326,47 @@ auth:
   # 유출 대응 중이라면 0으로 내려 캐시를 끌 것 — 대신 요청마다 DB 조회가 늘어난다.
   cacheTtlSecs: 10
 
+  # ── OIDC 발급자 (선택. 이미지 0.1.28 이상) ─────────────────────────────────
+  # STS(POST / · AssumeRoleWithWebIdentity)를 연다. 워크로드가 OIDC 토큰
+  # (쿠버네티스 SA 토큰 등)을 수명 있는 CAS 임시 자격증명으로 바꾼다.
+  #
+  # **비어 있으면 라우트를 마운트하지 않는다** — 기존 동작과 같다. 이 목록이 있어도
+  # auth 를 켜지 않으면(secrets 의 auth-secret-master-key 가 비면) 역시 뜨지 않고
+  # 기동 로그에 경고가 남는다. 판정할 정책이 없기 때문이다.
+  #
+  # 항목마다:
+  #   issuer    필수. 토큰의 iss 와 같아야 하고 https:// 로 시작해야 한다
+  #   audience  필수. 토큰 aud 안에 이 값이 있으면 통과한다(포함 검사).
+  #             **aud 가 없는 토큰은 거부한다. azp 는 보지 않는다.**
+  #             **비우면 서버가 기동에 실패한다** — 비운 채로 통과시키면 같은 발급자가
+  #             낸 아무 토큰이나 받게 된다
+  #   jwksUri   선택. 없으면 {issuer}/.well-known/openid-configuration 에서 찾는다.
+  #             issuer 와 JWKS 호스트가 다른 클러스터에서 필요하다. https:// 필수
+  #   jwksAuth  선택. "serviceaccount" 하나만 받는다. JWKS 를 조회할 때 파드 자신의
+  #             ServiceAccount 토큰을 실어 보낸다 — 디스커버리·JWKS 가 익명에 403 인
+  #             클러스터에 필요하다.
+  #             **이 값을 쓰면 serviceAccount.automountToken 을 true 로 함께 올려야
+  #             한다.** 차트 기본값이 false 라 토큰이 마운트되지 않고, 그 상태에서는
+  #             익명으로 조회해 STS 가 IDPCommunicationError(500)만 낸다
+  #
+  # 같은 issuer 를 두 번 적으면 기동에 실패한다.
+  #
+  # nexus-server 차트를 함께 쓴다면 **issuer·audience 값이 두 차트에서 같아야 한다.**
+  # 설정 경로는 양쪽 다 auth.oidc.issuers 이고, cas 는 exchange 를 받지 않는다.
+  #
+  # **발급자만 설정하면 아무도 자격증명을 받지 못한다.** 템플릿 키와 신원 매핑을
+  # 관리 API 로 등록해야 한다 — README 의 "STS 임시 자격증명" 절을 따를 것.
+  oidc:
+    issuers: []
+    # 예:
+    # issuers:
+    #   - issuer: https://kubernetes.default.svc
+    #     audience: <파드 스펙의 projected 볼륨 audience 와 같은 값>
+    #     jwksUri: https://<API 서버>:6443/openid/v1/jwks
+    #     jwksAuth: serviceaccount
+    #   - issuer: https://sso.example.com/realms/<realm>
+    #     audience: <IdP 쪽에서 정한 값>
+
 # ── 서비스 ────────────────────────────────────────────────────────────────────
 #
 # **노출 주의.** NodePort 는 **클러스터의 모든 노드 x nodePort** 를 표면으로 만든다 —
@@ -495,8 +540,12 @@ serviceAccount:
   # 그대로 API 접근 수단이 되므로 붙일 이유가 없다. 특히 이 배포는 auth.anonymousGet
   # 이 기본 true 이고 NodePort 로 노출되므로 표면을 늘리지 않는 편이 낫다.
   #
-  # true 가 필요한 경우: AWS IRSA, GCP Workload Identity 등 투영 토큰으로 클라우드
-  # 자격증명을 받는 구성. 그때는 아래 annotations 도 함께 채운다.
+  # true 가 필요한 경우 둘:
+  #  - AWS IRSA, GCP Workload Identity 등 투영 토큰으로 클라우드 자격증명을 받는 구성.
+  #    그때는 아래 annotations 도 함께 채운다
+  #  - auth.oidc.issuers 의 항목에 jwksAuth: serviceaccount 를 쓰는 구성. 서버가 JWKS 를
+  #    조회할 때 /var/run/secrets/kubernetes.io/serviceaccount/token 을 읽어 Bearer 로
+  #    싣는다. 마운트되지 않으면 익명으로 조회해 STS 가 500 만 낸다
   automountToken: false
 
   # create: true 일 때 ServiceAccount 에 붙일 애노테이션.

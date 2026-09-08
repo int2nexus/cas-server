@@ -58,6 +58,34 @@ data:
     # 그 이하 이미지는 이 키를 무시하고 항상 마운트한다.
     console_enabled              = {{ required "config.consoleEnabled 가 null 입니다. true/false 를 주거나 키를 지우십시오(지우면 차트 기본값 true 가 적용됩니다). null 이면 빈 값이 렌더돼 TOML 파싱이 실패하고 파드가 기동하지 못합니다." .Values.config.consoleEnabled }}
 
+    {{- /* STS 발급자. cas-server 이미지 0.1.28 이상에서만 동작한다 — 그 이하 이미지는
+           모르는 키로 보고 무시하므로 기동은 깨지지 않지만 기능도 켜지지 않는다.
+
+           nexus-server 차트처럼 env 한 키에 JSON 으로 싣지 않는다. cas 의 env 소스는
+           구분자가 "__" 라 목록을 담을 경로가 없고, 서버가 이 필드에 JSON 문자열을
+           받는 커스텀 역직렬화를 두지 않았다. 값이 조용히 들어가지 않고 기능이 꺼진
+           채로 뜨는 대신, storage_backends 와 같은 방식으로 TOML 에 렌더한다.
+
+           빈 목록이면 한 줄도 내지 않는다 — 서버는 "없음"과 "빈 목록"을 같게 본다.
+
+           필드 이름은 서버가 받는 그대로다(jwksUri·jwksAuth 는 camelCase). 여기서
+           스네이크로 적으면 None 이 되어 기동 검증도 통과하고 디스커버리로 폴백하는데,
+           issuer 와 JWKS 호스트가 다른 클러스터에서는 그것이 STS 전면 불통이다. */}}
+    {{- with .Values.auth.oidc }}
+    {{- range .issuers }}
+
+    [[auth.oidc_issuers]]
+    issuer   = {{ required "auth.oidc.issuers 의 항목에 issuer 가 없습니다. 토큰의 iss 와 같은 값을 https:// 로 시작해 적으십시오." .issuer | quote }}
+    audience = {{ required "auth.oidc.issuers 의 항목에 audience 가 없습니다. 비운 채로 두면 그 발급자가 낸 아무 토큰이나 받게 되므로 서버가 기동을 거부합니다." .audience | quote }}
+    {{- with .jwksUri }}
+    jwksUri  = {{ . | quote }}
+    {{- end }}
+    {{- with .jwksAuth }}
+    jwksAuth = {{ . | quote }}
+    {{- end }}
+    {{- end }}
+    {{- end }}
+
     {{- if eq .Values.storage.mode "nfs" }}
     {{- range .Values.storage.nfs.backends }}
 
