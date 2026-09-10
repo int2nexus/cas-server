@@ -4,9 +4,9 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
 
 ## 문서
 
-- [아키텍처](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.8/charts/nexus-server/docs/architecture.md)
+- [아키텍처](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.9/charts/nexus-server/docs/architecture.md)
   — 도메인 모델, Version 생명주기, Annotation CoW, 스냅샷·Manifest 구조
-- [사용법](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.8/charts/nexus-server/docs/usage.md)
+- [사용법](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.9/charts/nexus-server/docs/usage.md)
   — 설치, Python SDK 연결, Dataset 적재·검색·seal 워크플로우, API 레퍼런스
 - [변경 이력](CHANGELOG.md)
   — 버전별 동작 변경·마이그레이션·설정 키. 각 항목은 해당 GitHub Release 본문과 동일하다
@@ -116,10 +116,10 @@ helm install nexus-server int2nexus/nexus-server -n <namespace> \
 | `auth.registrationEnabled` / `auth.docsEnabled` | `true` / `true` | 공개 회원가입 / API 문서 3경로. 각각 끄면 `register`만 403, 문서 경로는 **404**(403이 아니다) |
 | `auth.approvalRequired` | `false` | `true`면 가입은 열어 둔 채 승인 전까지 아무것도 할 수 없다. 가입이 토큰 없이 `202`를 반환하므로 **가입 화면이 그것을 처리해야 한다.** 승인·대기목록 엔드포인트가 관리자 전용이라 `auth.superuserEmail`을 함께 설정해야 한다 |
 | `auth.revocationCacheTtlSecs` | `""` | 비우면 서버 기본 5초. 인증이 사용자 행(역할·승인·활성)을 읽고 캐시하는 시간이며, **곧 권한 회수·계정 정지·계정 삭제가 듣기까지의 상한**이다. `0`이면 매 요청 조회(적재 처리량 20~33% 감소). 조회 자체는 끌 수 없다 |
-| `auth.oidc.issuers` (0.3.8+) | `[]` | 외부 IdP 토큰을 인증 자격증명으로 받을 발급자 목록. **비우면 기능이 꺼지고 기존 동작과 같다.** 항목마다 `issuer`(필수, https) · `audience`(필수, `aud` 포함 검사) · `exchange`(기본 `false`) · `jwksUri`(선택) · `jwksAuth`(선택, `serviceaccount`). **`audience`가 비었거나 `issuer`가 중복이면 기동 실패다.** 발급자만 설정하면 아무도 인증되지 않는다 — 신원은 `POST /api/v1/admin/oidc-identities`로 관리자가 등록한다 |
+| `auth.oidc.issuers` (0.3.8+) | `[]` | 외부 IdP 토큰을 인증 자격증명으로 받을 발급자 목록. **비우면 기능이 꺼지고 기존 동작과 같다.** 항목마다 `issuer`(필수, https) · `audience`(필수, `aud` 포함 검사) · `exchange`(기본 `false`) · `jwksUri`(선택) · `jwksAuth`(선택, `serviceaccount` — 쓰면 `serviceAccount.automountToken: true` 가 필요하다). **`audience`가 비었거나 `issuer`가 중복이면 기동 실패다.** 발급자만 설정하면 아무도 인증되지 않는다 — 신원은 `POST /api/v1/admin/oidc-identities`로 관리자가 등록한다 |
 | `auth.superuserEmail` | `""` | **비우면 관리자를 만들 부트스트랩 수단이 없다.** 채우면 시크릿의 `NEXUS__AUTH__SUPERUSER_PASSWORD`도 **반드시 함께** 있어야 한다 |
 | Secret `NEXUS__METRICS__TOKEN` | (없음) | 넣으면 `GET /_internal/metrics`가 열리고 없으면 **404**다. values 스위치는 없다 — 이 차트는 Secret 전체를 `envFrom`으로 받으므로 키를 넣는 것이 곧 켜는 것 |
-| `serviceAccount.automountToken` | `false` | ServiceAccount 토큰 마운트 여부. **차트 0.3.1부터 이 값이 실제로 적용된다** — 그 전에는 `serviceAccount.create: true`일 때만 렌더돼 기본 설치에서 효과가 없었다. 기본 설치의 동작이 "마운트됨"에서 "마운트 안 됨"으로 뒤집히고 **롤링 재시작이 한 번 일어난다.** 파드 토큰에 기대는 사이드카가 있으면 `--set serviceAccount.automountToken=true` |
+| `serviceAccount.automountToken` | `false` | ServiceAccount 토큰 마운트 여부. **차트 0.3.1부터 이 값이 실제로 적용된다** — 그 전에는 `serviceAccount.create: true`일 때만 렌더돼 기본 설치에서 효과가 없었다. 기본 설치의 동작이 "마운트됨"에서 "마운트 안 됨"으로 뒤집히고 **롤링 재시작이 한 번 일어난다.** 파드 토큰에 기대는 사이드카가 있거나 `auth.oidc.issuers` 에 `jwksAuth: serviceaccount` 를 쓰면 `--set serviceAccount.automountToken=true` |
 
 전체 키는 [`values.yaml`](values.yaml) 참조.
 
