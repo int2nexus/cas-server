@@ -399,8 +399,23 @@ spec:
           - serviceAccountToken:
               path: cas
               audience: <auth.oidc.issuers 의 audience 와 같은 값>
-              expirationSeconds: 3600
+              expirationSeconds: 7200    # 900 초 하한 때문에 기본값을 쓰지 않는다
 ```
+
+**`expirationSeconds` 를 7200 이상으로 두십시오.** cas 는 발급할 세션의 수명을
+`min(now + DurationSeconds, jwt.exp)` 로 자르고, 그 값이 900 초 미만이면
+`ExpiredToken`(400)으로 거절합니다. kubelet 은 토큰 수명의 약 80% 지점에서 회전시키므로
+회전 직전의 잔여 수명이 하한을 넘어야 합니다.
+
+```
+expirationSeconds  회전 직전 잔여      판정
+3607 (미지정 기본)  ~721 초            900 미만 — 회전 경계에서 간헐적으로 400
+3600               ~720 초            900 미만 — 같음
+7200               ~1440 초           안전
+```
+
+**SDK 는 그 400 을 재시도하지 않습니다.** 걸린 워크로드는 자격증명 없이 멈추고, 회전
+경계에서만 발생하므로 원인을 찾기 어렵습니다.
 
 ```python
 import boto3
@@ -1072,12 +1087,14 @@ curl -s http://localhost:8080/_api/gc/candidates \
 # {"count": 1234, "estimated_bytes": 5678901}
 ```
 
-**`/_api/gc/orphan-count` 는 부르지 마십시오.** `blobs` 전량을 안티조인하므로 비용이 회수
-대상 수가 아니라 테이블 크기를 따릅니다 — 226 GB 규모에서 30 초
-`config.statsStatementTimeoutSecs` 를 넘겨 항상 `500` 이고, 그 30 초 동안 같은 전용 풀을
+**`/_api/gc/orphan-count` 는 이미지 `0.1.29` 부터 `410 Gone` 입니다.** 값을 내지 않고 DB 도
+타지 않습니다. 본문에 대체 경로(`/_api/gc/candidates`)가 실리고 `Deprecation`·`Link` 헤더가
+붙습니다. 인가는 그대로라 토큰 없이 부르면 `410` 이 아니라 `401` 입니다.
+
+그 이전 이미지에서는 `blobs` 전량을 안티조인하느라 226 GB 규모에서 30 초
+`config.statsStatementTimeoutSecs` 를 넘겨 항상 `500` 이었고, 그 30 초 동안 같은 전용 풀을
 쓰는 조회(`/_api/stats` · `/_api/buckets` · `/_api/buckets/{bucket}/objects` ·
-`/_api/backends`, 그리고 이미지 `0.1.27` 부터 `/_api/gc/candidates`)가 함께 막힙니다. 이미지 `0.1.26` 부터 폐기이고 응답에
-`Deprecation: true` 가 실립니다(실패 응답에도 실립니다).
+`/_api/backends`, 그리고 이미지 `0.1.27` 부터 `/_api/gc/candidates`)가 함께 막혔습니다.
 
 지표 `cas_gc_candidates` 는 **마지막 GC 실행이 끝난 시점**의 값이고 이 엔드포인트는
 **조회 시점**의 값입니다. 두 값을 빼서 보지 마십시오.

@@ -6,11 +6,11 @@
 #
 # ── 문서 ─────────────────────────────────────────────────────────────────────
 #   아키텍처 (스토리지 모델·백엔드·API 명세)
-#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.35/charts/cas-server/docs/architecture.md
+#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.36/charts/cas-server/docs/architecture.md
 #   사용법 (배포·키 관리·AWS CLI/boto3 예제)
-#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.35/charts/cas-server/docs/usage.md
+#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.36/charts/cas-server/docs/usage.md
 #   차트 README
-#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.35/charts/cas-server/README.md
+#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.36/charts/cas-server/README.md
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── 이미지 ────────────────────────────────────────────────────────────────────
@@ -33,7 +33,7 @@ image:
   #  - 해시별 쓰기 락 테이블의 즉시 회수. GC 실행 시에만 회수되므로,
   #    gc.enabled: false 배포에서는 유휴 바닥값이 상승한다 (gc 섹션 주석 참고)
   #  - auth.metricsToken. 그 토큰으로 스크레이프하면 401 이 된다
-  tag: "0.1.28"
+  tag: "0.1.29"
   # digest 로 핀하려면 여기에 넣으십시오 (`sha256:...`). 값이 있으면 tag 대신 이것이
   # 쓰이고, 렌더 결과가 `repository@sha256:...` 가 됩니다.
   #
@@ -140,7 +140,7 @@ config:
 
   # ── 집계 조회 전용 풀 (cas-server 이미지 0.1.18 이상 필요) ───────────────────
   # 집계 조회(/_api/stats, /_api/buckets, /_api/buckets/{bucket}/objects 의 서브폴더
-  # 조회, /_api/backends 의 blob 집계, /_api/gc/candidates, orphan 카운트)의 쿼리 상한.
+  # 조회, /_api/backends 의 blob 집계, /_api/gc/candidates)의 쿼리 상한.
   # candidates 가 이 풀에 들어온 것은 이미지 0.1.27 부터다.
   # 이 조회들은 커넥션 1개짜리 별도 풀에서 돌아 요청 경로와 격리되므로, 여기에 타임아웃을
   # 걸어도 업로드는 영향받지 않는다. 0 = 걸지 않음(권장하지 않음).
@@ -175,7 +175,8 @@ config:
   #   막힘  /_ui  /_api/auth-mode  /_api/stats  /_api/buckets
   #         /_api/buckets/{bucket}/objects  /_api/buckets/{bucket}/object-versions
   #         /_api/backends  /_api/blobs/{hash}  /_api/whoami  /_api/config-effective
-  #   200   /_api/gc/last-result  /_api/gc/history  /_api/gc/orphan-count
+  #   200   /_api/gc/last-result  /_api/gc/history
+  #   410   /_api/gc/orphan-count  (폐기 완료 — 이미지 0.1.29 부터)
   #   200   /_internal/health  /_internal/metrics
   #
   # 막힌 쪽의 응답 코드는 인증 설정에 따라 갈린다 — 인증이 꺼져 있으면 404, 켜져 있으면
@@ -185,6 +186,31 @@ config:
   # 404 로 끝나는 것도 의도한 동작이다. 경로 등록을 통째로 빼면 /_api/foo 가 데이터
   # 평면의 catch-all 에 매치되어 bucket="_api" 로 들어간다.
   consoleEnabled: true
+
+  # ── 종단 무결성 대조 (cas-server 이미지 0.1.29 이상 필요) ────────────────────────
+  # 클라이언트가 선언한 체크섬을 서버가 받은 바이트와 대조한다. 대상은 둘 —
+  # SigV4 로 서명된 x-amz-content-sha256(실제 hex 일 때만)과 aws-chunked 트레일러
+  # 체크섬(crc32 · crc32c · crc64nvme · sha256)이다.
+  #
+  #   off      대조하지 않는다
+  #   log      대조하고 세고 기록하되 업로드는 성공시킨다 (기본값)
+  #   enforce  불일치를 400 으로 거절한다. 객체는 저장되지 않는다
+  #
+  # **대조할 값이 없는 요청은 이 설정과 무관하게 통과한다.** AWS CLI 는
+  # UNSIGNED-PAYLOAD 를 선언하므로 대조 대상이 아니다. x-cas-hash 를 준 업로드는
+  # BLAKE3 로 이미 대조된다.
+  #
+  # **enforce 로 올리기 전에 log 로 한 판 볼 것.** 오탐이 곧 업로드 실패다 —
+  # cas_integrity_mismatch_total 이 0 인 것을 확인한 뒤 올린다. 두 모드는 검사를
+  # 똑같이 돌고 요청당 한 번만 세므로, log 의 관측치가 그대로 enforce 의 거절 건수다.
+  #
+  # SDK 기본값이 전부 든다 — boto3 는 crc32, AWS CLI v2 는 crc64nvme 다.
+  # 그 밖의 알고리즘(sha1 등)은 대조하지 않고 통과시키며
+  # cas_integrity_unchecked_total{algo,form} 으로 센다.
+  #
+  # 체크섬을 트레일러가 아니라 요청 헤더로 보내면(평문 HTTP·presigned·
+  # aws s3api --checksum-*) 대조하지 않고 form="header" 로 세기만 한다.
+  integrityCheck: log
 
   # ── 업로드 상한 (cas-server 이미지 0.1.16 이상 필요. image.tag 확인할 것) ───────────────────────────────────────
   # 2026-08-05 운영 OOM의 마지막 방어선이다. 상한을 넘는 업로드는 503 SlowDown +
@@ -360,7 +386,9 @@ auth:
     issuers: []
     # 예:
     # issuers:
-    #   - issuer: https://kubernetes.default.svc
+    #   - issuer: https://kubernetes.default.svc.cluster.local
+    #     # 클러스터가 광고하는 값이어야 한다 — 토큰의 iss 와 같아야 하고,
+    #     # kubectl get --raw /.well-known/openid-configuration 으로 확인한다
     #     audience: <파드 스펙의 projected 볼륨 audience 와 같은 값>
     #     jwksUri: https://<API 서버>:6443/openid/v1/jwks
     #     jwksAuth: serviceaccount

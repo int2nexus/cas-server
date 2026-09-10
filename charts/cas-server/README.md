@@ -5,9 +5,9 @@ HTTP API를 제공한다.
 
 ## 문서
 
-- [아키텍처](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.35/charts/cas-server/docs/architecture.md)
+- [아키텍처](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.36/charts/cas-server/docs/architecture.md)
   — 스토리지 모델(CAS·dedup·GC), 백엔드 구성, S3 호환 API 명세, 에러 코드
-- [사용법](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.35/charts/cas-server/docs/usage.md)
+- [사용법](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.36/charts/cas-server/docs/usage.md)
   — 배포 절차, 웹 UI 키 관리, AWS CLI/boto3 예제, 내부 API
 - [변경 이력](CHANGELOG.md)
   — 버전별 동작 변경·마이그레이션·설정 키. 각 항목은 해당 GitHub Release 본문과 동일하다
@@ -49,7 +49,7 @@ kubectl apply -f sealed-secret.yaml -n <namespace>
 배포에서 그 값이 없으면 스크레이프가 `401`** 이다. 용도는 [메트릭 스크레이프](#메트릭-스크레이프) 참고.
 
 `secrets.secretMasterKey`를 비우면 NoAuth 모드(인증 없음, 내부망 전용)로 동작한다. 상세 절차와 값 교체
-방법은 [`examples/sealed-secret.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.35/charts/cas-server/examples/sealed-secret.yaml) 참고.
+방법은 [`examples/sealed-secret.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.36/charts/cas-server/examples/sealed-secret.yaml) 참고.
 
 ## 설치
 
@@ -57,7 +57,7 @@ kubectl apply -f sealed-secret.yaml -n <namespace>
 helm install cas-server int2nexus/cas-server -n <namespace> -f values-prod.yaml
 ```
 
-`values-prod.yaml`은 직접 작성하거나 [`examples/values-prod.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.35/charts/cas-server/examples/values-prod.yaml)을
+`values-prod.yaml`은 직접 작성하거나 [`examples/values-prod.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.36/charts/cas-server/examples/values-prod.yaml)을
 내려받아 값을 채운 뒤 사용하세요(이 레포를 clone했다면 `charts/cas-server/examples/values-prod.yaml`).
 
 ### S3 / MinIO 모드 values 예시
@@ -160,6 +160,7 @@ storage:
 | `gc.fullSweep.enabled` | `false` | 전량 스캔(`sweep`)만 도는 두 번째 CronJob. **켜지 않으면 렌더가 거부한다**(`gc.phases` 에 `sweep` 을 직접 넣은 경우는 제외). `schedule` 은 UTC 이고 기본값을 그대로 쓰지 말 것 |
 | `config.multipartTtlSecs` | `86400` | GC 가 미완료 멀티파트를 만료로 보는 기준(초). **운영에서 줄이지 말 것** — 진행 중인 업로드가 `5xx` 로 실패한다 |
 | `config.consoleEnabled` | `true` | `/_ui` 와 콘솔용 `/_api/*` 마운트 여부. `false` 여도 `/_api/gc/*` 는 남으므로 GC CronJob 은 그대로 동작한다 |
+| `config.integrityCheck` | `log` | 클라이언트가 선언한 체크섬을 받은 바이트와 대조(이미지 `0.1.29` 이상). `off`·`log`·`enforce`. **기본값은 세고 기록만 하고 업로드를 거절하지 않는다.** `enforce` 로 올리기 전에 `cas_integrity_mismatch_total` 이 0 인지 확인할 것 — 오탐이 곧 업로드 실패다. 아래 참고 |
 | `replicaCount` | `1` | **1을 유지할 것.** 늘리면 GC와 PUT 사이 durability 보호가 깨진다 (아래 참고) |
 | `updateStrategy.type` | `Recreate` | 롤아웃 중 구·신 파드가 겹치지 않게 한다. 기본값 `RollingUpdate`는 `replicas=1`에서도 `maxSurge=1`이라 겹침 창이 생기고, 그 창에서 위 durability 보호가 깨진다. 대가는 롤아웃 중 짧은 중단 |
 | `startupProbe.failureThreshold` | `60` | 기동 허용 시간 = `periodSeconds`(10초) × 이 값 = 600초 |
@@ -237,6 +238,8 @@ kubectl rollout restart -n <namespace> deploy/<fullname>   # 릴리스명이 아
 | `cas_gc_candidates` / `cas_gc_candidate_bytes` | gauge | 건수 / 바이트 | 회수 후보 큐. GC 실행이 끝난 시점의 값이라 `orphan` 이 큐를 비운 직후를 가리킵니다 |
 | `cas_sts_issue_total{result}` | counter | 건수 | STS 발급. `result` 는 `issued`(새로 발급) · `reused`(살아 있는 세션 재사용). **STS 를 켠 배포에만 나옵니다** (이미지 `0.1.28` 이상) |
 | `cas_sts_reject_total{reason}` | counter | 건수 | STS 거절. `reason` 은 `invalid_token` · `expired_token` · `no_mapping` · `template_unusable` · `idp_unavailable` · `validation`. 〃 |
+| `cas_integrity_mismatch_total{source}` | counter | 건수 | 선언 체크섬과 받은 바이트가 다른 건수. `source` 는 `content_sha256` · `trailer_checksum`(바이트가 어긋남) · `trailer_protocol`(`x-amz-trailer` 선언을 어김). **`config.integrityCheck` 가 `off` 가 아닌 배포에만 나옵니다** (이미지 `0.1.29` 이상). `log` 에서 이 값이 곧 `enforce` 의 예상 거절 건수입니다 — 요청당 한 번만 셉니다 |
+| `cas_integrity_unchecked_total{algo,form}` | counter | 건수 | 체크섬이 왔는데 **대조하지 못한** 건수. `algo` 는 `sha1` · `other` 등 닫힌 집합이고 `form` 은 `trailer` · `header` 입니다. **여기 잡히는 것은 거절되지 않습니다** — 거절되는 것은 위의 `cas_integrity_mismatch_total` 입니다. 0 이 아니면 그만큼이 무검사로 통과하고 있습니다 |
 
 ### 지표가 나타나는 시점 — `absent()` 알림을 걸기 전에
 
@@ -256,6 +259,8 @@ kubectl rollout restart -n <namespace> deploy/<fullname>   # 릴리스명이 아
 | `cas_gc_last_duration_ms{phase}` · `cas_gc_last_reclaimed_blobs{phase}` · `cas_gc_last_status` · `cas_gc_last_errors` | **재기동 뒤 첫 GC 실행까지 없습니다** | **걸지 마십시오** — 재기동마다 울립니다 |
 | `cas_gc_candidates` · `cas_gc_candidate_bytes` | 첫 GC 실행 뒤 | **걸지 마십시오** — 같은 이유 |
 | `cas_sts_issue_total` · `cas_sts_reject_total` | STS 를 켠 배포에서 기동 직후 | 켠 배포에만 걸으십시오. `auth.oidc.issuers` 가 비었거나 auth 를 켜지 않으면 **시리즈가 없습니다** |
+| `cas_integrity_mismatch_total{source}` | `config.integrityCheck` 가 `off` 가 아니고 이미지 `0.1.29` 이상이면 기동 직후 | 걸어도 됩니다. **시리즈의 부재가 「대조가 꺼져 있다」이므로 `absent()` 로 그것을 잡습니다** |
+| `cas_integrity_unchecked_total{algo,form}` | 못 세는 체크섬이 처음 왔을 때 | `rate()` 로 걸어도 됩니다. 부재는 「그런 요청이 없었다」이지 꺼진 것이 아닙니다 |
 
 카운터와 달리 **`cas_gc_last_*` 게이지는 `0` 으로 등록하지 않습니다.** `cas_gc_last_status`
 의 `0` 은 「마지막 실행이 성공」이고 `cas_gc_last_ran_at_seconds` 의 `0` 은 1970-01-01
@@ -450,11 +455,11 @@ curl -s -H "Authorization: Bearer $GC_TOKEN" \
 # {"count": 1234, "estimated_bytes": 5678901}
 ```
 
-**`/_api/gc/orphan-count` 는 쓰지 마십시오.** `blobs` 전량을 안티조인하므로 비용이 회수
-대상 수가 아니라 테이블 크기를 따릅니다 — 226 GB 규모에서 30 초
-`config.statsStatementTimeoutSecs` 를 넘겨 항상 `500` 이고, 그동안 집계 조회가 함께
-막힙니다(「집계 조회 격리」 절). 이미지 `0.1.26` 부터 폐기이고 응답에
-`Deprecation: true` 가 실립니다.
+**`/_api/gc/orphan-count` 는 이미지 `0.1.29` 부터 `410 Gone` 입니다.** 값을 내지 않고
+DB 도 타지 않습니다. 그 이전 이미지에서는 `blobs` 전량을 안티조인하느라 226 GB 규모에서
+30 초 `config.statsStatementTimeoutSecs` 를 넘겨 항상 `500` 이었고, 그동안 집계 조회가 함께
+막혔습니다(「집계 조회 격리」 절). 두 값은 서로를 포함하지 않으므로 예전 값과 비교하지
+마십시오.
 
 지표 `cas_gc_candidates` 는 **마지막 GC 실행이 끝난 시점**의 값이고 이 엔드포인트는
 **조회 시점**의 값입니다. 둘을 빼서 보지 마십시오 — 그 사이에 생긴 정상 후보가 차이에
@@ -518,6 +523,11 @@ blob 이 0건이든 수천 건이든 같습니다. 판단 기준과 미루는 �
 `/_admin/*` 은 **SigV4 서명으로만** 열립니다. 아래 `$SIGV4` 는 서명 헤더 묶음을 뜻하며,
 손으로 만들지 말고 `awscurl` 같은 서명 도구를 쓰십시오 (`--service s3`, region 은 아무
 값이나 됩니다 — 서버는 클라이언트가 선언한 값으로 서명 키를 유도합니다).
+
+**그 묶음에 `x-amz-content-sha256` 이 들어가야 합니다.** 서버는 그 헤더 값을 payload
+hash 로 쓰고, 없으면 `UNSIGNED-PAYLOAD` 로 봅니다. 빈 바디의 SHA256 으로 서명하면서 그
+헤더를 붙이지 않는 범용 SigV4 서명기를 쓰면 `403 SignatureDoesNotMatch` 가 됩니다 —
+권한 문제로 보이지만 서명 대상이 어긋난 것입니다. 데이터 평면도 같은 규칙입니다.
 
 ```bash
 curl -X POST "$BASE/_admin/access-keys" -H "$SIGV4" \
@@ -614,7 +624,7 @@ POST /  ·  Action=AssumeRoleWithWebIdentity
 auth:
   oidc:
     issuers:
-      - issuer: https://kubernetes.default.svc          # 토큰의 iss 와 같아야 합니다
+      - issuer: https://kubernetes.default.svc.cluster.local   # 토큰의 iss 와 같아야 합니다
         audience: <projected 볼륨의 audience 와 같은 값>
         jwksUri: https://<API 서버>:6443/openid/v1/jwks  # issuer 와 호스트가 다를 때
         jwksAuth: serviceaccount                        # JWKS 가 익명에 403 일 때
@@ -622,6 +632,10 @@ auth:
 serviceAccount:
   automountToken: true    # jwksAuth: serviceaccount 를 쓰시면 필수입니다
 ```
+
+**`issuer` 는 클러스터가 광고하는 값이어야 합니다.**
+`kubectl get --raw /.well-known/openid-configuration` 의 `issuer` 를 확인하십시오 —
+kubeadm 기본 구성은 위 예시의 `https://kubernetes.default.svc.cluster.local` 입니다.
 
 `jwksUri` 를 비우시면 `{issuer}/.well-known/openid-configuration` 에서 찾습니다.
 광고된 주소가 `https` 가 아니면 거부하고, `https` → `http` 리다이렉트도 거부합니다.
@@ -649,7 +663,7 @@ curl -X POST "$BASE/_admin/access-keys/$TEMPLATE_KEY_ID/policies" -H "$SIGV4" \
 ```bash
 curl -X POST "$BASE/_admin/sts-identities" -H "$SIGV4" \
   -H "Content-Type: application/json" \
-  -d '{"issuer":"https://kubernetes.default.svc",
+  -d '{"issuer":"https://kubernetes.default.svc.cluster.local",
        "subject":"system:serviceaccount:ml:loader",
        "template_key_id":"'"$TEMPLATE_KEY_ID"'"}'
 # → 201 {"id": 7}
@@ -829,10 +843,70 @@ kubectl get deploy "$REL" -n "$NS" \
   -o jsonpath='{.spec.template.spec.containers[?(@.name=="cas-server")].image}'; echo
 ```
 
+## 종단 무결성 대조 (이미지 `0.1.29` 이상)
+
+`config.integrityCheck` 가 **클라이언트가 선언한 체크섬을 서버가 받은 바이트와 대조**합니다.
+없으면 서버의 자체 검사가 전부 「받은 것」을 서술합니다 — 해시도 크기도 상태코드도 손상된
+바이트를 그대로 기술하므로 하나도 걸리지 않습니다.
+
+| 값 | 동작 |
+|---|---|
+| `off` | 대조하지 않습니다. 해시를 굴리는 비용도 들지 않습니다 |
+| `log` (기본) | 대조하고 세고 기록하되 **업로드는 성공합니다** |
+| `enforce` | 불일치를 `400` 으로 거절합니다. 객체는 저장되지 않습니다 |
+
+대조 대상은 둘이고, 거기에 **선언 규약 검사**가 하나 붙습니다 — 앞의 둘은 값을
+맞대는 것이고, 셋째는 클라이언트가 제 `x-amz-trailer` 선언을 지켰는지를 봅니다.
+
+| 출처 | 값 | 지표 라벨 | 실패 코드 |
+|---|---|---|---|
+| `x-amz-content-sha256` | 실제 페이로드 SHA256. **SigV4 서명 대상이라 위조되지 않습니다** | `content_sha256` | `XAmzContentSHA256Mismatch` |
+| `aws-chunked` 트레일러 | `x-amz-checksum-crc32` · `-crc32c` · `-crc64nvme` · `-sha256` | `trailer_checksum` | `XAmzContentChecksumMismatch` |
+| `x-amz-trailer` 선언 | 선언한 트레일러가 오지 않거나 선언에 없는 것이 옴 | `trailer_protocol` | `XAmzContentChecksumMismatch` |
+
+**대조할 값이 없는 요청은 이 설정과 무관하게 통과합니다.** AWS CLI 는 `UNSIGNED-PAYLOAD` 를
+선언하므로 대조 대상이 아닙니다. `x-cas-hash` 를 준 업로드는 BLAKE3 로 이미 대조됩니다
+(불일치 시 `InvalidDigest`).
+
+**대조하는 알고리즘은 `crc32` · `crc32c` · `crc64nvme` · `sha256` 입니다.** SDK 기본값이
+전부 여기 듭니다 — `boto3` 는 `crc32`, AWS CLI v2 와 `botocore[crt]` 는 `crc64nvme` 를
+보냅니다.
+
+**그 밖의 알고리즘(`sha1` 등)은 대조하지 않고 통과시킵니다** — 거절하면 그 클라이언트의
+정상 업로드가 깨집니다. 대신 `cas_integrity_unchecked_total{algo,form}` 로 셉니다. **검사가 안 도는 것을 모르는 상태**를
+없애는 것이 이 기능의 목적이라 그 칸도 관측 가능해야 합니다.
+
+### `enforce` 로 올리는 순서
+
+**바로 올리지 마십시오.** 오탐이 곧 업로드 실패입니다 — 중간 프록시가 요청을 다시
+프레이밍하거나 클라이언트가 비표준 체크섬을 보내면 정상 업로드가 `400` 이 됩니다.
+
+```
+1. log 로 한 판 돌립니다 (기본값이므로 아무것도 안 해도 됩니다)
+2. cas_integrity_mismatch_total 이 0 인 것을 확인합니다
+   0 이 아니면 그 값이 곧 enforce 에서 거절될 건수입니다 — 원인을 먼저 찾으십시오
+3. config.integrityCheck: enforce 로 올립니다
+```
+
+두 모드는 **검사를 똑같이 돕니다.** 다른 것은 불일치의 결말뿐이라, `log` 의 관측치가
+`enforce` 의 예상 거절 건수입니다. **요청당 한 번만 세므로** 트레일러를 여러 줄 보내도
+카운터는 1 입니다.
+
+### 비용
+
+선언이 있는 업로드는 BLAKE3 에 더해 SHA256 을 한 벌 더 돕니다. 평문 HTTP 로 붙는
+`boto3` 계열이 실제 해시를 헤더에 실으므로 그 경로가 전부 해당하고, **거절하지 않는
+기본값에서도 비용은 듭니다.** TLS 에서는 트레일러 축으로 가며, `x-amz-trailer` 가 선언한
+다이제스트만 굴립니다 — **그 헤더가 없으면 무엇이 올지 몰라 넷을 전부 굴립니다.** 업로드가 CPU 에 붙어 있으면 `off` 로 끌 수 있습니다.
+
+**지표는 검사가 켜진 배포에만 등록됩니다**(`off` 가 아닐 때). 시리즈의 부재가 「대조가
+꺼져 있다」를 뜻하므로 `absent()` 로 걸 수 있습니다.
+
 ## 집계 조회 격리 (이미지 `0.1.18` 이상)
 
-`/_api/stats`, `/_api/buckets`, `/_api/backends` 의 blob 집계, `/_api/gc/orphan-count` 는
-전 테이블 집계입니다. **`/_api/gc/candidates` 도 이미지 `0.1.27` 부터 이 풀에서 돕니다.**
+`/_api/stats`, `/_api/buckets`, `/_api/backends` 의 blob 집계는 전 테이블 집계입니다.
+**`/_api/gc/candidates` 도 이미지 `0.1.27` 부터 이 풀에서 돕니다.**
+(`/_api/gc/orphan-count` 도 이 풀을 썼으나 이미지 `0.1.29` 에서 `410` 이 되어 빠졌습니다.)
 
 `/_api/buckets/{bucket}/objects` 의 서브폴더 조회도 이미지 `0.1.23` 까지는 그랬습니다.
 **`0.1.24` 부터 비용이 그 레벨의 항목 수에 비례합니다** — 하위 폴더를 subtree 째 건너뛰므로

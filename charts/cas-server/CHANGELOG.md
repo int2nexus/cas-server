@@ -83,6 +83,108 @@ cas-server 는 기동 시 `CREATE TABLE IF NOT EXISTS` 만 실행하므로 보�
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.1.36
+
+image: `int2jieun/cas-server:0.1.29`
+digest: `sha256:10206494007aef5082f5be94acafca4696fdc1bdbf2e326b0a885bdc94b00fde`
+
+**동작 변경** — `GET /_api/gc/orphan-count` 가 `410 Gone` 입니다. 값을 내지 않습니다
+**마이그레이션** — 없음. **롤백 하한은 `0.1.28` 그대로입니다**
+**설정 키** — `config.integrityCheck` 를 추가했습니다 (`off`|`log`|`enforce`, 기본 `log`)
+
+**⑴ `orphan-count` 폐기 완료.** 이미지 `0.1.26` 부터 `Deprecation` 헤더로 고지해 온
+경로입니다. 이제 값을 내지 않고 `410` 이며, 본문에 사유와 대체 경로가 실립니다. 대체는
+`GET /_api/gc/candidates` 입니다.
+
+**두 값은 서로를 포함하지 않으므로 이전 값과 비교하지 마십시오** — 후보에는 있는데 고아가
+아닌 것이 있고, 고아인데 후보에 없는 것도 있습니다.
+
+라우트와 인가는 그대로입니다. 토큰 없이 부르면 `410` 이 아니라 `401` 이고, 콘솔은 이 경로를
+쓰지 않으므로 화면은 그대로입니다.
+
+**⑵ 종단 무결성 대조가 들어갑니다 — 기본 `log` 라 업로드는 거절되지 않습니다.**
+클라이언트가 선언한 체크섬을 서버가 받은 바이트와 대조합니다. 대상은 서명된
+`x-amz-content-sha256`(실제 hex 일 때만)과 `aws-chunked` 트레일러 체크섬입니다.
+트레일러는 `crc32` · `crc32c` · `crc64nvme` · `sha256` 을 셉니다 — **`boto3` 기본
+(`crc32`)과 AWS CLI v2 기본(`crc64nvme`)이 전부 포함됩니다.** AWS CLI 의 `UNSIGNED-PAYLOAD` 는 대조할 값이 없어 그대로 통과합니다.
+
+기본값에서는 **세고 기록만 합니다** — `cas_integrity_mismatch_total{source}` 와 서버 로그의
+`체크섬 불일치` 줄입니다. `enforce` 로 올리면 `400` 으로 거절합니다
+(`XAmzContentSHA256Mismatch` / `XAmzContentChecksumMismatch`).
+
+**어느 경로가 검사되는지는 전송 방식으로 갈립니다.** 같은 클라이언트라도 다릅니다.
+
+```
+평문 HTTP    x-amz-content-sha256 에 실제 해시가 실린다        → 대조됨
+             단, UNSIGNED-PAYLOAD 를 선언하면 대조할 값이 없다 → 통과
+TLS          aws-chunked 트레일러로 온다                        → 대조됨
+헤더 형태    x-amz-checksum-* 을 요청 헤더로 보낸다             → 대조하지 않고 세기만 함
+```
+
+**지표 둘이 늘었습니다.** `cas_integrity_mismatch_total{source}` 와
+`cas_integrity_unchecked_total{algo,form}` 입니다. 뒤엣것이 0 이 아니면 그만큼이 무검사로
+통과하고 있다는 뜻이라, 알림을 걸 대상입니다. 자세한 것은 README 「종단 무결성 대조」에
+있습니다.
+
+**업로드 CPU 가 올라갑니다.** 선언이 있는 업로드는 BLAKE3 에 더해 SHA256 을 한 벌 더
+돕니다. 평문 HTTP 로 붙는 `boto3` 계열이 실제 해시를 헤더에 실으므로 그 경로가 전부
+해당하며, **거절하지 않는 기본값에서도 비용은 듭니다.** 업로드가 CPU 에 붙어 있는
+배포라면 `config.integrityCheck: off` 로 끌 수 있습니다.
+
+**`enforce` 로 바로 올리지 마십시오.** 오탐이 곧 업로드 실패입니다. `log` 로 한 판 돌려
+그 지표가 0 인 것을 확인한 뒤 올리십시오 — 두 모드는 검사를 똑같이 돌므로 `log` 의
+관측치가 그대로 `enforce` 의 예상 거절 건수입니다(요청당 한 번만 셉니다). 절차는 README 「종단 무결성 대조」에
+있습니다.
+
+**⑶ 기동 로그에 마이그레이션 적용 결과가 남습니다.** 지금까지는 `_sqlx_migrations` 를 만들
+때 나는 PostgreSQL NOTICE(`relation ... already exists, skipping`)뿐이었는데, 그 줄은 **매
+기동마다 나고 적용 건수와 무관해서** 적용 여부를 셀 수 없었습니다. 이제 한 기동에 한 줄이
+나옵니다.
+
+```
+마이그레이션: 적용할 것이 없다 applied=0 total=13 latest=Some(13)
+마이그레이션 적용 applied=1 versions=[14] total=14 latest=Some(14)
+```
+
+이 판에는 마이그레이션이 없으므로 기존 배포를 올리면 첫 줄이 나옵니다.
+
+**⑷ 파트 재업로드가 실패해도 그 멀티파트 업로드가 망가지지 않습니다.**
+`UploadPart` 를 같은 파트 번호로 다시 보내다 중간에 실패하면(연결이 끊기거나, `enforce`
+에서 체크섬으로 거절되거나) **먼저 올려 둔 파트가 사라졌습니다.** 기록은 남아 있어
+`CompleteMultipartUpload` 가 「part not found」로 **영구히** 실패했고, 그 파트를 다시
+올리는 것 말고는 회복 방법이 없었습니다. 이제 먼저 올린 파트가 그대로 남습니다.
+
+로컬 백엔드에서만 나던 현상입니다(S3 백엔드는 해당 없음). 완료가 안 되던 업로드가 있으면
+그 파트를 다시 올린 뒤 완료하십시오.
+
+**⑸ 키에 `<`·`&`·제어문자가 든 객체의 응답 XML 이 달라집니다.**
+멀티파트 응답(`CreateMultipartUpload`·`CompleteMultipartUpload`)이 버킷과 키를
+이스케이프합니다 — 그동안 `<` 가 든 키는 **응답의 구조 자체를 바꿨습니다.**
+
+- 탭·줄바꿈·캐리지 리턴은 수치 참조로 나갑니다. **캐리지 리턴이 든 키가 목록에서
+  줄바꿈으로 바뀌어 돌아오던 것**이 고쳐집니다 — 그 값으로 GET 하면 404 였습니다.
+- XML 이 표현할 수 없는 제어문자(`\x00` 등)는 `U+FFFD` 로 치환돼 나갑니다. 원문을
+  되찾을 방법은 아직 없습니다 — 그런 키가 있으면 알려 주십시오.
+
+**주의** — STS 배선 문서 셋을 함께 고쳤습니다. `0.1.35` 의 문서를 보고 배선하셨으면 아래 둘을
+확인하십시오. 차트 동작은 그대로이고 바뀐 것은 문서뿐입니다.
+
+⑴ `auth.oidc.issuers[].issuer` 의 예시가 `https://kubernetes.default.svc` 였습니다.
+kubeadm 이 광고하는 값은 `https://kubernetes.default.svc.cluster.local` 이라, 예시대로
+적으면 토큰의 `iss` 와 달라 발급이 거절됩니다. 클러스터의 값은
+`kubectl get --raw /.well-known/openid-configuration` 으로 확인하십시오.
+
+⑵ projected 볼륨 예시가 `expirationSeconds: 3600` 이었습니다. kubelet 이 토큰 수명의 약
+80% 지점에서 회전시키므로 회전 직전 잔여가 약 720 초가 되고, cas 의 세션 수명 하한
+900 초에 걸려 `ExpiredToken`(400)이 회전 경계에서 간헐적으로 발생합니다. SDK 는 그 400 을
+재시도하지 않아 해당 워크로드가 자격증명 없이 멈춥니다. **7200 이상으로 두십시오.**
+이 예시가 있는 `docs/usage.md` 는 패키지에 없습니다(`.helmignore` 가 `docs/` 를
+제외합니다) — GitHub 에서 보십시오.
+
+⑶ README 의 `$SIGV4` 설명에 `x-amz-content-sha256` 요구를 적었습니다. 그 헤더를 붙이지
+않는 범용 SigV4 서명기로 `/_admin/*` 을 부르면 `403 SignatureDoesNotMatch` 가 됩니다 —
+권한 문제가 아니라 서명 대상이 어긋난 것입니다. 데이터 평면도 같은 규칙입니다.
+
 ## 0.1.35
 
 image: `int2jieun/cas-server:0.1.28`
