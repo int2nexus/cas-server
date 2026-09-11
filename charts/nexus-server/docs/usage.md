@@ -207,7 +207,7 @@ h = {"Authorization": f"Bearer {admin_token}"}   # superuser 또는 role=admin �
 
 # 1) 비밀번호를 잊은 계정 풀어주기 — 임시 비밀번호가 응답에 한 번만 실려 온다
 r = requests.post(f"{base}/api/v1/admin/users/password-reset",
-                  json={"email": "잠긴사람@int2.us"}, headers=h)
+                  json={"email": "잠긴사람@example.com"}, headers=h)
 print(r.json()["password"])   # 어디에도 저장되지 않는다. 지금 전달할 것
 
 # 2) 회원 목록 — 역할을 바꿀 대상을 찾는다
@@ -216,17 +216,17 @@ r = requests.get(f"{base}/api/v1/admin/users",
 
 # 3) 역할 변경 / 계정 정지·해제
 requests.post(f"{base}/api/v1/admin/users/role",
-              json={"email": "동료@int2.us", "role": "admin"}, headers=h)
+              json={"email": "동료@example.com", "role": "admin"}, headers=h)
 requests.post(f"{base}/api/v1/admin/users/active",
-              json={"email": "떠난사람@int2.us", "active": False}, headers=h)
+              json={"email": "떠난사람@example.com", "active": False}, headers=h)
 
 # 4) 담당자 지정 — 담당자가 없는 dataset의 인수
 requests.put(f"{base}/api/v1/admin/datasets/{dataset_id}/owner",
-             json={"email": "새담당자@int2.us"}, headers=h)
+             json={"email": "새담당자@example.com"}, headers=h)
 
 # 5) 담당 일괄 이관 — A가 담당하던 전부를 B에게
 requests.post(f"{base}/api/v1/admin/datasets/transfer-owner",
-              json={"from_email": "떠난사람@int2.us", "to_email": "새담당자@int2.us"}, headers=h)
+              json={"from_email": "떠난사람@example.com", "to_email": "새담당자@example.com"}, headers=h)
 ```
 
 - **계정 정지는 삭제가 아니다.** 이메일을 계속 점유하므로 그 주소로 재가입할 수 없고, `active: true`로 해제하면 그대로 돌아온다. 정지하면 로그인이 `403 forbidden`이 되고, **이미 발급된 토큰도 캐시 수명(`auth.revocationCacheTtlSecs`, 기본 5초) 안에 막힌다.**
@@ -947,7 +947,7 @@ SDK `0.1.6`부터 메서드가 있다.
 ```python
 ds = nx.Dataset.load_or_create("my-dataset", "v0")
 
-updated = ds.transfer_owner("새주인@int2.us")
+updated = ds.transfer_owner("새주인@example.com")
 print(updated["owner_user_id"])                # 새 담당자의 user_id
 ```
 
@@ -956,7 +956,7 @@ print(updated["owner_user_id"])                # 새 담당자의 user_id
 ```bash
 curl -X PUT "$BASE/api/v1/datasets/$DATASET_ID/owner" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"email":"새주인@int2.us"}'
+  -d '{"email":"새주인@example.com"}'
 ```
 
 - **현재 담당자만 넘길 수 있다**(아니면 403). 받는 사람은 이미 가입된 계정이어야 한다(아니면 404).
