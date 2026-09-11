@@ -94,6 +94,27 @@ image: `int2jieun/nexus-server:0.1.11` (변경 없음)
 같은 마운트의 `ca.crt` 가 JWKS 조회의 TLS 신뢰에도 쓰입니다. 클러스터 자체 CA 로 서명된
 API 서버 인증서 뒤의 JWKS 는 이 경로로 검증되며, 그 CA 를 따로 넣는 값은 없습니다.
 
+**문서 정정** — 차트 문서 전체를 서버 `0.1.11` 기준으로 대조해 아래를 고쳤습니다.
+동작 변경은 없습니다.
+
+```
+인증 갈래        architecture.md 가 둘(JWT·로봇 토큰)로 남아 있었습니다. 0.1.11 의
+                 OIDC 갈래와 그 세 제약(refresh·비밀번호 변경·계정 삭제가 403)을 적었습니다
+세션 삭제 권한    architecture.md 10.3 과 usage.md 6.5 의 표가 `editor 이상` 으로 남아
+                 있었습니다. 0.1.11 부터 **사람** editor 이상입니다(로봇은 403)
+가입 차단의 범위  values.yaml·usage.md 가 "끄면 계정을 만들 방법이 없다" 였습니다.
+                 로봇 계정(POST /api/v1/admin/robots)은 이 값을 보지 않습니다
+403 본문         usage.md 가 "셋으로 갈린다" 인데 서버는 둘입니다(forbidden·pending_approval)
+CAS 자격증명      usage.md 에 만료 설명이 없었습니다. 0.1.11 부터 요청 토큰의 잔여 수명을
+                 물려받고, 그 이전 발급분은 무만료로 남습니다
+시크릿 키        README·values.yaml·usage.md 가 넷 + CVAT 만 적고 있었습니다.
+                 NEXUS__CAS__ADMIN_SECRET·NEXUS__METRICS__TOKEN 을 더했습니다
+관리 엔드포인트   README 표에 CAS 자격증명 셋과 config-effective 가 빠져 있었습니다
+깨진 예시        secret.example.yaml 의 주석 한 줄과 usage.md 의 curl 세 줄이
+                 `\n` 이 실제 줄바꿈으로 치환돼 쪼개져 있었습니다. 복사하면 동작하지
+                 않는 명령이었습니다
+```
+
 ## 0.3.8
 
 image: `int2jieun/nexus-server:0.1.10` → `0.1.11`

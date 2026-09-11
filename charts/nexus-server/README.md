@@ -16,14 +16,19 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
 - **외부 PostgreSQL** — 접속 정보(비번 포함 DSN)는 시크릿으로 주입. 차트가 DB를 띄우지 않는다.
 - **클러스터 내 cas-server** — CAS(파일) 백엔드.
 - **시크릿 4키** (sealed-secret으로 주입): `NEXUS__DATABASE__URL`, `NEXUS__CAS__KEY_ID`, `NEXUS__CAS__SECRET`, `NEXUS__JWT__SECRET`.
-  CVAT annotation 편집 세션을 쓰면 `NEXUS__CVAT__PASSWORD`가 **5번째 키**로 추가된다(선택).
-  superuser를 쓰면 `NEXUS__AUTH__SUPERUSER_PASSWORD`가 **6번째 키**로 추가된다(선택).
+  선택 키가 넷 더 있고, 쓰는 기능이 있을 때만 넣는다 — CVAT annotation 편집 세션의
+  `NEXUS__CVAT__PASSWORD`, superuser의 `NEXUS__AUTH__SUPERUSER_PASSWORD`,
+  CAS 자격증명 자동 발급의 `NEXUS__CAS__ADMIN_SECRET`(`cas.adminKeyId`와 짝),
+  지표의 `NEXUS__METRICS__TOKEN`(values 스위치가 없다 — 이 키가 곧 스위치다).
+  전체 목록은 [`examples/secret.example.yaml`](examples/secret.example.yaml).
 - **CVAT은 선택** — 설정하지 않아도 서버는 정상 동작한다. 세션 생성·결과 회수만 503이 되고 카탈로그·업로드·seal·조회는 영향이 없다.
 - **superuser도 선택** — 설정하지 않으면 관리자를 만들 부트스트랩 수단이 없다(`users.role = admin`은 백필하지 않는다). 다만 **CVAT과 달리 반쪽 설정은 조용히 꺼지지 않고 기동을 실패시킨다**(아래 참조).
 
 DB 마이그레이션은 바이너리에 임베드되어 **기동 시 자동 적용**된다(별도 Job 불필요). 마이그레이션이 끝나야 포트가 열리므로 그 시간은 곧 startupProbe 예산(기본 `periodSeconds 10 × failureThreshold 60` = 600초)에서 나간다 — 스키마가 바뀌는 릴리스로 올릴 때는 [CHANGELOG](CHANGELOG.md)의 해당 버전 **마이그레이션** 항목에서 예상 소요를 먼저 확인할 것. **거기 적힌 실측값은 우리 환경의 것이라 행 수로 환산해 그대로 쓸 수 없다** — 소요가 행 수에 선형인 것은 같은 하드웨어 안에서일 뿐이고 계수는 DB마다 다르다. 예산은 넉넉한 쪽으로 잡는다(모자라면 기동 실패가 반복되고, 남으면 아무 일도 일어나지 않는다). 서버는 stateless(파일=CAS, 메타=Postgres)라 PVC가 없다.
 
 > **업그레이드 전에 [CHANGELOG](CHANGELOG.md)를 읽을 것.**
+
+**차트 0.3.9 / appVersion 0.1.11** — 문서만 바뀐다. 이미지·동작·설정 키가 `0.3.8`과 같고 마이그레이션도 없다. `auth.oidc.issuers`에 `jwksAuth: serviceaccount`를 쓰려면 `serviceAccount.automountToken: true`가 필요하다는 것을 적었다(`0.3.8`에 빠져 있었다).
 
 **차트 0.3.8 / appVersion 0.1.11** — 마이그레이션 `021`·`022`가 붙는다(**`0.1.10` 이하로 롤백 불가**). 지금까지와 달라지는 것은 둘이고, 그 밖은 모두 새로 더해지는 것이다.
 
@@ -65,7 +70,7 @@ helm repo update
 
 ### 1) 시크릿 주입 (sealed-secret)
 
-차트는 Secret을 만들지 않고 외부 Secret을 `envFrom`으로 참조한다. 아래 키를 가진 Secret을 **먼저** 주입한다(마지막 CVAT 줄은 연동을 쓸 때만):
+차트는 Secret을 만들지 않고 외부 Secret을 `envFrom`으로 참조한다. 아래 키를 가진 Secret을 **먼저** 주입한다(앞의 넷은 필수, 뒤의 넷은 그 기능을 쓸 때만):
 
 ```bash
 kubectl create secret generic nexus-server -n <namespace> --dry-run=client -o yaml \
@@ -75,6 +80,8 @@ kubectl create secret generic nexus-server -n <namespace> --dry-run=client -o ya
   --from-literal=NEXUS__JWT__SECRET='...' \
   --from-literal=NEXUS__CVAT__PASSWORD='...' \
   --from-literal=NEXUS__AUTH__SUPERUSER_PASSWORD='...' \
+  --from-literal=NEXUS__CAS__ADMIN_SECRET='...' \
+  --from-literal=NEXUS__METRICS__TOKEN='...' \
   | kubeseal --format yaml > sealed-nexus-server.yaml
 kubectl apply -f sealed-nexus-server.yaml -n <namespace>
 ```
@@ -155,6 +162,12 @@ CVAT 연동은 `cvat.baseUrl`·`cvat.user`·시크릿의 `NEXUS__CVAT__PASSWORD`
 | `DELETE /api/v1/admin/robots/{user_id}/tokens/{token_id}` | 토큰 폐기 |
 | `POST /api/v1/admin/oidc-identities` · `GET` | OIDC 신원 `(issuer, subject)` → 계정 매핑 등록·목록(appVersion 0.1.11+). 목록은 `?user_id=`로 좁힌다 |
 | `DELETE /api/v1/admin/oidc-identities/{identity_id}` | 매핑 삭제. 그 신원 하나만 막는다 |
+| `GET /api/v1/admin/cas-credentials` | 전체 사용자의 CAS 자격증명 목록. **`cas.adminKeyId`가 비어도 200이다** — 이 표만 읽는 조회라, 기능을 끈 뒤에도 켜져 있던 동안 발급된 것을 계속 확인할 수 있어야 하기 때문이다 |
+| `DELETE /api/v1/admin/cas-credentials/{cas_key_id}` | 남의 자격증명 강제 폐기 |
+| `POST /api/v1/admin/cas-credentials/retry-revocations` | cas 쪽 폐기에 실패해 미처리로 남은 것을 다시 시도(`nexus_cas_credential_revocations_pending`이 0이 아닐 때) |
+| `GET /api/v1/admin/config-effective` | 실제로 걸린 설정값. 비밀은 값이 아니라 설정 여부(`metrics.token_set` 등)로 나온다 |
+
+CAS 자격증명 셋 중 **강제 폐기와 미처리 재시도는 `cas.adminKeyId`가 비면 503**이다 — cas를 실제로 불러야 하는 조작이라 관리 키 없이는 할 수 없다. 목록만 그 설정과 무관하게 200이다.
 
 감사 로그는 없다.
 

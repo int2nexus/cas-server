@@ -42,7 +42,7 @@ nexus-server는 cas-server와 동일한 Helm repo를 사용한다.
 
 #### 시크릿 주입 (sealed-secret)
 
-차트는 Secret을 만들지 않고 외부 Secret을 envFrom으로 참조한다. 아래 4개의 키를 가진 Secret을 먼저 클러스터에 주입한다(kubeseal로 봉인). CVAT 연동을 쓰면 `NEXUS__CVAT__PASSWORD`가 5번째 키로 추가된다 — [2.2](#22-cvat-연동-선택-차트-020) 참조:
+차트는 Secret을 만들지 않고 외부 Secret을 envFrom으로 참조한다. 아래 4개의 키를 가진 Secret을 먼저 클러스터에 주입한다(kubeseal로 봉인). 나머지 넷은 그 기능을 쓸 때만 같은 Secret에 더한다 — CVAT 연동의 `NEXUS__CVAT__PASSWORD`([2.2](#22-cvat-연동-선택-차트-020)), superuser의 `NEXUS__AUTH__SUPERUSER_PASSWORD`([superuser](#superuser-차트-030-선택)), CAS 자격증명 자동 발급의 `NEXUS__CAS__ADMIN_SECRET`, 지표의 `NEXUS__METRICS__TOKEN`:
 
 ```bash
 kubectl create secret generic nexus-server -n <namespace> --dry-run=client -o yaml \
@@ -158,6 +158,8 @@ nx.connect()
 - **한쪽만 있으면 발급이 일어나고 있던 쪽까지 새 값으로 덮인다** — 한쪽만으로는 서명을 만들 수 없어 그 값이 아무 일도 하지 못하기 때문이다. 덮기 전에 경고를 낸다.
 - **발급받은 값을 설정 파일에 쓰지 않는 것이 기본이다**(`save_cas_credentials`, SDK `0.1.10`에서 `True` → `False`로 뒤집었다). 발급 자체는 그대로 일어나고 이 프로세스 안에서는 쓰인다 — 파일에 남기지 않을 뿐이다. 저장이 맞는 배포는 `nx.connect(save_cas_credentials=True)`로 명시한다.
 - 저장하지 않으면 다음 실행에서 새로 발급받으므로 `key_id`가 쌓인다. 그것이 싫으면 환경변수로 영구 자격증명을 주입한다(그러면 발급 자체가 일어나지 않는다). 한 사람이 동시에 가질 수 있는 활성 자격증명 수는 서버의 `cas.credentialsPerUser`(기본 10)로 제한된다.
+- **발급받은 자격증명에는 만료가 있다**(서버 `0.1.11`+). 만료는 **그 발급을 요청한 토큰의 남은 수명**을 그대로 물려받는다 — 사람 JWT면 `jwt.ttlHours`의 잔여(기본 24시간 이내), 로봇 토큰이면 그 토큰의 잔여(최장 365일), OIDC 토큰이면 `min(토큰의 exp, 지금 + jwt.ttlHours)`다. 「토큰이 죽으면 CAS 키도 죽는다」가 폐기라는 사건 없이 시간으로 성립한다. `0.1.11` **이전에 발급된 것은 여전히 무만료이고 재발급으로만 없어진다**(마이그레이션이 소급해 채우지 않는다 — 채우면 nexus만 만료로 알고 cas는 계속 받아 준다).
+- 그래서 **오래 도는 잡은 SDK `0.1.11` 이상이어야 한다.** 만료된 키로 CAS가 403을 주면 SDK가 S3 에러 코드를 읽어 갈린다 — `AccessDenied`(정책 거부)면 재발급하지 않고, 그 밖이면 60초 간격으로 다시 발급받아 이어간다. SDK `0.1.9`~`0.1.10`은 클라이언트당 한 번만 재발급하므로 한 프로세스가 만료를 **두 번** 넘기면 그 자리에서 실패한다.
 
 #### 사내 프록시로 SSL 인증서 에러가 날 때 (SDK 0.1.1+)
 
@@ -246,7 +248,7 @@ requests.post(f"{base}/api/v1/admin/datasets/transfer-owner",
 
   **서버 0.1.10부터 다섯이 더 붙는다** — `nexus_cas_credential_revocations_pending`(미처리 CAS 자격증명 폐기 건수. **없어도 `0`으로 나온다**)과 로봇 토큰 넷(`nexus_robot_tokens_active` · `_expiring_soon` · `nexus_robot_token_min_expires_in_seconds` · `nexus_robot_accounts_without_active_token`). 이 다섯만 DB를 조회하며 250ms를 넘기면 그 다섯만 생략하고 나머지를 낸다. `min_expires_in_seconds`는 **활성 토큰이 없을 때 `+Inf`**이므로 `< 임계값` 경보가 저절로 풀린다.
 
-- **적용된 설정을 확인하려면 `GET /api/v1/admin/config-effective`**(차트 0.3.5+, superuser 전용). 지금 그 프로세스가 **읽은 값**을 돌려준다 — 차트 렌더 결과가 아니므로 `extraEnv` 오버라이드도 드러난다.
+- **적용된 설정을 확인하려면 `GET /api/v1/admin/config-effective`**(차트 0.3.5+, 관리자 전용 — 설정 superuser와 `role = admin` 둘 다 통과한다). 지금 그 프로세스가 **읽은 값**을 돌려준다 — 차트 렌더 결과가 아니므로 `extraEnv` 오버라이드도 드러난다.
 
   ```python
   requests.get(f"{base}/api/v1/admin/config-effective", headers=h).json()
@@ -271,7 +273,7 @@ superuser 외에 인증 관련 설정을 helm 값으로 조정할 수 있다.
 | values 키 | 기본값 | 설명 |
 |---|---|---|
 | `jwt.ttlHours` | 빈 값 (서버 기본 **24**) | 발급 토큰의 수명(시간). 허용 범위 **1~8760**. 이 서버는 토큰을 무효화할 수 없으므로(위 계정 관리·superuser 항목 참조) 이 값이 곧 탈취·비밀번호변경·계정삭제 이후에도 토큰이 살아있는 최대 시간이다. **범위를 벗어난 값(`0` 포함)을 주면 서버가 기동에 실패한다** — DB 연결보다 먼저 검사하므로 "0을 줬는데 조용히 24시간으로 되돌아갔다"처럼 잘못 설정한 채 넘어가는 일이 없다. 줄이면 노출 시간은 줄지만 `POST /api/v1/auth/refresh` 호출이 그만큼 잦아진다. |
-| `auth.registrationEnabled` | `true` | `false`로 하면 `POST /api/v1/auth/register`만 403이 되고, 로그인·토큰 갱신·기존 계정은 영향을 받지 않는다. **끄기 전에 필요한 계정을 모두 만들어 둘 것** — 끈 뒤에는 계정을 새로 만들 방법이 없다(계정 생성 API가 register 하나뿐이라 superuser도 새 계정을 만들 수 없다). |
+| `auth.registrationEnabled` | `true` | `false`로 하면 `POST /api/v1/auth/register`만 403이 되고, 로그인·토큰 갱신·기존 계정은 영향을 받지 않는다. **끄기 전에 필요한 사람 계정을 모두 만들어 둘 것** — 끈 뒤에는 사람 계정을 새로 만들 방법이 없다(사람 계정을 만드는 API가 register 하나뿐이라 superuser도 만들 수 없다). 로봇 계정은 예외다 — `POST /api/v1/admin/robots`(서버 0.1.10+)는 이 값을 보지 않으므로 가입을 닫은 뒤에도 관리자가 만들 수 있다. |
 | `auth.docsEnabled` | `true` | `false`로 하면 `/api-docs/openapi.json`, `/swagger-ui`, `/swagger-ui/` 세 경로가 **404**가 된다(라우트 자체가 등록되지 않아서다 — 403이 아니다). 스펙은 이미 전 경로가 인증 뒤에 있으므로, 이걸로 감추는 것은 API 경로 목록뿐이다. |
 | `auth.approvalRequired` (0.3.4+) | `false` | `true`로 하면 가입은 열어 둔 채 **승인 전까지 아무것도 할 수 없다.** 가입 요청은 계정을 만들되 **토큰을 주지 않고** `202`와 `{"status": "pending"}`을 반환하며, 승인 전에는 로그인·토큰 갱신이 `403`이다(본문 `pending_approval`). 승인은 `POST /api/v1/admin/users/approve`(본문에 `email`·`role` 필수), 대기 목록은 `GET /api/v1/admin/users/pending`. **켜기 전에 가입 화면이 `202`를 처리해야 하고**, 승인 엔드포인트가 관리자 전용이라 `auth.superuserEmail`도 함께 설정해야 한다. 켜기 전에 가입한 계정은 영향받지 않는다. |
 | `auth.oidc.issuers` (0.3.8+) | `[]` (기능 꺼짐) | 외부 IdP가 발급한 토큰을 인증 자격증명으로 받을 발급자 목록. 항목마다 `issuer`(필수, `https://`, 토큰의 `iss`와 같아야 한다) · `audience`(필수, 토큰 `aud` **안에 있으면** 통과하는 포함 검사) · `exchange`(기본 `false`, `POST /api/v1/auth/oidc/exchange`를 이 발급자에게 여는 스위치 — 자동 회전하는 토큰에는 켜지 말 것) · `jwksUri`(선택, 발급자와 JWKS 호스트가 다를 때) · `jwksAuth`(선택, `serviceaccount` 하나만 — 파드 자신의 SA 토큰을 실어 JWKS를 읽는다). **`audience`가 비었거나 `issuer`가 비-https·중복이면 기동에 실패한다.** 목록이 비면 기능이 꺼질 뿐 기동은 정상이다. **발급자만 설정하면 아무도 인증되지 않는다** — 신원 `(issuer, subject)` → 계정 매핑을 `POST /api/v1/admin/oidc-identities`로 관리자가 등록해야 하고 자동 생성은 없다. 이 갈래로 온 요청은 `POST /api/v1/auth/refresh`가 `403`이다. |
@@ -312,8 +314,8 @@ docker compose up -d --force-recreate cvat_server cvat_worker_import cvat_worker
 
 ```bash
 # 프록시 경유로 200이 나와야 한다. 407이면 smokescreen이 막고 있는 것이다.
-docker exec cvat_worker_import curl -s -o /dev/null -w '%{http_code}
-'   -x http://127.0.0.1:4750 http://<CAS>/<bucket>/<object-key>
+docker exec cvat_worker_import curl -s -o /dev/null -w '%{http_code}\n' \
+  -x http://127.0.0.1:4750 http://<CAS>/<bucket>/<object-key>
 ```
 
 #### nexus 설정 (Helm)
@@ -382,10 +384,8 @@ INFO  [cvat] 설정 없음 — annotation session 엔드포인트는 503을 반�
 >
 > ```bash
 > # 확인 — Host 헤더를 바꿨을 때만 200이면 이 경우다
-> curl -o /dev/null -w '%{http_code}
-'                      http://<CVAT-IP>:8080/api/server/about   # 404
-> curl -o /dev/null -w '%{http_code}
-' -H 'Host: localhost' http://<CVAT-IP>:8080/api/server/about   # 200
+> curl -o /dev/null -w '%{http_code}\n'                      http://<CVAT-IP>:8080/api/server/about   # 404
+> curl -o /dev/null -w '%{http_code}\n' -H 'Host: localhost' http://<CVAT-IP>:8080/api/server/about   # 200
 > ```
 >
 > 해결은 CVAT 쪽에서 `CVAT_HOST`를 **실제 접속 주소(IP 또는 DNS 이름)로 바꾸고** traefik·서버·UI를
@@ -512,6 +512,7 @@ print(report)
 - image asset이 없거나 헤더를 읽지 못한 샘플은 건너뛰고 `measured`에서 빠진다.
 - 서버는 **빈칸만 채우고 기록된 값은 축 단위로 거부한다.** 이미 크기가 있는 샘플을 보내면 `rejected`에 사유와 함께 돌아온다. `applied + len(rejected)`가 `measured`와 맞으므로 스크립트가 종료 코드를 정할 수 있다.
 - 멱등이라 중단 후 다시 돌려도 안전하다(이미 채워진 것은 서버가 거부한다).
+- **적재 당시의 선언값 자체가 틀린 경우는 `overwrite=True`로 고친다**(SDK 0.1.10+ / 서버 0.1.10+). 그 값은 「기록됨」이라 위 채우기 모드로는 구조적으로 닿지 않는다. 이 모드는 전량을 다시 재고 **실측값이 기록값과 다른 것만** 보내며, `dry_run=True`가 개수가 아니라 변경 목록(`from` → `to`)을 준다 — 그 목록이 "probe가 엉뚱한 객체를 재고 있다"를 잡는 자리다. `patch_annotations`로 `meta`만 고치려 하면 안 된다 — 그 경로는 그 버전의 인스턴스를 통째로 교체하므로 GT가 사라진다.
 - sealed 버전의 샘플도 보정된다 — `samples.meta`는 seal이 얼리는 대상이 아니고([architecture.md 10.3](architecture.md#103-version-불변성)), 애초에 그 `0`은 측정된 값이 아니었다.
 
 ### 3.3 샘플 생성 & 등록
@@ -538,17 +539,17 @@ samples = [
 ds.add(samples)                       # 등록 큐에 추가 - 단일 Sample 또는 리스트 모두
 results = ds.flush(workers=4)         # 병렬 등록 → IngestResult 리스트
 
+print("ok:", sum(r.ok for r in results), "/", len(results))
+for r in (r for r in results if not r.ok):
+    print("  FAIL:", r.error)
+```
+
 > **`flush(workers=)`의 상한은 한 사람이 아니라 동시에 적재하는 전원의 합에 걸린다.**
 > 서버 기본값(`database.maxConnections=16`, `ingest.batchItemConcurrency=3`)에서 그 합이
 > **4**다. 넘치면 서버가 `429` + `Retry-After`로 돌려주고 SDK(`0.1.9`+)가 물러났다 다시
 > 오므로 적재가 실패하지는 않지만 그만큼 느려진다. 처리량을 올리려면 서버의
 > `database.maxConnections`를 함께 올려야 한다. `nx.upload(workers=)`는 CAS로 직접 가므로
 > 이 상한과 무관하다.
-
-print("ok:", sum(r.ok for r in results), "/", len(results))
-for r in (r for r in results if not r.ok):
-    print("  FAIL:", r.error)
-```
 
 - `image` - `nx.upload`가 돌려준 `CasRef`, 또는 그 이미지의 CAS URL을 직접 넣는다(`http://<cas>/<bucket>/<key>`).  
 - `annotation`은 Sample 등록 시점에 같이 넣는 게 자연스럽다(나중에 따로 고치는 방법은 §3.5).  
@@ -1139,7 +1140,7 @@ ses.delete()                # CVAT project까지 완전 삭제 - 되돌릴 수 �
 |---|---|---|
 | 샘플 잠금 | 해제 | 해제 |
 | CVAT project | **보존** | **삭제**(이미지 사본·미반영 편집까지) |
-| 권한 | `editor` 이상 | `editor` 이상 |
+| 권한 | `editor` 이상 (로봇도 된다) | **사람** `editor` 이상 — 로봇 계정은 403 (서버 0.1.11~, [6.1](#61-시작-전-확인)) |
 | CVAT 연결 | 없어도 동작 | 없어도 동작(project 삭제만 건너뜀) |
 
 `close()`는 아직 당겨오지 않은 편집이 있으면 `NexusError(409)`로 막는다. 먼저 `pull()`을 부르거나, 그 작업을 버릴 생각이면 `force=True`를 준다. CVAT을 조회할 수 없으면 "미반영 여부를 모름"으로 보고 막지 않는다 — CVAT이 죽었을 때 세션을 못 닫으면 샘플이 영구히 잠기기 때문이다.
@@ -1239,7 +1240,7 @@ nx.connect(nexus_url=..., robot_token="nxr_...")   # 또는 환경변수 NEXUS_R
 
 **조회를 포함한 모든 요청에 토큰이 필요하다.** 쓰기는 역할이 가른다(서버 0.1.7) — 적재(`flush`), annotation 수정, 샘플 추가, seal, 이름 변경은 **`editor` 이상이면 다른 사람이 담당인 dataset에도** 된다. **삭제도 서버 0.1.9부터 같다** — 담당자 조건이 빠졌다. **다만 삭제는 역할 위에 종을 하나 더 본다**: `viewer`가 못 지우는 것에 더해 **로봇 계정도 지울 수 없다**(서버 0.1.10~, 바로 위 로봇 절 참고).
 
-`403` 본문은 셋으로 갈린다.
+`403` 본문은 둘로 갈린다.
 
 | 본문 `error` | 뜻 |
 |---|---|
