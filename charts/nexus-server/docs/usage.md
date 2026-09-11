@@ -238,7 +238,7 @@ requests.post(f"{base}/api/v1/admin/datasets/transfer-owner",
 - **담당자 이전은 인가를 옮기지 않는다**(서버 0.1.9). 이전 담당자도 계속 쓰고 지울 수 있다 — 역할이 `editor`이기 때문이다. 옮겨가는 것은 「다시 넘길 자격」 하나다.
 - 담당자가 없는 dataset은 `GET /datasets?unowned=true`로 조회한다. 담당자가 비어도 권한이 생기지 않으므로 위험한 상태가 아니라 **인수 대기**다. 그런 dataset도 `editor` 이상이면 지울 수 있다(서버 0.1.9 — 그 전에는 `admin` 전용이었다). 담당자가 있는 dataset을 넘기는 것은 담당자 본인이 한다([4.4](#44-dataset-담당자-이전-서버-016)).
 - **superuser 비밀번호를 바꾼 뒤에도 시크릿을 갱신할 필요가 없다.** `NEXUS__AUTH__SUPERUSER_PASSWORD`는 **그 계정이 없을 때 새로 만드는 용도로만** 읽힌다 — 계정이 이미 있으면 기동 시 값을 읽지도, 비교하지도 않는다. 그래서 시크릿의 값과 실제 로그인 비밀번호가 달라도 파드는 정상 기동하고, 반대로 시크릿을 바꿔 재배포해도 비밀번호는 바뀌지 않는다. 이 값을 "현재 비밀번호"가 아니라 **"계정 생성용 씨앗"**으로 보시는 편이 정확하다. 실제로 다시 쓰이는 경우는 하나뿐이다 — `auth.superuserEmail`을 **아직 가입되지 않은** 주소로 바꿔 재배포하면, 그때 이 값으로 새 계정이 만들어진다(이미 누가 쓰는 주소를 넣으면 그 계정을 채택하므로 그 사람이 superuser가 된다).
-- **지표를 보려면 `GET /_internal/metrics`**(차트 0.3.6+). 시크릿의 `NEXUS__METRICS__TOKEN`을 bearer로 받고, 그 값이 없으면 경로 자체가 **404**다. Prometheus 텍스트를 내며 DB를 조회하지 않으므로 15초 주기도 부담이 없다.
+- **지표를 보려면 `GET /_internal/metrics`**(차트 0.3.6+). 시크릿의 `NEXUS__METRICS__TOKEN`을 bearer로 받고, 그 값이 없으면 경로 자체가 **404**다. Prometheus 텍스트를 내며, **서버 0.1.9까지는 DB를 전혀 조회하지 않았고 0.1.10부터 아래 다섯이 워크로드 풀에서 한 왕복을 쓴다**(250ms를 넘기면 그 다섯만 빠진다). 15초보다 촘촘한 주기는 권하지 않는다.
 
   ```bash
   curl -H "Authorization: Bearer $METRICS_TOKEN" $base/_internal/metrics
@@ -502,7 +502,8 @@ ds = nx.Dataset.load_or_create("<dataset>", "<version>")
 report = ds.backfill_dims(dry_run=True)   # 대상 규모와 실제 측정 가능 건수만 확인
 report = ds.backfill_dims(workers=8)      # 적용
 print(report)
-# {'scanned': 12000, 'targeted': 840, 'measured': 838, 'applied': 838, 'rejected': [...]}
+# {'scanned': 12000, 'targeted': 840, 'measured': 838, 'unchanged': 0,
+#  'applied': 838, 'corrected': 0, 'rejected': [...], 'changes': [...]}
 ```
 
 버전의 샘플을 훑어 대상을 고르고, `nx.probe`로 크기를 재고, 서버에 청크로 적용한다.
@@ -1257,7 +1258,7 @@ nx.connect(nexus_url=..., robot_token="nxr_...")   # 또는 환경변수 NEXUS_R
 |||
 |---|---|
 |`nx.connect(nexus_url=, email=, password=, robot_token=, cas_url=, cas_key_id=, cas_secret=, save_cas_credentials=False)`|서버 연결. `robot_token=`이면 로그인하지 않는다(SDK 0.1.10+). `save_cas_credentials` 기본값은 **SDK 0.1.10부터 `False`**(자동 발급받은 CAS 자격증명을 설정 파일에 남기지 않는다)|
-|`nx.list_datasets(q=, name=, description=, tags=, sort=, order=, favorite=)`|dataset 목록 검색|
+|`nx.list_datasets(q=, name=, description=, tags=, sort=, order=, favorite=, mine=, unowned=, limit=, cursor=)`|dataset 목록 검색. `limit`을 주지 않으면 커서를 자동 순회해 전체를 모은다([4.1](#41-데이터셋-목록-조회))|
 |`nx.upload(paths, bucket, prefix="", workers=8, overwrite=False)` → {경로: CasRef}|파일 업로드. `overwrite=True`면 같은 key에 다른 내용이 있어도 에러 대신 덮어씀(SDK 0.1.4+)|
 |`nx.probe(refs, workers=8, strict=False, max_header_bytes=65536)` → [CasRef]|업로드 없이 CAS 객체의 이미지 크기만 채움(앞부분만 읽음, 순서 보존)|
 |`nx.image_info(data)` → ImageInfo(width, height, mime, channels)|로컬 bytes에서 헤더만 읽어 크기 판독|

@@ -165,7 +165,7 @@ CVAT 연동은 `cvat.baseUrl`·`cvat.user`·시크릿의 `NEXUS__CVAT__PASSWORD`
 | `GET /api/v1/admin/cas-credentials` | 전체 사용자의 CAS 자격증명 목록. **`cas.adminKeyId`가 비어도 200이다** — 이 표만 읽는 조회라, 기능을 끈 뒤에도 켜져 있던 동안 발급된 것을 계속 확인할 수 있어야 하기 때문이다 |
 | `DELETE /api/v1/admin/cas-credentials/{cas_key_id}` | 남의 자격증명 강제 폐기 |
 | `POST /api/v1/admin/cas-credentials/retry-revocations` | cas 쪽 폐기에 실패해 미처리로 남은 것을 다시 시도(`nexus_cas_credential_revocations_pending`이 0이 아닐 때) |
-| `GET /api/v1/admin/config-effective` | 실제로 걸린 설정값. 비밀은 값이 아니라 설정 여부(`metrics.token_set` 등)로 나온다 |
+| `GET /api/v1/admin/config-effective` | 지금 그 프로세스가 읽은 설정값(차트 렌더 결과가 아니다). 비밀은 값 대신 `<set>`/`<unset>`이고, `database.url`만 비밀번호를 가린 채 호스트·DB명을 남긴다 |
 
 CAS 자격증명 셋 중 **강제 폐기와 미처리 재시도는 `cas.adminKeyId`가 비면 503**이다 — cas를 실제로 불러야 하는 조작이라 관리 키 없이는 할 수 없다. 목록만 그 설정과 무관하게 200이다.
 
@@ -188,7 +188,7 @@ curl localhost:8090/_internal/health      # {"status":"ok","db":true}
 
 **readiness는 워크로드와 커넥션 풀을 나눠 쓴다**(0.3.6+). `/_internal/health`는 크기 1의 전용 풀로 ping하므로 적재가 워크로드 풀을 전부 써도 200이다. 그래서 **readiness 실패는 「DB에 못 닿는다」만 뜻하고**, 「앱이 바쁘다」는 더 이상 파드를 서비스에서 빼지 않는다. 앱이 커넥션을 못 받고 있는지는 readiness가 아니라 `nexus_db_pool_acquire_timeouts_total`(아래)로 본다.
 
-`GET /_internal/metrics`는 **인증이 면제되지 않는다.** 시크릿의 `NEXUS__METRICS__TOKEN`을 bearer로 받고, 비어 있으면 경로 자체가 404다. 스크레이퍼는 로그인할 수 없고 JWT를 쓰게 하면 모니터링 스택이 카탈로그 전체를 읽는 계정을 들고 있어야 해서 토큰을 따로 뒀다. DB를 조회하지 않으므로 15초 주기도 부담이 없다. 설정 여부는 `GET /api/v1/admin/config-effective`의 `metrics.token_set`으로 확인한다.
+`GET /_internal/metrics`는 **인증이 면제되지 않는다.** 시크릿의 `NEXUS__METRICS__TOKEN`을 bearer로 받고, 비어 있으면 경로 자체가 404다. 스크레이퍼는 로그인할 수 없고 JWT를 쓰게 하면 모니터링 스택이 카탈로그 전체를 읽는 계정을 들고 있어야 해서 토큰을 따로 뒀다. **appVersion 0.1.9까지는 DB를 전혀 조회하지 않았고, 0.1.10부터 아래 다섯이 한 왕복을 쓴다**(250ms를 넘기면 그 다섯만 빠진다). 그 한 왕복이 워크로드 풀에서 나가므로 15초보다 촘촘한 주기는 권하지 않는다. 설정 여부는 `GET /api/v1/admin/config-effective`의 `metrics.token_set`으로 확인한다.
 
 ```bash
 curl -H "Authorization: Bearer $METRICS_TOKEN" localhost:8090/_internal/metrics

@@ -85,9 +85,11 @@ image: `int2jieun/nexus-server:0.1.11` (변경 없음)
 
 **주의** — `auth.oidc.issuers` 에 `jwksAuth: serviceaccount` 를 쓰시려면
 `serviceAccount.automountToken` 을 `true` 로 함께 올려야 합니다. 기본값 `false` 에서는
-토큰 파일이 없어 조회 요청이 나가지도 않고, **기동은 성공한 채 그 발급자의 토큰을 쓴
-요청만 `503`** 이 됩니다(본문 `IdP 의 JWKS 를 가져오지 못했습니다`). 파일이 없다는 사실은
-응답에 나오지 않으므로 서버 로그의 `JWKS 조회 실패` 줄에서 확인하십시오.
+토큰 파일이 없어 조회 요청이 나가지도 못하고, **기동은 성공한 채 그 발급자의 토큰을 쓴
+요청만 실패합니다.** 응답 코드는 하나가 아닙니다 — 재조회를 시도한 요청은 `503`(본문
+`IdP 의 JWKS 를 가져오지 못했습니다`), 실패 뒤 5 초 백오프 동안의 요청은 `401` 입니다.
+파일이 없다는 사실은 어느 응답에도 나오지 않으므로 서버 로그의 `JWKS 조회 실패` 줄에서
+확인하십시오.
 `0.3.8` 문서에 이 요구가 없어 이번 판에서 `values.yaml` 과 README 에 적었습니다 —
 차트 동작은 `0.3.8` 과 같습니다.
 
@@ -110,9 +112,19 @@ CAS 자격증명      usage.md 에 만료 설명이 없었습니다. 0.1.11 부�
 시크릿 키        README·values.yaml·usage.md 가 넷 + CVAT 만 적고 있었습니다.
                  NEXUS__CAS__ADMIN_SECRET·NEXUS__METRICS__TOKEN 을 더했습니다
 관리 엔드포인트   README 표에 CAS 자격증명 셋과 config-effective 가 빠져 있었습니다
+지표와 DB        README·usage.md 가 "지표는 DB 를 조회하지 않는다" 고 적고 몇 줄 뒤에서
+                 "뒤의 다섯은 DB 를 조회한다" 고 적고 있었습니다. 0.1.10 부터 후자가
+                 맞습니다 — 그 한 왕복은 워크로드 풀에서 나갑니다
+config-effective usage.md 가 "superuser 전용" 이라고 적었습니다. role=admin 도 통과합니다.
+                 README 의 설명도 비밀 표기(`<set>`/`<unset>`, database.url 만 부분 노출)에
+                 맞췄습니다
+SDK 레퍼런스      usage.md 8 장의 nx.list_datasets 행에 mine·unowned·limit·cursor 가
+                 빠져 있어, 4.1 이 쓰라고 안내하는 인자가 레퍼런스에는 없었습니다.
+                 backfill_dims 예시 출력도 반환 키 여덟 중 다섯만 보여주고 있었습니다
 깨진 예시        secret.example.yaml 의 주석 한 줄과 usage.md 의 curl 세 줄이
                  `\n` 이 실제 줄바꿈으로 치환돼 쪼개져 있었습니다. 복사하면 동작하지
-                 않는 명령이었습니다
+                 않는 명령이었습니다. usage.md 3.3 의 주의 문단은 파이썬 코드 블록
+                 **안**에 들어가 있어 코드로 렌더되고 예제가 붙여넣기 불가능했습니다
 ```
 
 ## 0.3.8
