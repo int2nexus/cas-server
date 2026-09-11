@@ -17,7 +17,7 @@ appVersion: "0.1.11"
 # 신설된 경로다. 이미지를 0.1.2 이하로 고정해 쓰면 이 경로가 404라 startupProbe가 절대
 # 성공하지 못해 파드가 무한 재시작한다 — startupProbe.enabled=false와
 # livenessProbe.httpGet.path=/_internal/health로 되돌릴 것.
-# NOTE: cas.adminKeyId/cas.adminSecret(Secret)/cas.credentialsPerUser(CAS 자격증명 자동
+# NOTE: cas.adminKeyId / Secret의 NEXUS__CAS__ADMIN_SECRET / cas.credentialsPerUser(CAS 자격증명 자동
 # 발급)는 appVersion 0.1.9 이상이 필요하다. 구 이미지에 이 env를 줘도 기동은 깨지지
 # 않는다(모르는 설정 키는 무시된다) — 다만 기능도 켜지지 않는다. 비워두면(기본값)
 # 어떤 이미지에서도 안전하다.

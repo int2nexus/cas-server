@@ -78,6 +78,7 @@ nexus-server 는 마이그레이션이 바이너리에 임베드되어 **기동 
 ## 0.3.9
 
 image: `int2jieun/nexus-server:0.1.11` (변경 없음)
+digest: `sha256:a5639de2ef88a7b287a123701ebcacada88c859e9333b0bc84f12aa686a6a21b` (변경 없음 — `0.3.8` 과 같은 값)
 
 **동작 변경** — 없음
 **마이그레이션** — 없음
