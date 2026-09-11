@@ -43,9 +43,6 @@ updateStrategy: Recreate 조합에서는 전면 장애가 된다. 클러스터�
 {{- end }}
 
 {{/*
-앱 이름 (nameOverride 지원)
-*/}}
-{{/*
 auth 를 켜면 root 키가 필수다. 서버도 이 조합에서 기동을 거부하지만, replicaCount 가 1 이라
 기동 실패는 곧 전면 중단이므로 렌더에서 먼저 막는다.
 
@@ -62,6 +59,9 @@ useExternalSecret: true(기본값)에서는 값이 sealed-secret 안에 있어 �
 {{- end }}
 {{- end }}
 
+{{/*
+앱 이름 (nameOverride 지원)
+*/}}
 {{- define "cas-server.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
 {{- end }}
@@ -124,7 +124,8 @@ automountToken: false 를 쓰는 편이 안전하다.
 {{- end }}
 
 {{/*
-차트 레이블 (app.kubernetes.io/version 포함)
+helm.sh/chart 레이블 값 — "{차트명}-{차트버전}".
+app.kubernetes.io/version 은 여기가 아니라 아래 cas-server.labels 가 단다.
 */}}
 {{- define "cas-server.chart" -}}
 {{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}

@@ -5,9 +5,9 @@ HTTP API를 제공한다.
 
 ## 문서
 
-- [아키텍처](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.36/charts/cas-server/docs/architecture.md)
+- [아키텍처](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.37/charts/cas-server/docs/architecture.md)
   — 스토리지 모델(CAS·dedup·GC), 백엔드 구성, S3 호환 API 명세, 에러 코드
-- [사용법](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.36/charts/cas-server/docs/usage.md)
+- [사용법](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.37/charts/cas-server/docs/usage.md)
   — 배포 절차, 웹 UI 키 관리, AWS CLI/boto3 예제, 내부 API
 - [변경 이력](CHANGELOG.md)
   — 버전별 동작 변경·마이그레이션·설정 키. 각 항목은 해당 GitHub Release 본문과 동일하다
@@ -49,7 +49,7 @@ kubectl apply -f sealed-secret.yaml -n <namespace>
 배포에서 그 값이 없으면 스크레이프가 `401`** 이다. 용도는 [메트릭 스크레이프](#메트릭-스크레이프) 참고.
 
 `secrets.secretMasterKey`를 비우면 NoAuth 모드(인증 없음, 내부망 전용)로 동작한다. 상세 절차와 값 교체
-방법은 [`examples/sealed-secret.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.36/charts/cas-server/examples/sealed-secret.yaml) 참고.
+방법은 [`examples/sealed-secret.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.37/charts/cas-server/examples/sealed-secret.yaml) 참고.
 
 ## 설치
 
@@ -57,7 +57,7 @@ kubectl apply -f sealed-secret.yaml -n <namespace>
 helm install cas-server int2nexus/cas-server -n <namespace> -f values-prod.yaml
 ```
 
-`values-prod.yaml`은 직접 작성하거나 [`examples/values-prod.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.36/charts/cas-server/examples/values-prod.yaml)을
+`values-prod.yaml`은 직접 작성하거나 [`examples/values-prod.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.37/charts/cas-server/examples/values-prod.yaml)을
 내려받아 값을 채운 뒤 사용하세요(이 레포를 clone했다면 `charts/cas-server/examples/values-prod.yaml`).
 
 ### S3 / MinIO 모드 values 예시
@@ -116,8 +116,7 @@ storage:
 등록되지 않은 `/_api/*` 경로는 `404` 입니다.
 
 `service.type` 기본값이 `NodePort` 이므로 표면은 **클러스터의 모든 노드 x `nodePort`** 입니다 —
-파드가 없는 노드 IP 에서도 응답합니다. 그리고 `/_api/stats` 는 2026-08 운영 사고를 일으킨 집계 경로입니다. 이미지 `0.1.18` 부터 30초 상한이 걸리지만 **그 30초 동안의 인스턴스 지연은
-남습니다.**
+파드가 없는 노드 IP 에서도 응답합니다.
 
 **신뢰 네트워크 밖이라면 `service.type: ClusterIP` 로 두고 인증 프록시나 NetworkPolicy 뒤에
 놓으십시오.** 차트가 제공할 수 있는 완화는 그것뿐입니다.
@@ -126,6 +125,7 @@ storage:
 `/_api/auth-mode` 하나만 호출하고 로그인 화면을 띄웁니다. 대시보드(`/_api/stats`,
 `/_api/backends`)는 로그인 성공 뒤에 부릅니다. **다만 인증이 꺼진 NoAuth 모드에서는 여는
 즉시 그 둘이 나가고, 어느 모드든 `/_api/stats` 를 직접 호출하는 것은 막히지 않습니다.**
+그 경로의 비용과 격리 장치는 아래 「집계 조회 격리」 절에 있습니다.
 
 ## 주요 values
 
@@ -154,7 +154,7 @@ storage:
 | `serviceAccount.create` | `false` | `true` 면 차트가 ServiceAccount 를 만든다. `false` 면 기존 것을 쓴다 |
 | `serviceAccount.automountToken` | `false` | 토큰 자동 마운트. 이 서버는 쿠버네티스 API 를 부르지 않으므로 기본 `false`. IRSA/Workload Identity 를 쓸 때, 그리고 `auth.oidc.issuers` 항목에 `jwksAuth: serviceaccount` 를 쓸 때만 `true` |
 | `serviceAccount.annotations` | `{}` | `create: true` 일 때 SA 에 붙일 애노테이션. IRSA · Workload Identity 설정 자리 |
-| `resources.limits.memory` | `6Gi` | 2026-08-05 OOM 대응으로 올린 값. **당분간 유지할 것** — 하향 전제는 [values.yaml](values.yaml)의 `resources` 주석 참고 |
+| `resources.limits.memory` | `6Gi` | OOM 대응으로 올린 값. **당분간 유지할 것** — 하향 전제는 [values.yaml](values.yaml)의 `resources` 주석 참고 |
 | `gc.enabled` | `true` | GC CronJob 활성화. 초기 마이그레이션 중에는 `false` 권장. **이미지 `0.1.17` 이하에서는 끄면 메모리 회수 경로도 사라진다** (아래 참고) |
 | `gc.phases` | `"multipart,orphan,purge,sweep"` | 이 CronJob 이 돌릴 GC 단계. 쉼표 구분. **기본값은 넷 다라 CronJob 하나가 전부 돈다.** `""` 로 두면 서버 기본값(`sweep` 을 뺀 셋)이 적용된다 — `sweep` 을 `fullSweep` 으로 뗄 때 쓰는 값이다. `sweep` 만 데이터 크기를 따라간다 (아래 참고). **`orphan` 을 빼면 렌더가 거부한다** |
 | `gc.fullSweep.enabled` | `false` | 전량 스캔(`sweep`)만 도는 두 번째 CronJob. **켜지 않으면 렌더가 거부한다**(`gc.phases` 에 `sweep` 을 직접 넣은 경우는 제외). `schedule` 은 UTC 이고 기본값을 그대로 쓰지 말 것 |
@@ -270,15 +270,16 @@ kubectl rollout restart -n <namespace> deploy/<fullname>   # 릴리스명이 아
 실행의 것이어도 뜻이 그대로지만, 나머지는 「마지막 실행이 이랬다」라서 그 실행이 이
 프로세스의 것이 아니면 틀린 말이 됩니다.
 
-**라벨이 붙는 `cas_*` 는 `cas_anonymous_get_total`(`reason`·`cause`)과 `cas_gc_last_*` 중
-셋(`phase`) 뿐입니다.** `phase` 가 붙는 것은 `cas_gc_last_ran_at_seconds` ·
-`cas_gc_last_duration_ms` · `cas_gc_last_reclaimed_blobs` 이고, **`cas_gc_last_status` 와
-`cas_gc_last_errors` 에는 라벨이 없습니다**(실행 단위 값이라 단계로 갈리지 않습니다).
-그 둘에 `sum by (phase)` 를 쓰면 빈 라벨이 나옵니다.
-같은 엔드포인트에 `axum_http_requests_total` ·
-`axum_http_requests_duration_seconds` · `axum_http_requests_pending` 이 함께 나오고
-이쪽은 `endpoint`/`method`/`status` 라벨을 답니다(경로는 라우트 패턴으로 정규화되므로
-키마다 늘지는 않습니다).
+각 `cas_*` 의 라벨은 위 표에 적었습니다. **`cas_gc_last_*` 안에서 갈리는 것만 주의하십시오** —
+`phase` 가 붙는 것은 `cas_gc_last_ran_at_seconds` · `cas_gc_last_duration_ms` ·
+`cas_gc_last_reclaimed_blobs` 셋이고, **`cas_gc_last_status` 와 `cas_gc_last_errors` 에는
+라벨이 없습니다**(실행 단위 값이라 단계로 갈리지 않습니다). 그 둘에 `sum by (phase)` 를
+쓰면 빈 라벨이 나옵니다.
+
+같은 엔드포인트에 `axum_http_requests_total` · `axum_http_requests_duration_seconds` ·
+`axum_http_requests_pending` 이 함께 나옵니다. 앞의 둘은 `endpoint`/`method`/`status` 를,
+**`axum_http_requests_pending` 은 `endpoint`/`method` 만** 답니다(경로는 라우트 패턴으로
+정규화되므로 키마다 늘지는 않습니다).
 
 **`cas_blob_dedup_total` 을 중복률로 읽지 마십시오.** 이 카운터가 세는 것은 **PUT 경로에서
 기존 blob 을 만난 횟수**이고, 다음을 세지 않습니다.
@@ -590,8 +591,8 @@ CronJob 이 둘 다 그것을 씁니다. 비면 auth 를 켠 배포에서 GC 의
 만들지 마십시오** — 차트 `0.1.31` 부터 기본 설치가 그 키를 만들지 않고, deployment 도
 `optional` 로 참조합니다.
 
-**이미 그 키를 들고 있으면 지우셔도 됩니다.** `0.1.30` 까지는 필수 참조라 지우면 파드가
-기동하지 못했습니다. 값만 비운 채로 두어도 되고, 그 경우 서버가 무시했다고 기동 로그에
+**이미 그 키를 들고 있으면 지우셔도 됩니다.** 차트 `0.1.30` 까지는 필수 참조라 지우면
+파드가 기동하지 못했습니다. 값만 비운 채로 두어도 되고, 그 경우 서버가 무시했다고 기동 로그에
 남깁니다 — sealed-secret 을 회전할 때 함께 지우는 것이 편합니다.
 
 `gcToken` · `auth.metricsToken` 의 admin 토큰 폴백도 함께 사라졌습니다. **올리기 전에 그
@@ -761,7 +762,7 @@ curl -X DELETE "$BASE/_admin/access-keys/$SESSION_KEY_ID" -H "$SIGV4"
 | `false` | 없음 | 파드 수명 동안 단조 증가 |
 | `true` | `gc.schedule` 주기 | 그 주기만큼. 기본 주 1회면 최대 일주일치 |
 
-**GC를 켜 뒀다고 해당 없는 항목이 아닙니다.** 2026-08 운영 사례에서 유휴 메모리 바닥값이
+**GC를 켜 뒀다고 해당 없는 항목이 아닙니다.** 실환경 관측에서 유휴 메모리 바닥값이
 4.9일간 하루 330~430 MiB씩 단조 상승했고, 주 1회 주기라면 그 사이 최대 2.3~2.9 GiB가
 쌓입니다. 대량 적재는 고유 해시율이 요청율과 거의 같은 구간이라 증가율이 최대가 됩니다.
 
@@ -778,7 +779,7 @@ curl -X DELETE "$BASE/_admin/access-keys/$SESSION_KEY_ID" -H "$SIGV4"
    **다만 이 요청에는 상한이 필요합니다.**
    이 요청이 도는 읽기 전용 쿼리 둘 중 하나가 orphan 후보 COUNT인데, `blobs` ×
    `object_versions` 안티조인 전수 집계라 데이터가 커지면 디스크로 스필합니다 —
-   2026-08 사고에서 임시 파일 352.8 GB를 만든 것과 같은 형태의 쿼리입니다.
+   아래 「집계 조회 격리」의 352.8 GB 스필과 같은 형태의 쿼리입니다.
    `statsStatementTimeoutSecs`는 이 쿼리를 덮지 않습니다. 같은 SQL이지만 GC 풀에서
    돌기 때문입니다.
 
@@ -865,8 +866,12 @@ kubectl get deploy "$REL" -n "$NS" \
 | `x-amz-trailer` 선언 | 선언한 트레일러가 오지 않거나 선언에 없는 것이 옴 | `trailer_protocol` | `XAmzContentChecksumMismatch` |
 
 **대조할 값이 없는 요청은 이 설정과 무관하게 통과합니다.** AWS CLI 는 `UNSIGNED-PAYLOAD` 를
-선언하므로 대조 대상이 아닙니다. `x-cas-hash` 를 준 업로드는 BLAKE3 로 이미 대조됩니다
-(불일치 시 `InvalidDigest`).
+선언하므로 대조 대상이 아닙니다.
+
+**`x-cas-hash` 는 이 대조를 대신하지 않습니다.** 그 해시의 블롭이 **처음 보는 것일 때만**
+서버가 본문을 BLAKE3 로 대조합니다(불일치 시 `InvalidDigest`). 이미 있는 해시면 본문을
+읽지 않고 즉시 완료하므로 대조가 일어나지 않습니다 — 중복률이 높은 배포일수록 그 경로가
+많습니다. 그 업로드까지 덮으려면 클라이언트가 체크섬을 함께 선언해야 합니다.
 
 **대조하는 알고리즘은 `crc32` · `crc32c` · `crc64nvme` · `sha256` 입니다.** SDK 기본값이
 전부 여기 듭니다 — `boto3` 는 `crc32`, AWS CLI v2 와 `botocore[crt]` 는 `crc64nvme` 를
@@ -943,8 +948,9 @@ kubectl logs -n <namespace> deploy/<fullname> | grep '개수 상한'
 `object_versions` × `blobs` 조인을 요구하기 때문이고, 한 문장에 두면 상한에 걸릴 때
 조인이 없는 나머지 값까지 함께 죽습니다. 용량이 필요하면 `?sizes=true` 를 붙이십시오 —
 그 요청만 무거운 쪽으로 갑니다.
-데이터가 커지면 조인이 디스크로 스필하고, 2026-08 고객 환경에서 그 스필이 임시 파일
-**352.8 GB** 를 만들며 적재를 **2시간 55분** 막았습니다. 파드 재시작으로 끊을 수 없었습니다.
+데이터가 커지면 조인이 디스크로 스필합니다. 실측된 최악은 그 스필이 임시 파일
+**352.8 GB** 를 만들며 적재를 **2시간 55분** 막은 것이고, 파드 재시작으로는 끊을 수
+없었습니다 — 쿼리가 DB 쪽에서 계속 돌기 때문입니다.
 
 이미지 `0.1.18` 부터 이 쿼리들은 **커넥션 1개짜리 별도 풀**에서 돕니다.
 
@@ -1046,9 +1052,9 @@ GC 가 회수하지 못하고 새는 객체가 세 자리에 있습니다. 스�
 `0.1.27` 이상). 그 요청의 `Content-Length` 는 전송 프레이밍을 포함하므로 실제 본문보다 크고,
 `boto3` 는 아예 그 헤더를 지우고 보냅니다 — 버퍼링하는 프록시가 다시 붙이기도 합니다.
 
-**전송 계층의 체크섬은 검증하지 않습니다.** `aws-chunked` 요청의 트레일러 체크섬과 청크
-서명은 읽고 버립니다. 페이로드 무결성은 BLAKE3 가 담당합니다 — `x-cas-hash` 를 함께 보내면
-서버가 그 값과 대조하고, 어긋나면 저장하지 않습니다.
+**청크 서명은 검증하지 않습니다.** 같은 요청의 트레일러 체크섬은 이미지 `0.1.29` 부터
+`config.integrityCheck` 가 대조합니다 — 무엇이 대조되고 무엇이 그대로 통과하는지는 위
+「종단 무결성 대조」 절에 있습니다.
 
 **`objects/` 에는 절대 `Expiration` 을 걸지 마십시오.** 살아 있는 blob 이 그 아래 있습니다.
 그 프리픽스에 필요한 것은 대용량 쓰기가 중간에 죽었을 때 남는 네이티브 멀티파트 상태를
@@ -1214,9 +1220,9 @@ readiness 가 실질적으로 보는 것은 DB 뿐입니다. NFS 모드에서는
 
 `replicaCount` 가 1로 고정되므로 **포화만으로 파드를 빼면 부하를 넘길 곳이 없어 열화가
 전면 장애로 승격됩니다.** 다중 레플리카라면 부하를 덜어내는 의미가 있지만 여기서는
-반대로 작동합니다. 2026-08 고객 환경에서 실제로 그렇게 됐습니다 — 집계 쿼리가 요청 풀
-커넥션을 오염시켜 ping 이 붙들렸고, 프로브가 연속 실패해 유일한 파드가 엔드포인트에서
-빠졌습니다. DB 는 죽은 게 아니라 바빴을 뿐입니다.
+반대로 작동합니다. 실제로 일어나는 경로는 이렇습니다 — 집계 쿼리가 요청 풀 커넥션을
+오염시키면 ping 이 붙들리고, 프로브가 연속 실패해 유일한 파드가 엔드포인트에서
+빠집니다. DB 가 죽은 것이 아니라 바쁜 것뿐인데 그렇게 됩니다.
 
 `livenessProbe` 를 `/_internal/health` 로 두면 안 됩니다. DB failover(보통 30~120초)나 NAS
 순간 장애에 쿠버네티스가 파드를 죽이는데, 재시작으로는 외부 의존성이 복구되지 않습니다.

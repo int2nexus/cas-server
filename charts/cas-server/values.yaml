@@ -6,11 +6,11 @@
 #
 # ── 문서 ─────────────────────────────────────────────────────────────────────
 #   아키텍처 (스토리지 모델·백엔드·API 명세)
-#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.36/charts/cas-server/docs/architecture.md
+#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.37/charts/cas-server/docs/architecture.md
 #   사용법 (배포·키 관리·AWS CLI/boto3 예제)
-#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.36/charts/cas-server/docs/usage.md
+#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.37/charts/cas-server/docs/usage.md
 #   차트 README
-#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.36/charts/cas-server/README.md
+#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.37/charts/cas-server/README.md
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── 이미지 ────────────────────────────────────────────────────────────────────
@@ -61,7 +61,7 @@ fullnameOverride: ""
 # 1을 유지할 것. 늘리면 데이터 유실 가능성이 생긴다.
 #
 # GC의 blob 물리 삭제와 진행 중인 PUT 사이의 durability 보호가 **프로세스 내부**
-# per-hash 뮤텍스에 의존한다(cas-server `object_store.rs`의 `BlobWriteLocks`).
+# per-hash 뮤텍스에 의존한다.
 # 파드가 둘 이상이면 이 락이 공유되지 않아 다음이 가능해진다.
 #
 #   pod B (PUT): blob 기록 완료, 메타데이터 커밋 직전
@@ -115,7 +115,21 @@ config:
   dbMinConnections: 2               # 항상 유지할 유휴 커넥션. 0이면 뜸한 뒤 첫 요청이 접속 핸드셰이크 비용을 문다(실측 68ms → 0.5ms)
   dbAcquireTimeoutSecs: 10          # DB 커넥션 획득 타임아웃 (초) — 부하 시 빠른 실패 선호. 아래 readinessProbe.timeoutSeconds 와 함께 움직인다
   requestTimeoutSecs: 120           # 요청 처리 타임아웃 (초). 0=비활성화. 느린 S3 백엔드까지 포함한 요청 경로의 유일한 wall-clock 상한이다
-  presignedRedirectSecs: 0          # GET presigned redirect URL 유효 시간 (초). 0=비활성화. S3 엔드포인트가 클라이언트에서 직접 접근 가능한 경우에만 활성화
+  # GET 을 스토리지로 넘기는 307 redirect 의 URL 유효 시간 (초). 0 = 비활성화(기본값).
+  #
+  # **켜면 GET /{bucket}/{key} 가 본문이 아니라 307 을 돌려준다.** Location 이 오브젝트
+  # 스토리지의 presigned URL 이므로 본문은 CAS 를 거치지 않고 클라이언트가 직접 받는다.
+  # 켜기 전에 셋을 확인할 것.
+  #
+  #  - **클라이언트가 스토리지 엔드포인트에 직접 닿아야 한다.** 내부망 주소면 클러스터
+  #    밖 클라이언트는 307 을 따라가다 실패한다. 307 을 따르지 않는 클라이언트도 깨진다
+  #  - **그 URL 은 이 시간 동안 CAS 인가를 거치지 않는다.** 유출되면 그 창 동안 누구나
+  #    같은 blob 을 받는다. 짧게 잡을 것
+  #  - Range 요청도 스토리지가 처리한다 — 서버의 206 경로를 타지 않는다
+  #
+  # 브라우저 요청(Sec-Fetch-Mode 헤더가 있는 요청)과 delete marker 는 redirect 하지 않고
+  # 지금까지대로 응답한다.
+  presignedRedirectSecs: 0
 
   # ── GC 쿼리 타임아웃 (cas-server 이미지 0.1.18 이상 필요) ────────────────────
   # GC 전용 DB 풀에만 statement_timeout 을 건다. 0 = 걸지 않음(기존 동작).
@@ -197,8 +211,9 @@ config:
   #   enforce  불일치를 400 으로 거절한다. 객체는 저장되지 않는다
   #
   # **대조할 값이 없는 요청은 이 설정과 무관하게 통과한다.** AWS CLI 는
-  # UNSIGNED-PAYLOAD 를 선언하므로 대조 대상이 아니다. x-cas-hash 를 준 업로드는
-  # BLAKE3 로 이미 대조된다.
+  # UNSIGNED-PAYLOAD 를 선언하므로 대조 대상이 아니다. **x-cas-hash 도 이 대조를
+  # 대신하지 않는다** — 그 해시의 블롭이 이미 있으면 본문을 읽지 않아 대조가 일어나지
+  # 않는다(README 「종단 무결성 대조」).
   #
   # **enforce 로 올리기 전에 log 로 한 판 볼 것.** 오탐이 곧 업로드 실패다 —
   # cas_integrity_mismatch_total 이 0 인 것을 확인한 뒤 올린다. 두 모드는 검사를
@@ -213,7 +228,7 @@ config:
   integrityCheck: log
 
   # ── 업로드 상한 (cas-server 이미지 0.1.16 이상 필요. image.tag 확인할 것) ───────────────────────────────────────
-  # 2026-08-05 운영 OOM의 마지막 방어선이다. 상한을 넘는 업로드는 503 SlowDown +
+  # 운영 OOM 의 마지막 방어선이다. 상한을 넘는 업로드는 503 SlowDown +
   # Retry-After 로 거절한다 — 프로세스가 OOMKilled 되는 것보다 낫다.
   #
   # 주의: 0 = 무제한이다. 명시하지 않으면 걸리지 않는다.
@@ -431,12 +446,10 @@ ingress:
 # 한도만 올리고 예산을 그대로 두면 방어선이 실효 없이 낮게 남고, 한도만 내리면
 # 예산이 한도를 넘어 상한이 걸리기 전에 OOMKilled 된다.
 
-# 6Gi 는 2026-08-05 OOM 대응으로 올린 값이다. **당분간 6Gi 를 유지할 것.**
+# 6Gi 는 OOM 대응으로 올린 값이다. **당분간 6Gi 를 유지할 것.**
 #
-# 2026-08-11 실환경 관측 결과, 이미지 0.1.16 에서도 유휴 구간 바닥값이 하루
-# 330~430 MiB 씩 단조 상승한다(4.9일, 두 세대 컨테이너). 봉우리는 무너지므로
-# jemalloc decay 자체는 동작하며, OOMKilled 는 그 기간 0회였다. 즉 0.1.16 은
-# "버스트를 반환하는 능력"은 얻었지만 "장기 바닥값 상승"은 남아 있다.
+# 실환경 관측에서 이미지 0.1.16 의 유휴 구간 바닥값이 하루 330~430 MiB 씩 단조
+# 상승했다(4.9일 연속). 버스트는 반환되지만 장기 바닥값 상승은 남는다는 뜻이다.
 #
 # 따라서 아래 단계 하향은 **바닥값 상승이 멈춘 것을 확인한 뒤에만** 한다.
 #   6Gi -> 3Gi -> 2Gi, config.maxUploadBytesInFlight 도 한도의 0.5배로 함께 내린다.
@@ -604,7 +617,7 @@ serviceAccount:
 #   enabled: false  → 회수 경로가 아예 없다. 파드 수명 동안 단조 증가
 #   enabled: true   → 위 schedule 만큼 쌓였다 비워진다. 주 1회면 최대 일주일치
 #
-# 즉 **GC 를 켜 뒀다고 해당 없는 항목이 아니다.** 2026-08 운영 건에서 유휴 바닥값이
+# 즉 **GC 를 켜 뒀다고 해당 없는 항목이 아니다.** 실환경 관측에서 유휴 바닥값이
 # 하루 330~430 MiB 상승했고, 주 1회 주기면 그 사이 최대 2.3~2.9 GiB 가 쌓인다.
 # 해당 이미지를 쓴다면 적재 기간에 아래를 주기 실행해 완화할 것 —
 # blob 물리 삭제도 advisory lock도 없이 그 테이블을 회수한다(GC 자격증명 필요):
@@ -653,7 +666,9 @@ gc:
   #   purge      보존 기간 지난 soft-delete 레코드 삭제
   #   sweep      blobs 전량 안티조인. O(테이블 크기)
   #
-  # 기본값은 넷 다이고, CronJob 하나가 전부 돈다 — 이 키가 없던 때와 같은 동작이다.
+  # 기본값은 넷 다이고, CronJob 하나가 전부 돈다. **서버 기본값(셋)과 다르다** — 이미지
+  # 0.1.25 전에는 orphan 이 전량 스캔이었으므로, 그때와 같은 회수 범위를 유지하려면
+  # 갈라져 나온 sweep 까지 돌아야 한다. 비워 두면 그 범위가 좁아진다.
   # **sweep 이 오래 걸리기 시작하면** 여기서 sweep 을 빼고 아래 fullSweep 으로 옮긴다.
   #
   #   phases: "multipart,orphan,purge"   +   fullSweep.enabled: true

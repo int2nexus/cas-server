@@ -17,7 +17,7 @@ cas-server 배포 완료
 상태 확인
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   # Pod 상태
-  kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/name=cas-server
+  kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/name={{ include "cas-server.name" . }},app.kubernetes.io/instance={{ .Release.Name }}
 
   # 로그 확인
   kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "cas-server.fullname" . }} -f
@@ -42,5 +42,5 @@ cas-server 배포 완료
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 문서
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  아키텍처: https://github.com/int2nexus/cas-server/blob/cas-server-0.1.36/charts/cas-server/docs/architecture.md
-  사용법:   https://github.com/int2nexus/cas-server/blob/cas-server-0.1.36/charts/cas-server/docs/usage.md
+  아키텍처: https://github.com/int2nexus/cas-server/blob/cas-server-0.1.37/charts/cas-server/docs/architecture.md
+  사용법:   https://github.com/int2nexus/cas-server/blob/cas-server-0.1.37/charts/cas-server/docs/usage.md

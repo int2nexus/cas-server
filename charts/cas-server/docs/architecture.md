@@ -201,7 +201,7 @@ GET /{버킷}/{키}
 서명에는 발급 시 지정한 메서드·경로·유효기간이 포함됩니다. 만료된 URL 은 `403 AccessDenied`,
 메서드나 경로가 다른 요청은 `403 SignatureDoesNotMatch` 입니다.
 
-> ⚠ **`auth.anonymousGet: true`(차트 기본값) 인 배포에서는 `GET`·`HEAD` presigned URL 의
+> **`auth.anonymousGet: true`(차트 기본값) 인 배포에서는 `GET`·`HEAD` presigned URL 의
 > 만료와 서명이 강제되지 않습니다.** 그 배포에서 `GET`/`HEAD /{버킷}/{키}` 는 익명 분기로
 > 먼저 통과하므로, **만료된 URL 도 서명이 틀린 URL 도 `200`** 입니다. 즉 다운로드 링크에
 > 건 유효 시간이 지켜지지 않고 그 URL 은 사실상 영구 링크입니다.
@@ -446,11 +446,34 @@ S3 표준에 없는 CAS 전용 헤더가 업로드 응답에 추가됩니다.
 ### 5.4 지원 API 범위
 
 **지원**:
-- 버킷: `ListBuckets`, `CreateBucket`, `DeleteBucket`, `ListObjects(V2)`, `ListObjectVersions`, `PutBucketVersioning`
+- 버킷: `ListBuckets`, `CreateBucket`, `DeleteBucket`, `ListObjectsV2`, `ListObjectVersions`, `PutBucketVersioning`
 - 오브젝트: `PutObject`, `GetObject`, `HeadObject`, `DeleteObject`, `CopyObject`
 - 멀티파트: `CreateMultipartUpload`, `UploadPart`, `CompleteMultipartUpload`, `AbortMultipartUpload`, `ListMultipartUploads`
 - Presigned URL: `GET`, `PUT`, `DELETE` 방식
 - STS: `AssumeRoleWithWebIdentity` (이미지 `0.1.28` 이상. `auth.oidc.issuers` 를 설정한 배포에만 존재)
+
+#### 목록 API 의 제약 — 조용히 어긋나는 자리
+
+**목록 페이지네이션은 V2 형태만 지원합니다.** 응답이 `NextContinuationToken` 만 싣고
+`NextMarker` 를 싣지 않으며, 요청의 `marker` 도 읽지 않습니다. **`ListObjects`(V1)로 페이지를
+넘기는 클라이언트는 오류 없이 첫 페이지에서 멈추거나 같은 페이지를 반복합니다.**
+`boto3` 라면 `list_objects` 가 아니라 `list_objects_v2` 를, AWS CLI 라면
+`s3api list-objects-v2` 를 쓰십시오(`aws s3 ls`·`aws s3 sync` 는 V2 를 씁니다).
+
+**모르는 쿼리 파라미터는 거절하지 않고 무시합니다.** 그래서 아래 둘은 **오류 없이 다른
+결과**를 돌려줍니다.
+
+| 파라미터 | 보내면 | 결과 |
+|---|---|---|
+| `start-after` | 무시됨 | 지정한 키 다음이 아니라 **처음부터** 나열됩니다 |
+| `encoding-type=url` | 무시됨 | 키가 URL 인코딩되지 않은 채 나옵니다 (아래) |
+
+**키에 C0 제어문자(`\x00` 등)가 들어 있으면 목록에서 원문을 되찾을 수 없습니다.** 그 바이트는
+XML 1.0 이 문서에 담을 수 없어 `U+FFFD` 로 치환되어 나가고, 표준 S3 가 이 자리에 쓰는
+`encoding-type=url` 이 구현돼 있지 않기 때문입니다. **`ListObjectVersions` 에서는 그 키가
+`NextKeyMarker` 가 될 때 실재하지 않는 값이 되어 그 지점의 페이지가 건너뛰어집니다** —
+열거가 조용히 일부를 빠뜨립니다. 탭·줄바꿈·캐리지 리턴은 수치 참조로 실어 보존하므로
+해당하지 않습니다. 그런 키를 쓰고 계시면 알려 주십시오.
 
 ### 5.5 웹 관리 UI
 
@@ -501,7 +524,11 @@ GC 의 토큰 경로, 그리고 **`/_admin/*`** 입니다. `/_admin/*` 은 SigV4
 | 400 | `InvalidDigest` | `x-cas-hash` 로 넘긴 해시와 실제 본문이 다름. **서버가 본문을 저장하는 경로에서만 납니다** — 그 해시의 블롭이 이미 있으면 본문을 읽지 않으므로 이 오류도 나지 않습니다(3.1) |
 | 400 | `InvalidPart` | 멀티파트 파트 번호·구성 오류 |
 | 400 | `AuthorizationHeaderMalformed` | Authorization 헤더/presigned 쿼리 형식 오류 — 서명을 계산할 수조차 없음. `service` 가 `s3` 가 아닌 경우도 여기입니다 |
+| 400 | `IncompleteBody` | `aws-chunked` 요청의 본문이 `x-amz-decoded-content-length` 로 선언한 길이보다 짧음 |
+| 400 | `XAmzContentSHA256Mismatch` | 서명된 `x-amz-content-sha256` 과 받은 바이트가 다름. **`config.integrityCheck: enforce` 에서만 납니다** (이미지 `0.1.29` 이상) |
+| 400 | `XAmzContentChecksumMismatch` | `aws-chunked` 트레일러 체크섬이 어긋나거나 `x-amz-trailer` 선언을 어김. 〃 |
 | 401 | — | 관리 평면(`/_admin/*`·GC·`/_internal/metrics`)에 Bearer 로 접근했는데 그 경로가 받는 토큰이 설정되지 않았거나 값이 다름. 본문은 `Unauthorized` 문자열입니다 |
+| 411 | `MissingContentLength` | `aws-chunked` 요청에 `x-amz-decoded-content-length` 가 없음 |
 | 403 | `AccessDenied` | 자격증명이 없거나, 해당 작업 권한이 없거나, presigned URL 이 만료됨 |
 | 403 | `InvalidAccessKeyId` | 그런 액세스 키가 없음 (비활성·유효기간 만료 포함) |
 | 403 | `SignatureDoesNotMatch` | 서명 불일치 — 시크릿 값을 확인 |
@@ -512,6 +539,7 @@ GC 의 토큰 경로, 그리고 **`/_admin/*`** 입니다. `/_admin/*` 은 SigV4
 | 405 | `MethodNotAllowed` | 삭제 마커인 버전을 GET/HEAD |
 | 408 | — | `config.requestTimeoutSecs`(기본 120초) 초과. **이 시점에도 DB 쪽 쿼리는 계속 돕니다** |
 | 409 | `BucketNotEmpty` | 비어 있지 않은 버킷 삭제 시도 |
+| 409 | `Conflict` | 같은 `(issuer, subject)` 의 STS 신원 매핑이 이미 있음. 매니페스트를 재적용하는 구성이면 이 코드를 정상으로 다루십시오 |
 | 409 | `GcAlreadyRunning` | GC 가 이미 실행 중. 이미지 `0.1.26` 이상에서는 **다른 파드가 락을 쥐고 있어 이 호출이 아무것도 시작하지 못한 경우**도 이 코드입니다 (그 미만은 `202` 였습니다) |
 | 412 | `PreconditionFailed` | `If-None-Match: *` 인데 객체가 이미 있음 |
 | 413 | `EntityTooLarge` | `config.maxUploadSizeBytes` 초과 |

@@ -23,8 +23,8 @@
 {{- end }}
 {{- /*
   회수 단계 둘을 각각 지키는 가드다. 경고가 아니라 렌더 거부인 이유는 로그 보존 창이
-  짧은 환경에서 경고 한 줄이 없는 것과 같기 때문이다(2026-08-21 고객 리포트 §2-3 이
-  요청한 형태). 두 단계를 나눈 이유는 CHANGELOG 0.1.32 에 있다.
+  짧은 환경에서 경고 한 줄이 없는 것과 같기 때문이다. 두 단계를 나눈 이유는
+  CHANGELOG 0.1.32 에 있다.
 */}}
 {{- /* 가드 1 — `orphan` 이 어느 Job 에서도 돌지 않는 조합. */}}
 {{- if and $phases (not (has "orphan" (splitList "," $phases))) }}
@@ -35,7 +35,7 @@
   없으므로 fullSweep 을 켜지 않으면 전량 스캔이 사라진다.
 
   fullSweep 을 기본으로 켜지 않는 이유: 이 스캔은 무겁고 도는 시각이 결정적이라,
-  기본으로 켜면 아무도 고르지 않은 시각에 생긴다(2026-08-31 고객 리포트 §3-1).
+  기본으로 켜면 아무도 고르지 않은 시각에 생긴다.
 */}}
 {{- if and (not .Values.gc.fullSweep.enabled) (not (and $phases (has "sweep" (splitList "," $phases)))) }}
 {{- fail "gc.fullSweep.enabled 를 켜거나 gc.phases 에 sweep 을 넣으십시오. 이 이미지부터 orphan 은 회수 후보 큐만 확인하므로, sweep(blobs 전량 스캔)이 어디에서도 돌지 않으면 후보 등록이 빠진 blob 을 찾아낼 경로가 없어 조용히 쌓입니다. fullSweep 의 schedule 은 기본값을 그대로 쓰지 마시고 백업·덤프 일정과 겹치지 않는 시각으로 정하십시오 — UTC 로 해석됩니다." }}

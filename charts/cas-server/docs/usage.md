@@ -519,6 +519,11 @@ for obj in resp.get("Contents", []):
 `GET /_api/buckets/{bucket}/objects` 의 `limit=0` 도 같습니다(`has_more: false`,
 `next_after: null`).
 
+**페이지네이션은 V2 형태만 지원하고, `start-after` 와 `encoding-type` 은 무시됩니다** —
+오류가 아니라 다른 결과가 나오는 자리입니다. `list_objects`(V1)가 아니라
+`list_objects_v2` 를 쓰십시오. 제약 전문은
+[architecture.md](architecture.md) 의 "목록 API 의 제약" 에 있습니다.
+
 ---
 
 ## 오브젝트
@@ -707,7 +712,7 @@ s3.delete_object(Bucket="my-bucket", Key="path/to/file.bin")
 
 인증 없이 일시적으로 접근 가능한 URL을 생성합니다.
 
-> ⚠ **`auth.anonymousGet: true`(차트 기본값) 인 배포에서는 `GET`·`HEAD` presigned URL 의
+> **`auth.anonymousGet: true`(차트 기본값) 인 배포에서는 `GET`·`HEAD` presigned URL 의
 > 만료와 서명이 강제되지 않습니다.** 그 배포에서 `GET`/`HEAD /{버킷}/{키}` 는 익명 분기로
 > 먼저 통과하므로, **만료된 URL 도 서명이 틀린 URL 도 `200`** 입니다. 즉 다운로드 링크에
 > 건 유효 시간이 지켜지지 않고 그 URL 은 사실상 영구 링크입니다.
@@ -1115,12 +1120,13 @@ curl -s http://localhost:8080/_internal/metrics \
 **`metricsToken` 이 비면** auth 를 켠 배포에서는 `/_admin/*`·GC 와 같이 `401` 로 닫히고
 (이미지 `0.1.24` 이상), NoAuth 배포에서는 무인증으로 열립니다. 후자는 기동 시 경고가 뜹니다.
 
-**노출되는 지표는 `cas_*` 20종입니다**(이미지 `0.1.25` 이하는 `cas_gc_last_errors` 가 없어 19종. `0.1.28` 이상에서 **STS 를 켜면** `cas_sts_issue_total`·`cas_sts_reject_total` 이 더해져 22종)**.** 타입·단위와 각 값이 무엇을 보는지(특히
-`cas_db_pool_*` 가 어느 풀을 보고하는지)는 차트 README 의 "메트릭 스크레이프" 절에 표로
-정리했습니다. 라벨이 붙는 것은 `cas_anonymous_get_total`(`reason`·`cause`), `cas_gc_last_*` 중
-**셋**(`ran_at_seconds`·`duration_ms`·`reclaimed_blobs` 에 `phase`), 그리고 STS 둘
-(`cas_sts_issue_total` 에 `result`, `cas_sts_reject_total` 에 `reason`)입니다 —
-**`cas_gc_last_status` 와 `cas_gc_last_errors` 에는 라벨이 없습니다.** 같은 엔드포인트에
+**어느 `cas_*` 가 나오는지는 배포 구성에 따라 다릅니다** — 익명 GET · STS · 무결성 대조의
+지표는 각각 그것을 켠 배포에만 등록됩니다. 전체 목록과 타입·단위, 각 값이 무엇을 보는지
+(특히 `cas_db_pool_*` 가 어느 풀을 보고하는지), 그리고 각 시리즈가 나타나는 시점은 차트
+README 의 "메트릭 스크레이프" 절에 표로 정리했습니다.
+`cas_gc_last_*` 안에서만 라벨이 갈립니다 — `ran_at_seconds`·`duration_ms`·`reclaimed_blobs`
+**셋**에 `phase` 가 붙고, **`cas_gc_last_status` 와 `cas_gc_last_errors` 에는 라벨이
+없습니다.** 같은 엔드포인트에
 `axum_http_*` 3종이 함께 나오고, `axum_http_requests_total` 과 `_duration_seconds` 는
 `endpoint`/`method`/`status` 를, **`axum_http_requests_pending` 은 `endpoint`/`method` 만**
 답니다.
