@@ -99,7 +99,8 @@ digest: `sha256:da95c5f70d5b31de43d350ebc55895d6bc9f79d552cf6c98eaa6c1d5e761a6d2
 `cas_anonymous_get_total` 은 설계상 `anonymousGet` 을 내리면 **시리즈째 사라집니다**
 (존재가 「익명 읽기가 열려 있다」를 뜻해야 하기 때문입니다). 그래서 닫은 뒤 남은 `403` 을
 원인별로 가를 수단이 없었습니다. 아래 셋은 **설정과 무관하게 기동 직후 `0` 으로 등록**되며
-사라지지 않습니다.
+사라지지 않습니다. 모든 배포에서 시리즈가 51 개 늘어납니다(`cas_authn_fail_total` 3 평면 ×
+11 원인, `cas_authz_deny_total` 액션 15, `cas_sigv4_payload_hash_fallback_total` 3 평면).
 
 ```
 cas_authn_fail_total{plane,reason}          인증 실패. plane 은 s3·admin·gc
@@ -115,8 +116,9 @@ cas_sigv4_payload_hash_fallback_total{plane}  아래 ⑵
 틀린 것은 `401` 이라 여기 들어오지 않습니다.
 
 **403 을 받은 요청자는 로그로 찾습니다.** 지표에는 출발지를 라벨로 두지 않습니다(값이
-끝없이 늘어나기 때문입니다). 대신 `authn fail` · `admin authn fail` · `anonymous GET` 로그
-줄에 **`peer`(TCP 출발지)와 `ua`(User-Agent)** 를 실었고, `RUST_LOG=info` 에서 보입니다.
+끝없이 늘어나기 때문입니다). 대신 `authn fail` · `admin authn fail` 줄과 `anonymous GET` 의
+`unsigned` · `signed_invalid` 줄에 **`peer`(TCP 출발지)와 `ua`(User-Agent)** 를 실었고,
+`RUST_LOG=info` 에서 보입니다.
 정책 거절 줄에는 둘이 없고 `key_id` 로 찾습니다. `peer` 는 서버가 받은 연결의 출발지라
 **NAT·프록시를 거치면 그 주소**입니다(README 같은 절).
 
@@ -125,6 +127,9 @@ hash 를 `UNSIGNED-PAYLOAD` 로 폴백합니다. 그 폴백에 **기대어 통�
 `cas_sigv4_payload_hash_fallback_total` 입니다. 지금은 세기만 하고 동작은 그대로입니다 —
 0 이 아닌 배포가 있는지 보고 나서 거절 여부를 정하겠습니다. presigned 는 규격상 그 헤더가
 없으므로 세지 않고, 헤더가 없어 서명이 어긋난 요청은 이미 `403` 이라 세지 않습니다.
+**`auth.anonymousGet: true` 인 배포에서는 객체 `GET`·`HEAD` 도 세지 않습니다** — 그 경로는
+서명이 있어도 인증 판정 없이 통과하므로, 그 배포에서 이 값이 `0` 이어도 객체 읽기
+클라이언트가 폴백에 기대지 않는다는 뜻은 아닙니다.
 
 **⑶ 콘솔 Keys 탭이 템플릿 키에 매핑된 STS 신원을 함께 보여 줍니다.** 「이 템플릿을 지워도
 되나」를 키 목록에서 바로 판단하실 수 있습니다 — 지금까지는 관리 API 둘(`access-keys` 와
@@ -144,25 +149,29 @@ CronJob 까지 함께 켜졌습니다. **기본값 `null` 은 지금까지와 �
 
 **주의** — **`0.1.36` 의 README·`values.yaml` 은 「`x-cas-hash` 를 준 업로드는 BLAKE3 로
 이미 대조됩니다」라고 적었습니다. 중복 적중에서는 사실이 아닙니다.** `x-cas-hash` 를
-선언했고 그 해시의 블롭이 이미 있으면(DB 기록과 스토리지 양쪽), 서버는 본문을 읽지 않고
+선언했고 그 해시의 블롭이 이미 있으면(DB 기록과, 그 요청에 배정된 백엔드의 스토리지
+양쪽), 서버는 본문을 읽지 않고
 완료하므로 BLAKE3 도 `config.integrityCheck` 의 대조도 돌지 않습니다. 처음 보는 해시면
 본문을 읽으므로 둘 다 돕니다. `x-cas-hash` 를 보내지 않는 업로드는 중복제거되어도 대조가
 돌므로, `cas_blob_dedup_total` 을 「대조가 건너뛰어지는 비율」로 읽으시면 안 됩니다. 판정은
 `storage.mode` 와 무관합니다(로컬 FS 는 파일, S3 는 `HEAD`). 건너뛰는 업로드까지 덮으시려면
-클라이언트가 체크섬을 함께 선언해야 합니다. README 「종단 무결성 대조」를 고쳤습니다.
+클라이언트가 체크섬을 함께 선언해야 합니다. README 「종단 무결성 대조」와 `values.yaml` 의
+`config.integrityCheck` 주석을 고쳤습니다.
 
 **주의** — **STS 컷오버 게이트를 `cas_sts_issue_total{result="issued"}` 로 만들지
 마십시오.** 같은 `(issuer, subject)` · 같은 템플릿에 살아 있는 세션이 있으면 서버가 그것을
 그대로 돌려주고 `result="reused"` 로 셉니다. 워크로드가 정상 동작 중인데도 `issued` 는
 움직이지 않으므로 **정상을 실패로 읽게 됩니다.** 성공 신호는 `issued + reused` 입니다.
-재사용은 이미 README 에 적혀 있던 동작(남은 수명 900 초 초과)이고, 그것이 컷오버 판정에
-주는 영향을 처음 적습니다. 차트·이미지 동작은 그대로입니다.
+재사용은 이미 README 에 적혀 있던 동작이고, 그것이 컷오버 판정에 주는 영향을 처음
+적습니다. 경계는 남은 수명 **900 초 초과**입니다 — `0.1.36` README 는 「900초 이상」으로
+적었습니다. 차트·이미지 동작은 그대로입니다.
 
 **주의** — **`serviceAccount.automountToken` 의 설명이 틀린 말을 하고 있었습니다.**
-`templates/deployment.yaml` 주석(`helm get manifest` 로 보입니다)과 `values.yaml`·README 가
-「이 서버는 쿠버네티스 API 를 부르지 않는다 … IRSA/Workload Identity 를 쓰는 경우에만
-true 가 필요하다」로 남아 있었습니다. `auth.oidc.issuers` 의 `jwksAuth: serviceaccount` 도
-`true` 가 필요한 경우입니다. 설명만 바뀌고 값은 그대로입니다.
+`0.1.36` 의 `templates/deployment.yaml` 주석(`helm get manifest` 로 보입니다)은 「이 서버는
+쿠버네티스 API 를 부르지 않는다 … IRSA/Workload Identity 를 쓰는 경우에만 true 가 필요하다」로
+`auth.oidc.issuers` 의 `jwksAuth: serviceaccount` 경우가 빠져 있었습니다. `values.yaml`·README
+는 그 경우를 적으면서도 「이 서버는 쿠버네티스 API 를 부르지 않는다」로 시작해 스스로
+어긋났습니다. 세 곳 모두 고쳤습니다. 설명만 바뀌고 값은 그대로입니다.
 
 **주의** — `aws-chunked` 요청의 **트레일러 체크섬은 이미지 `0.1.29` 부터 대조됩니다.**
 `0.1.36` README 의 lifecycle 절이 「읽고 버립니다」로 남아 있었습니다. 청크 서명은 검증하지 않습니다.
@@ -176,8 +185,8 @@ true 가 필요하다」로 남아 있었습니다. `auth.oidc.issuers` 의 `jwk
 싣고 `NextMarker` 를 싣지 않으며 요청의 `marker` 도 읽지 않으므로, `ListObjects`(V1)로
 페이지를 넘기는 클라이언트는 오류 없이 첫 페이지에서 멈추거나 같은 페이지를 반복합니다.
 `start-after` 와 `encoding-type` 도 거절하지 않고 무시하므로 **오류 없이 다른 결과**가
-됩니다. 키에 C0 제어문자가 있으면 목록에서 원문을 되찾을 수 없고 `ListObjectVersions` 의
-해당 페이지가 건너뛰어집니다. 차트 동작은 그대로이고 지금까지 적히지 않았던 제약입니다 —
+됩니다. 키에 XML 1.0 이 금지하는 문자(탭·개행·CR 을 뺀 C0 제어문자, `U+FFFE`·`U+FFFF`)가
+있으면 목록에서 원문을 되찾을 수 없고 `ListObjectVersions` 의 해당 페이지가 건너뛰어집니다. 차트 동작은 그대로이고 지금까지 적히지 않았던 제약입니다 —
 `docs/architecture.md` 의 「목록 API 의 제약」에 넣었습니다.
 
 **주의** — `config.presignedRedirectSecs` 를 켜면 **`GET` 이 본문이 아니라 `307`** 이고
