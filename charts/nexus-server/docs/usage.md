@@ -238,7 +238,7 @@ requests.post(f"{base}/api/v1/admin/datasets/transfer-owner",
 - **담당자 이전은 인가를 옮기지 않는다**(서버 0.1.9). 이전 담당자도 계속 쓰고 지울 수 있다 — 역할이 `editor`이기 때문이다. 옮겨가는 것은 「다시 넘길 자격」 하나다.
 - 담당자가 없는 dataset은 `GET /datasets?unowned=true`로 조회한다. 담당자가 비어도 권한이 생기지 않으므로 위험한 상태가 아니라 **인수 대기**다. 그런 dataset도 `editor` 이상이면 지울 수 있다(서버 0.1.9 — 그 전에는 `admin` 전용이었다). 담당자가 있는 dataset을 넘기는 것은 담당자 본인이 한다([4.4](#44-dataset-담당자-이전-서버-016)).
 - **superuser 비밀번호를 바꾼 뒤에도 시크릿을 갱신할 필요가 없다.** `NEXUS__AUTH__SUPERUSER_PASSWORD`는 **그 계정이 없을 때 새로 만드는 용도로만** 읽힌다 — 계정이 이미 있으면 기동 시 값을 읽지도, 비교하지도 않는다. 그래서 시크릿의 값과 실제 로그인 비밀번호가 달라도 파드는 정상 기동하고, 반대로 시크릿을 바꿔 재배포해도 비밀번호는 바뀌지 않는다. 이 값을 "현재 비밀번호"가 아니라 **"계정 생성용 씨앗"**으로 보시는 편이 정확하다. 실제로 다시 쓰이는 경우는 하나뿐이다 — `auth.superuserEmail`을 **아직 가입되지 않은** 주소로 바꿔 재배포하면, 그때 이 값으로 새 계정이 만들어진다(이미 누가 쓰는 주소를 넣으면 그 계정을 채택하므로 그 사람이 superuser가 된다).
-- **지표를 보려면 `GET /_internal/metrics`**(차트 0.3.6+). 시크릿의 `NEXUS__METRICS__TOKEN`을 bearer로 받고, 그 값이 없으면 경로 자체가 **404**다. Prometheus 텍스트를 내며, **서버 0.1.9까지는 DB를 전혀 조회하지 않았고 0.1.10부터 아래 다섯이 워크로드 풀에서 한 왕복을 쓴다**(250ms를 넘기면 그 다섯만 빠진다). 15초보다 촘촘한 주기는 권하지 않는다.
+- **지표를 보려면 `GET /_internal/metrics`**(차트 0.3.6+). 시크릿의 `NEXUS__METRICS__TOKEN`을 bearer로 받고, 그 값이 없으면 경로 자체가 **404**다. Prometheus 텍스트를 내며, **서버 0.1.9까지는 DB를 전혀 조회하지 않았고 0.1.10부터 아래 다섯이 워크로드 풀에서 한 왕복을 쓴다**(250ms를 넘기거나 조회가 실패해도 그 다섯은 사라지지 않고 직전 값으로 남는다(기동 후 한 번도 못 읽었으면 처음부터 없다) — 서버 0.1.12부터 `nexus_metrics_db_stats_ok`로 가른다). 15초보다 촘촘한 주기는 권하지 않는다.
 
   ```bash
   curl -H "Authorization: Bearer $METRICS_TOKEN" $base/_internal/metrics
@@ -246,7 +246,7 @@ requests.post(f"{base}/api/v1/admin/datasets/transfer-owner",
 
   DB 풀 셋(`nexus_db_pool_connections` · `_idle_connections` · `_acquire_timeouts_total`)과 적재 유입 제어 셋(`nexus_ingest_permits_total` · `_available` · `nexus_ingest_rejected_total`)이다. **`_acquire_timeouts_total`이 오르기 시작하는 순간이 풀 포화의 시작점이다** — readiness는 전용 커넥션을 쓰므로 그 상황에서도 계속 200이고, 이 카운터가 유일한 신호다.
 
-  **서버 0.1.10부터 다섯이 더 붙는다** — `nexus_cas_credential_revocations_pending`(미처리 CAS 자격증명 폐기 건수. **없어도 `0`으로 나온다**)과 로봇 토큰 넷(`nexus_robot_tokens_active` · `_expiring_soon` · `nexus_robot_token_min_expires_in_seconds` · `nexus_robot_accounts_without_active_token`). 이 다섯만 DB를 조회하며 250ms를 넘기면 그 다섯만 생략하고 나머지를 낸다. `min_expires_in_seconds`는 **활성 토큰이 없을 때 `+Inf`**이므로 `< 임계값` 경보가 저절로 풀린다.
+  **서버 0.1.10부터 다섯이 더 붙는다** — `nexus_cas_credential_revocations_pending`(미처리 CAS 자격증명 폐기 건수. **없어도 `0`으로 나온다**)과 로봇 토큰 넷(`nexus_robot_tokens_active` · `_expiring_soon` · `nexus_robot_token_min_expires_in_seconds` · `nexus_robot_accounts_without_active_token`). 이 다섯만 DB를 조회한다(250ms 제한). **조회가 실패하거나 250ms를 넘겨도 그 다섯은 사라지지 않고 직전 값으로 남는다(기동 후 한 번도 못 읽었으면 처음부터 없다)** — 이번 스크레이프에서 실제로 읽었는지는 **서버 0.1.12부터** `nexus_metrics_db_stats_ok`(읽었으면 `1`, 못 읽었으면 `0`)로 가른다. 다섯을 읽는 알림에는 `and nexus_metrics_db_stats_ok == 1`을 함께 건다. `min_expires_in_seconds`는 **활성 토큰이 없을 때 `+Inf`**이므로 `< 임계값` 경보가 저절로 풀린다.
 
 - **적용된 설정을 확인하려면 `GET /api/v1/admin/config-effective`**(차트 0.3.5+, 관리자 전용 — 설정 superuser와 `role = admin` 둘 다 통과한다). 지금 그 프로세스가 **읽은 값**을 돌려준다 — 차트 렌더 결과가 아니므로 `extraEnv` 오버라이드도 드러난다.
 
@@ -1232,7 +1232,11 @@ except NexusError as e:
 nx.connect(nexus_url=..., robot_token="nxr_...")   # 또는 환경변수 NEXUS_ROBOT_TOKEN
 ```
 
-토큰 발급은 관리자가 `POST /api/v1/admin/robots/{user_id}/tokens`로 한다(`expires_in_days` 필수, 1~365). **평문은 발급 응답에만 한 번 실린다.**
+토큰 발급은 관리자가 `POST /api/v1/admin/robots/{user_id}/tokens`로 한다. body는 `{"label": "...", "expires_in_days": 1~365}`이고 **둘 다 필수다** — `label`을 빠뜨리면 `422`이고, 계정 생성은 이미 끝났으므로 **토큰 없는 계정이 남는다**. **평문은 발급 응답에만 한 번 실린다.**
+
+계정 생성(`POST /api/v1/admin/robots`, body `{"name": "...", "role": "editor", "display_name": "..."}`, `display_name`만 선택)의 이름은 소문자·숫자·하이픈 1~48자이고 하이픈으로 시작하거나 끝날 수 없다(`400`). **이름 검사가 `role` 검사보다 먼저 돈다** — 이름이 틀린 동안에는 `role` 오류를 볼 수 없다. 로봇의 `role`은 `editor`·`viewer`뿐이고 `admin`은 `400`이다. 경로의 `user_id`는 정수다(UUID를 넣으면 본문 검사 전에 `400`).
+
+**만료는 앞당길 수만 있다**(서버 0.1.12+). `PATCH /api/v1/admin/robots/{user_id}/tokens/{token_id}` body `{"expires_at": "<RFC 3339>"}` — 현재 만료보다 빠르고 지금보다 뒤여야 하며, 연장·같은 값·과거 시각은 `400`이다. 이미 발급된 CAS 자격증명의 만료는 따라 줄지 않는다.
 
 - **계정 1 : 토큰 N이다.** 새 토큰을 발급하고 `last_used_at`으로 배포를 확인한 뒤 옛 토큰을 폐기하면 중단 없이 회전한다.
 - **로봇은 dataset·version·sample과 CVAT 세션, 저장된 explorer 필터(subset)를 지울 수 없다**(403). CVAT 세션과 subset은 차트 0.3.8에서 더해졌다. 적재·수정·seal·이름 변경·fork와 세션 생성·`close`·`import`는 된다.
@@ -1252,12 +1256,23 @@ nx.connect(nexus_url=..., robot_token="nxr_...")   # 또는 환경변수 NEXUS_R
 
 `flush`는 권한 때문에 거부된 건이 있으면 조용히 넘기지 않고 예외를 던진다. 남의 dataset에 적재를 시도하다 일부만 들어가는 상황을 막기 위해서다.
 
+#### CAS 임시 자격증명 — STS (SDK 0.1.12+)
+
+cas 에 STS(`auth.oidc.issuers`)를 켠 배포는 장수명 CAS 키 대신 OIDC 토큰으로 임시 자격증명을 받는다. SDK 는 **명시 인자로만** 이 모드를 켜고 AWS 환경변수를 읽지 않는다.
+
+```python
+nx.connect(nexus_url="http://nexus-server", robot_token="nxr_...", cas_url="http://cas-server",
+           cas_sts=nx.CasSts(token_file="/var/run/secrets/tokens/cas"))   # 또는 token_provider=함수
+```
+
+토큰의 남은 수명은 **900초 이상**이어야 한다(projected 토큰 `expirationSeconds` 7200 이상 권장, Keycloak 은 realm 토큰 수명을 올린다). 남은 수명 600초 이하에서 스스로 갱신하고, 토큰 파일은 갱신마다 다시 읽는다. SDK 0.1.11 이하는 세션 토큰을 보내지 않아 STS 자격증명을 쓸 수 없다.
+
 
 ## 8. 전체 API 레퍼런스
 ### 최상위 함수
 |||
 |---|---|
-|`nx.connect(nexus_url=, email=, password=, robot_token=, cas_url=, cas_key_id=, cas_secret=, save_cas_credentials=False)`|서버 연결. `robot_token=`이면 로그인하지 않는다(SDK 0.1.10+). `save_cas_credentials` 기본값은 **SDK 0.1.10부터 `False`**(자동 발급받은 CAS 자격증명을 설정 파일에 남기지 않는다)|
+|`nx.connect(nexus_url=, email=, password=, robot_token=, cas_url=, cas_key_id=, cas_secret=, save_cas_credentials=False, cas_sts=)`|서버 연결. `robot_token=`이면 로그인하지 않는다(SDK 0.1.10+). `save_cas_credentials` 기본값은 **SDK 0.1.10부터 `False`**(자동 발급받은 CAS 자격증명을 설정 파일에 남기지 않는다). `cas_sts=nx.CasSts(...)`이면 CAS 임시 자격증명(STS) 모드(SDK 0.1.12+)|
 |`nx.list_datasets(q=, name=, description=, tags=, sort=, order=, favorite=, mine=, unowned=, limit=, cursor=)`|dataset 목록 검색. `limit`을 주지 않으면 커서를 자동 순회해 전체를 모은다([4.1](#41-데이터셋-목록-조회))|
 |`nx.upload(paths, bucket, prefix="", workers=8, overwrite=False)` → {경로: CasRef}|파일 업로드. `overwrite=True`면 같은 key에 다른 내용이 있어도 에러 대신 덮어씀(SDK 0.1.4+)|
 |`nx.probe(refs, workers=8, strict=False, max_header_bytes=65536)` → [CasRef]|업로드 없이 CAS 객체의 이미지 크기만 채움(앞부분만 읽음, 순서 보존)|

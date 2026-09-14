@@ -6,7 +6,7 @@ type: application
 # 차트가 광고하는 auth.oidc.issuers를 고객이 넣어도 그 이미지가 그 env를 몰라 에러
 # 없이 기능만 꺼진다.
 version: 0.3.9
-appVersion: "0.1.11"
+appVersion: "0.1.12"
 # NOTE: ingest.batchItemConcurrency를 설정하려면 IngestConfig 전 필드 serde default가 든
 # 새 이미지(> 0.0.3)가 필요하다. 그 전 이미지엔 database.maxConnections만 주입해도 안전.
 # NOTE: cvat.baseUrl을 설정하려면 CvatConfig 전 필드 serde default가 든 새 이미지(0.1.1 이상)가

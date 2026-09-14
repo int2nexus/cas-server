@@ -28,7 +28,14 @@ DB 마이그레이션은 바이너리에 임베드되어 **기동 시 자동 적
 
 > **업그레이드 전에 [CHANGELOG](CHANGELOG.md)를 읽을 것.**
 
-**차트 0.3.9 / appVersion 0.1.11** — 문서만 바뀐다. 이미지·동작·설정 키가 `0.3.8`과 같고 마이그레이션도 없다. `auth.oidc.issuers`에 `jwksAuth: serviceaccount`를 쓰려면 `serviceAccount.automountToken: true`가 필요하다는 것을 적었다(`0.3.8`에 빠져 있었다).
+**차트 0.3.9 / appVersion 0.1.12** — 마이그레이션도 설정 키 변경도 없다. 쓰던 호출은 그대로 동작한다.
+
+1. 새로 더해지는 것: `GET /datasets/count` — `GET /datasets`와 **같은 필터**에 걸리는 전체 수(`{"count": N}`). 목록이 한 페이지만 주므로 "전부 몇 개인가"를 화면이 알 수 없던 자리다. `cursor`·`limit`·`sort`·`order`는 무시하고(거부하지 않는다), `mine`+`unowned`는 목록과 같이 400이다.
+2. **seal의 메모리 사용이 줄었다. 산출물은 같다** — 샤드 NDJSON과 manifest의 바이트·해시·경계가 그대로라 이미 sealed된 버전과 재현성이 같다. 수백만 샘플 버전을 seal하려면 [`values.yaml`](values.yaml)의 `resources` 주석에 적은 어림식으로 `limits.memory`를 먼저 잡을 것.
+3. **PostgreSQL 14 이상에서 깨져 있던 것 둘을 고쳤다** — 로봇 토큰 지표 넷과 `nexus_cas_credential_revocations_pending`이 값을 갱신하지 못하던 것, datetime meta 필드의 `GET .../histogram`이 500이던 것. DB 집계를 실제로 읽었는지 가르는 `nexus_metrics_db_stats_ok`가 더해졌다.
+4. 새로 더해지는 것: 로봇 토큰 만료를 **앞당기는** `PATCH /api/v1/admin/robots/{user_id}/tokens/{token_id}`(연장은 400).
+5. OIDC 발급자의 JWKS 조회가 실패하는 동안 그 발급자 토큰이 **전부 503**이다(0.1.11까지는 이어지는 5초 동안 401이 섞였다).
+6. 문서: `auth.oidc.issuers`에 `jwksAuth: serviceaccount`를 쓰려면 `serviceAccount.automountToken: true`가 필요하다는 것을 적었다(`0.3.8`에 빠져 있었다). SDK `0.1.12`(CAS 임시 자격증명 STS 모드)가 함께 나간다.
 
 **차트 0.3.8 / appVersion 0.1.11** — 마이그레이션 `021`·`022`가 붙는다(**`0.1.10` 이하로 롤백 불가**). 지금까지와 달라지는 것은 둘이고, 그 밖은 모두 새로 더해지는 것이다.
 
@@ -188,13 +195,13 @@ curl localhost:8090/_internal/health      # {"status":"ok","db":true}
 
 **readiness는 워크로드와 커넥션 풀을 나눠 쓴다**(0.3.6+). `/_internal/health`는 크기 1의 전용 풀로 ping하므로 적재가 워크로드 풀을 전부 써도 200이다. 그래서 **readiness 실패는 「DB에 못 닿는다」만 뜻하고**, 「앱이 바쁘다」는 더 이상 파드를 서비스에서 빼지 않는다. 앱이 커넥션을 못 받고 있는지는 readiness가 아니라 `nexus_db_pool_acquire_timeouts_total`(아래)로 본다.
 
-`GET /_internal/metrics`는 **인증이 면제되지 않는다.** 시크릿의 `NEXUS__METRICS__TOKEN`을 bearer로 받고, 비어 있으면 경로 자체가 404다. 스크레이퍼는 로그인할 수 없고 JWT를 쓰게 하면 모니터링 스택이 카탈로그 전체를 읽는 계정을 들고 있어야 해서 토큰을 따로 뒀다. **appVersion 0.1.9까지는 DB를 전혀 조회하지 않았고, 0.1.10부터 아래 다섯이 한 왕복을 쓴다**(250ms를 넘기면 그 다섯만 빠진다). 그 한 왕복이 워크로드 풀에서 나가므로 15초보다 촘촘한 주기는 권하지 않는다. 설정 여부는 `GET /api/v1/admin/config-effective`의 `metrics.token_set`으로 확인한다.
+`GET /_internal/metrics`는 **인증이 면제되지 않는다.** 시크릿의 `NEXUS__METRICS__TOKEN`을 bearer로 받고, 비어 있으면 경로 자체가 404다. 스크레이퍼는 로그인할 수 없고 JWT를 쓰게 하면 모니터링 스택이 카탈로그 전체를 읽는 계정을 들고 있어야 해서 토큰을 따로 뒀다. **appVersion 0.1.9까지는 DB를 전혀 조회하지 않았고, 0.1.10부터 아래 다섯이 한 왕복을 쓴다**(250ms를 넘기거나 조회가 실패해도 그 다섯은 사라지지 않고 직전 값으로 남는다(기동 후 한 번도 못 읽었으면 처음부터 없다) — appVersion 0.1.12부터 `nexus_metrics_db_stats_ok`로 가른다). 그 한 왕복이 워크로드 풀에서 나가므로 15초보다 촘촘한 주기는 권하지 않는다. 설정 여부는 `GET /api/v1/admin/config-effective`의 `metrics.token_set`으로 확인한다.
 
 ```bash
 curl -H "Authorization: Bearer $METRICS_TOKEN" localhost:8090/_internal/metrics
 ```
 
-내는 시리즈는 열하나다(appVersion 0.1.10부터 다섯이 늘었다) — DB 풀 셋(`nexus_db_pool_connections`·`_idle_connections`·`_acquire_timeouts_total`), 적재 유입 제어 셋(`nexus_ingest_permits_total`·`_available`·`nexus_ingest_rejected_total`), 미처리 CAS 자격증명 폐기(`nexus_cas_credential_revocations_pending`), 로봇 토큰 넷(`nexus_robot_tokens_active`·`_expiring_soon`·`nexus_robot_token_min_expires_in_seconds`·`nexus_robot_accounts_without_active_token`). 뒤의 다섯만 DB를 조회하며 250ms를 넘기면 그 다섯만 빠진다. 앞의 여섯은 메모리 상태라 풀이 말라도 그대로 나온다.
+내는 시리즈는 열둘이다(appVersion 0.1.10부터 다섯, 0.1.12부터 하나가 늘었다) — DB 풀 셋(`nexus_db_pool_connections`·`_idle_connections`·`_acquire_timeouts_total`), 적재 유입 제어 셋(`nexus_ingest_permits_total`·`_available`·`nexus_ingest_rejected_total`), 미처리 CAS 자격증명 폐기(`nexus_cas_credential_revocations_pending`), 로봇 토큰 넷(`nexus_robot_tokens_active`·`_expiring_soon`·`nexus_robot_token_min_expires_in_seconds`·`nexus_robot_accounts_without_active_token`), 그리고 `nexus_metrics_db_stats_ok`. 가운데 다섯만 DB를 조회한다(한 왕복, 250ms 제한). **조회가 실패하거나 250ms를 넘겨도 그 다섯은 사라지지 않고 직전 값으로 남는다(기동 후 한 번도 못 읽었으면 처음부터 없다)** — 그래서 `nexus_metrics_db_stats_ok`가 이번 스크레이프에서 다섯을 실제로 읽었으면 `1`, 못 읽었으면 `0`이다(appVersion 0.1.12+). 다섯을 읽는 알림은 이 값을 함께 본다. 나머지 여섯은 메모리 상태라 풀이 말라도 그대로 나온다.
 
 `live`와 `health` 두 경로는 프로브가 자격증명 없이 호출해야 하므로 인증이 면제된다. 그 밖의 면제 경로는 `POST /api/v1/auth/register`·`POST /api/v1/auth/login`과 API 문서 경로(`/api-docs/openapi.json`, `/swagger-ui`, `/swagger-ui/`)뿐이며, 문서 경로는 `auth.docsEnabled: false`로 끄면 404가 된다. **데이터 API는 조회를 포함해 전부 토큰이 필요하다.**
 
