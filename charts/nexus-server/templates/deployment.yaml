@@ -15,7 +15,7 @@ spec:
         {{- include "nexus-server.selectorLabels" . | nindent 8 }}
     spec:
       # values.yaml에 serviceAccount 블록이 있는데 템플릿이 참조하지 않아, 설정해도
-      # 조용히 아무 일도 일어나지 않던 자리다(고객 리포트 N11). PodSecurity/NetworkPolicy를
+      # 조용히 아무 일도 일어나지 않던 자리다. PodSecurity/NetworkPolicy를
       # ServiceAccount 기준으로 거는 배포에서는 "통제를 걸었다고 믿는데 안 걸린" 상태가 된다.
       serviceAccountName: {{ include "nexus-server.serviceAccountName" . }}
       # serviceAccount.create가 false면(기본값) templates/serviceaccount.yaml 자체가

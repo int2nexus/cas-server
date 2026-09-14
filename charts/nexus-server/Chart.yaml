@@ -5,8 +5,8 @@ type: application
 # 발행 시 이 둘과 values.yaml의 image.tag·image.digest를 함께 올린다. 올리지 않으면
 # 차트가 광고하는 auth.oidc.issuers를 고객이 넣어도 그 이미지가 그 env를 몰라 에러
 # 없이 기능만 꺼진다.
-version: 0.3.8
-appVersion: "0.1.11"
+version: 0.3.9
+appVersion: "0.1.12"
 # NOTE: ingest.batchItemConcurrency를 설정하려면 IngestConfig 전 필드 serde default가 든
 # 새 이미지(> 0.0.3)가 필요하다. 그 전 이미지엔 database.maxConnections만 주입해도 안전.
 # NOTE: cvat.baseUrl을 설정하려면 CvatConfig 전 필드 serde default가 든 새 이미지(0.1.1 이상)가
@@ -17,7 +17,7 @@ appVersion: "0.1.11"
 # 신설된 경로다. 이미지를 0.1.2 이하로 고정해 쓰면 이 경로가 404라 startupProbe가 절대
 # 성공하지 못해 파드가 무한 재시작한다 — startupProbe.enabled=false와
 # livenessProbe.httpGet.path=/_internal/health로 되돌릴 것.
-# NOTE: cas.adminKeyId/cas.adminSecret(Secret)/cas.credentialsPerUser(CAS 자격증명 자동
+# NOTE: cas.adminKeyId / Secret의 NEXUS__CAS__ADMIN_SECRET / cas.credentialsPerUser(CAS 자격증명 자동
 # 발급)는 appVersion 0.1.9 이상이 필요하다. 구 이미지에 이 env를 줘도 기동은 깨지지
 # 않는다(모르는 설정 키는 무시된다) — 다만 기능도 켜지지 않는다. 비워두면(기본값)
 # 어떤 이미지에서도 안전하다.

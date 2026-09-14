@@ -4,9 +4,9 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
 
 ## 문서
 
-- [아키텍처](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.8/charts/nexus-server/docs/architecture.md)
+- [아키텍처](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.9/charts/nexus-server/docs/architecture.md)
   — 도메인 모델, Version 생명주기, Annotation CoW, 스냅샷·Manifest 구조
-- [사용법](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.8/charts/nexus-server/docs/usage.md)
+- [사용법](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.9/charts/nexus-server/docs/usage.md)
   — 설치, Python SDK 연결, Dataset 적재·검색·seal 워크플로우, API 레퍼런스
 - [변경 이력](CHANGELOG.md)
   — 버전별 동작 변경·마이그레이션·설정 키. 각 항목은 해당 GitHub Release 본문과 동일하다
@@ -16,14 +16,26 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
 - **외부 PostgreSQL** — 접속 정보(비번 포함 DSN)는 시크릿으로 주입. 차트가 DB를 띄우지 않는다.
 - **클러스터 내 cas-server** — CAS(파일) 백엔드.
 - **시크릿 4키** (sealed-secret으로 주입): `NEXUS__DATABASE__URL`, `NEXUS__CAS__KEY_ID`, `NEXUS__CAS__SECRET`, `NEXUS__JWT__SECRET`.
-  CVAT annotation 편집 세션을 쓰면 `NEXUS__CVAT__PASSWORD`가 **5번째 키**로 추가된다(선택).
-  superuser를 쓰면 `NEXUS__AUTH__SUPERUSER_PASSWORD`가 **6번째 키**로 추가된다(선택).
+  선택 키가 넷 더 있고, 쓰는 기능이 있을 때만 넣는다 — CVAT annotation 편집 세션의
+  `NEXUS__CVAT__PASSWORD`, superuser의 `NEXUS__AUTH__SUPERUSER_PASSWORD`,
+  CAS 자격증명 자동 발급의 `NEXUS__CAS__ADMIN_SECRET`(`cas.adminKeyId`와 짝),
+  지표의 `NEXUS__METRICS__TOKEN`(values 스위치가 없다 — 이 키가 곧 스위치다).
+  전체 목록은 [`examples/secret.example.yaml`](examples/secret.example.yaml).
 - **CVAT은 선택** — 설정하지 않아도 서버는 정상 동작한다. 세션 생성·결과 회수만 503이 되고 카탈로그·업로드·seal·조회는 영향이 없다.
 - **superuser도 선택** — 설정하지 않으면 관리자를 만들 부트스트랩 수단이 없다(`users.role = admin`은 백필하지 않는다). 다만 **CVAT과 달리 반쪽 설정은 조용히 꺼지지 않고 기동을 실패시킨다**(아래 참조).
 
-DB 마이그레이션은 바이너리에 임베드되어 **기동 시 자동 적용**된다(별도 Job 불필요). 마이그레이션이 끝나야 포트가 열리므로 그 시간은 곧 startupProbe 예산(기본 `periodSeconds 10 × failureThreshold 60` = 600초)에서 나간다 — 스키마가 바뀌는 릴리스로 올릴 때는 [CHANGELOG](CHANGELOG.md)의 해당 버전 **마이그레이션** 항목에서 예상 소요를 먼저 확인할 것. **거기 적힌 실측값은 우리 환경의 것이라 행 수로 환산해 그대로 쓸 수 없다** — 소요가 행 수에 선형인 것은 같은 하드웨어 안에서일 뿐이고 계수는 DB마다 다르다. 예산은 넉넉한 쪽으로 잡는다(모자라면 기동 실패가 반복되고, 남으면 아무 일도 일어나지 않는다). 서버는 stateless(파일=CAS, 메타=Postgres)라 PVC가 없다.
+DB 마이그레이션은 바이너리에 임베드되어 **기동 시 자동 적용**된다(별도 Job 불필요). 마이그레이션이 끝나야 포트가 열리므로 그 시간은 곧 startupProbe 예산(기본 `periodSeconds 10 × failureThreshold 60` = 600초)에서 나간다 — 스키마가 바뀌는 릴리스로 올릴 때는 [CHANGELOG](CHANGELOG.md)의 해당 버전 **마이그레이션** 항목에서 예상 소요를 먼저 확인할 것. **거기 적힌 실측값은 특정 환경의 것이라 행 수로 환산해 그대로 쓸 수 없다** — 소요가 행 수에 선형인 것은 같은 하드웨어 안에서일 뿐이고 계수는 DB마다 다르다. 예산은 넉넉한 쪽으로 잡는다(모자라면 기동 실패가 반복되고, 남으면 아무 일도 일어나지 않는다). 서버는 stateless(파일=CAS, 메타=Postgres)라 PVC가 없다.
 
 > **업그레이드 전에 [CHANGELOG](CHANGELOG.md)를 읽을 것.**
+
+**차트 0.3.9 / appVersion 0.1.12** — 마이그레이션도 설정 키 변경도 없다. 쓰던 호출은 그대로 동작한다.
+
+1. 새로 더해지는 것: `GET /datasets/count` — `GET /datasets`와 **같은 필터**에 걸리는 전체 수(`{"count": N}`). 목록이 한 페이지만 주므로 "전부 몇 개인가"를 화면이 알 수 없던 자리다. `cursor`·`limit`·`sort`·`order`는 무시하고(거부하지 않는다), `mine`+`unowned`는 목록과 같이 400이다.
+2. **seal의 메모리 사용이 줄었다. 산출물은 같다** — 샤드 NDJSON과 manifest의 바이트·해시·경계가 그대로라 이미 sealed된 버전과 재현성이 같다. 수백만 샘플 버전을 seal하려면 [`values.yaml`](values.yaml)의 `resources` 주석에 적은 어림식으로 `limits.memory`를 먼저 잡을 것.
+3. **PostgreSQL 14 이상에서 깨져 있던 것 둘을 고쳤다** — 로봇 토큰 지표 넷과 `nexus_cas_credential_revocations_pending`이 값을 갱신하지 못하던 것, datetime meta 필드의 `GET .../histogram`이 500이던 것. DB 집계를 실제로 읽었는지 가르는 `nexus_metrics_db_stats_ok`가 더해졌다.
+4. 새로 더해지는 것: 로봇 토큰 만료를 **앞당기는** `PATCH /api/v1/admin/robots/{user_id}/tokens/{token_id}`(연장은 400).
+5. OIDC 발급자의 JWKS 조회가 실패하는 동안 그 발급자 토큰이 **전부 503**이다(0.1.11까지는 이어지는 5초 동안 401이 섞였다).
+6. 문서: `auth.oidc.issuers`에 `jwksAuth: serviceaccount`를 쓰려면 `serviceAccount.automountToken: true`가 필요하다는 것을 적었다(`0.3.8`에 빠져 있었다). SDK `0.1.12`(CAS 임시 자격증명 STS 모드)가 함께 나간다.
 
 **차트 0.3.8 / appVersion 0.1.11** — 마이그레이션 `021`·`022`가 붙는다(**`0.1.10` 이하로 롤백 불가**). 지금까지와 달라지는 것은 둘이고, 그 밖은 모두 새로 더해지는 것이다.
 
@@ -65,7 +77,7 @@ helm repo update
 
 ### 1) 시크릿 주입 (sealed-secret)
 
-차트는 Secret을 만들지 않고 외부 Secret을 `envFrom`으로 참조한다. 아래 키를 가진 Secret을 **먼저** 주입한다(마지막 CVAT 줄은 연동을 쓸 때만):
+차트는 Secret을 만들지 않고 외부 Secret을 `envFrom`으로 참조한다. 아래 키를 가진 Secret을 **먼저** 주입한다(앞의 넷은 필수, 뒤의 넷은 그 기능을 쓸 때만):
 
 ```bash
 kubectl create secret generic nexus-server -n <namespace> --dry-run=client -o yaml \
@@ -75,6 +87,8 @@ kubectl create secret generic nexus-server -n <namespace> --dry-run=client -o ya
   --from-literal=NEXUS__JWT__SECRET='...' \
   --from-literal=NEXUS__CVAT__PASSWORD='...' \
   --from-literal=NEXUS__AUTH__SUPERUSER_PASSWORD='...' \
+  --from-literal=NEXUS__CAS__ADMIN_SECRET='...' \
+  --from-literal=NEXUS__METRICS__TOKEN='...' \
   | kubeseal --format yaml > sealed-nexus-server.yaml
 kubectl apply -f sealed-nexus-server.yaml -n <namespace>
 ```
@@ -116,10 +130,10 @@ helm install nexus-server int2nexus/nexus-server -n <namespace> \
 | `auth.registrationEnabled` / `auth.docsEnabled` | `true` / `true` | 공개 회원가입 / API 문서 3경로. 각각 끄면 `register`만 403, 문서 경로는 **404**(403이 아니다) |
 | `auth.approvalRequired` | `false` | `true`면 가입은 열어 둔 채 승인 전까지 아무것도 할 수 없다. 가입이 토큰 없이 `202`를 반환하므로 **가입 화면이 그것을 처리해야 한다.** 승인·대기목록 엔드포인트가 관리자 전용이라 `auth.superuserEmail`을 함께 설정해야 한다 |
 | `auth.revocationCacheTtlSecs` | `""` | 비우면 서버 기본 5초. 인증이 사용자 행(역할·승인·활성)을 읽고 캐시하는 시간이며, **곧 권한 회수·계정 정지·계정 삭제가 듣기까지의 상한**이다. `0`이면 매 요청 조회(적재 처리량 20~33% 감소). 조회 자체는 끌 수 없다 |
-| `auth.oidc.issuers` (0.3.8+) | `[]` | 외부 IdP 토큰을 인증 자격증명으로 받을 발급자 목록. **비우면 기능이 꺼지고 기존 동작과 같다.** 항목마다 `issuer`(필수, https) · `audience`(필수, `aud` 포함 검사) · `exchange`(기본 `false`) · `jwksUri`(선택) · `jwksAuth`(선택, `serviceaccount`). **`audience`가 비었거나 `issuer`가 중복이면 기동 실패다.** 발급자만 설정하면 아무도 인증되지 않는다 — 신원은 `POST /api/v1/admin/oidc-identities`로 관리자가 등록한다 |
+| `auth.oidc.issuers` (0.3.8+) | `[]` | 외부 IdP 토큰을 인증 자격증명으로 받을 발급자 목록. **비우면 기능이 꺼지고 기존 동작과 같다.** 항목마다 `issuer`(필수, https) · `audience`(필수, `aud` 포함 검사) · `exchange`(기본 `false`) · `jwksUri`(선택) · `jwksAuth`(선택, `serviceaccount` — 쓰면 `serviceAccount.automountToken: true` 가 필요하다). **`audience`가 비었거나 `issuer`가 중복이면 기동 실패다.** 발급자만 설정하면 아무도 인증되지 않는다 — 신원은 `POST /api/v1/admin/oidc-identities`로 관리자가 등록한다 |
 | `auth.superuserEmail` | `""` | **비우면 관리자를 만들 부트스트랩 수단이 없다.** 채우면 시크릿의 `NEXUS__AUTH__SUPERUSER_PASSWORD`도 **반드시 함께** 있어야 한다 |
 | Secret `NEXUS__METRICS__TOKEN` | (없음) | 넣으면 `GET /_internal/metrics`가 열리고 없으면 **404**다. values 스위치는 없다 — 이 차트는 Secret 전체를 `envFrom`으로 받으므로 키를 넣는 것이 곧 켜는 것 |
-| `serviceAccount.automountToken` | `false` | ServiceAccount 토큰 마운트 여부. **차트 0.3.1부터 이 값이 실제로 적용된다** — 그 전에는 `serviceAccount.create: true`일 때만 렌더돼 기본 설치에서 효과가 없었다. 기본 설치의 동작이 "마운트됨"에서 "마운트 안 됨"으로 뒤집히고 **롤링 재시작이 한 번 일어난다.** 파드 토큰에 기대는 사이드카가 있으면 `--set serviceAccount.automountToken=true` |
+| `serviceAccount.automountToken` | `false` | ServiceAccount 토큰 마운트 여부. **차트 0.3.1부터 이 값이 실제로 적용된다** — 그 전에는 `serviceAccount.create: true`일 때만 렌더돼 기본 설치에서 효과가 없었다. 기본 설치의 동작이 "마운트됨"에서 "마운트 안 됨"으로 뒤집히고 **롤링 재시작이 한 번 일어난다.** 파드 토큰에 기대는 사이드카가 있거나 `auth.oidc.issuers` 에 `jwksAuth: serviceaccount` 를 쓰면 `--set serviceAccount.automountToken=true` |
 
 전체 키는 [`values.yaml`](values.yaml) 참조.
 
@@ -155,6 +169,12 @@ CVAT 연동은 `cvat.baseUrl`·`cvat.user`·시크릿의 `NEXUS__CVAT__PASSWORD`
 | `DELETE /api/v1/admin/robots/{user_id}/tokens/{token_id}` | 토큰 폐기 |
 | `POST /api/v1/admin/oidc-identities` · `GET` | OIDC 신원 `(issuer, subject)` → 계정 매핑 등록·목록(appVersion 0.1.11+). 목록은 `?user_id=`로 좁힌다 |
 | `DELETE /api/v1/admin/oidc-identities/{identity_id}` | 매핑 삭제. 그 신원 하나만 막는다 |
+| `GET /api/v1/admin/cas-credentials` | 전체 사용자의 CAS 자격증명 목록. **`cas.adminKeyId`가 비어도 200이다** — 이 표만 읽는 조회라, 기능을 끈 뒤에도 켜져 있던 동안 발급된 것을 계속 확인할 수 있어야 하기 때문이다 |
+| `DELETE /api/v1/admin/cas-credentials/{cas_key_id}` | 남의 자격증명 강제 폐기 |
+| `POST /api/v1/admin/cas-credentials/retry-revocations` | cas 쪽 폐기에 실패해 미처리로 남은 것을 다시 시도(`nexus_cas_credential_revocations_pending`이 0이 아닐 때) |
+| `GET /api/v1/admin/config-effective` | 지금 그 프로세스가 읽은 설정값(차트 렌더 결과가 아니다). 비밀은 값 대신 `<set>`/`<unset>`이고, `database.url`만 비밀번호를 가린 채 호스트·DB명을 남긴다 |
+
+CAS 자격증명 셋 중 **강제 폐기와 미처리 재시도는 `cas.adminKeyId`가 비면 503**이다 — cas를 실제로 불러야 하는 조작이라 관리 키 없이는 할 수 없다. 목록만 그 설정과 무관하게 200이다.
 
 감사 로그는 없다.
 
@@ -175,13 +195,13 @@ curl localhost:8090/_internal/health      # {"status":"ok","db":true}
 
 **readiness는 워크로드와 커넥션 풀을 나눠 쓴다**(0.3.6+). `/_internal/health`는 크기 1의 전용 풀로 ping하므로 적재가 워크로드 풀을 전부 써도 200이다. 그래서 **readiness 실패는 「DB에 못 닿는다」만 뜻하고**, 「앱이 바쁘다」는 더 이상 파드를 서비스에서 빼지 않는다. 앱이 커넥션을 못 받고 있는지는 readiness가 아니라 `nexus_db_pool_acquire_timeouts_total`(아래)로 본다.
 
-`GET /_internal/metrics`는 **인증이 면제되지 않는다.** 시크릿의 `NEXUS__METRICS__TOKEN`을 bearer로 받고, 비어 있으면 경로 자체가 404다. 스크레이퍼는 로그인할 수 없고 JWT를 쓰게 하면 모니터링 스택이 카탈로그 전체를 읽는 계정을 들고 있어야 해서 토큰을 따로 뒀다. DB를 조회하지 않으므로 15초 주기도 부담이 없다. 설정 여부는 `GET /api/v1/admin/config-effective`의 `metrics.token_set`으로 확인한다.
+`GET /_internal/metrics`는 **인증이 면제되지 않는다.** 시크릿의 `NEXUS__METRICS__TOKEN`을 bearer로 받고, 비어 있으면 경로 자체가 404다. 스크레이퍼는 로그인할 수 없고 JWT를 쓰게 하면 모니터링 스택이 카탈로그 전체를 읽는 계정을 들고 있어야 해서 토큰을 따로 뒀다. **appVersion 0.1.9까지는 DB를 전혀 조회하지 않았고, 0.1.10부터 아래 다섯이 한 왕복을 쓴다**(250ms를 넘기거나 조회가 실패해도 그 다섯은 사라지지 않고 직전 값으로 남는다(기동 후 한 번도 못 읽었으면 처음부터 없다) — appVersion 0.1.12부터 `nexus_metrics_db_stats_ok`로 가른다). 그 한 왕복이 워크로드 풀에서 나가므로 15초보다 촘촘한 주기는 권하지 않는다. 설정 여부는 `GET /api/v1/admin/config-effective`의 `metrics.token_set`으로 확인한다.
 
 ```bash
 curl -H "Authorization: Bearer $METRICS_TOKEN" localhost:8090/_internal/metrics
 ```
 
-내는 시리즈는 열하나다(appVersion 0.1.10부터 다섯이 늘었다) — DB 풀 셋(`nexus_db_pool_connections`·`_idle_connections`·`_acquire_timeouts_total`), 적재 유입 제어 셋(`nexus_ingest_permits_total`·`_available`·`nexus_ingest_rejected_total`), 미처리 CAS 자격증명 폐기(`nexus_cas_credential_revocations_pending`), 로봇 토큰 넷(`nexus_robot_tokens_active`·`_expiring_soon`·`nexus_robot_token_min_expires_in_seconds`·`nexus_robot_accounts_without_active_token`). 뒤의 다섯만 DB를 조회하며 250ms를 넘기면 그 다섯만 빠진다. 앞의 여섯은 메모리 상태라 풀이 말라도 그대로 나온다.
+내는 시리즈는 열둘이다(appVersion 0.1.10부터 다섯, 0.1.12부터 하나가 늘었다) — DB 풀 셋(`nexus_db_pool_connections`·`_idle_connections`·`_acquire_timeouts_total`), 적재 유입 제어 셋(`nexus_ingest_permits_total`·`_available`·`nexus_ingest_rejected_total`), 미처리 CAS 자격증명 폐기(`nexus_cas_credential_revocations_pending`), 로봇 토큰 넷(`nexus_robot_tokens_active`·`_expiring_soon`·`nexus_robot_token_min_expires_in_seconds`·`nexus_robot_accounts_without_active_token`), 그리고 `nexus_metrics_db_stats_ok`. 가운데 다섯만 DB를 조회한다(한 왕복, 250ms 제한). **조회가 실패하거나 250ms를 넘겨도 그 다섯은 사라지지 않고 직전 값으로 남는다(기동 후 한 번도 못 읽었으면 처음부터 없다)** — 그래서 `nexus_metrics_db_stats_ok`가 이번 스크레이프에서 다섯을 실제로 읽었으면 `1`, 못 읽었으면 `0`이다(appVersion 0.1.12+). 다섯을 읽는 알림은 이 값을 함께 본다. 나머지 여섯은 메모리 상태라 풀이 말라도 그대로 나온다.
 
 `live`와 `health` 두 경로는 프로브가 자격증명 없이 호출해야 하므로 인증이 면제된다. 그 밖의 면제 경로는 `POST /api/v1/auth/register`·`POST /api/v1/auth/login`과 API 문서 경로(`/api-docs/openapi.json`, `/swagger-ui`, `/swagger-ui/`)뿐이며, 문서 경로는 `auth.docsEnabled: false`로 끄면 404가 된다. **데이터 API는 조회를 포함해 전부 토큰이 필요하다.**
 

@@ -75,6 +75,119 @@ nexus-server 는 마이그레이션이 바이너리에 임베드되어 **기동 
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.3.9
+
+image: `int2jieun/nexus-server:0.1.11` → `0.1.12`
+digest: `sha256:c9ef592d75f4feb49ac78c66a5ccd946f90658c9d68b30ec36cee80e1a4ca3b1`
+
+**동작 변경** — ⑴ `GET /datasets/count` 가 더해집니다. ⑵ PostgreSQL 14 이상에서 DB 집계 지표 다섯이 갱신되지 않던 것과 datetime meta 필드의 `GET .../histogram` 이 `500` 이던 것이 고쳐집니다. ⑶ 로봇 토큰의 만료를 앞당기는 `PATCH /api/v1/admin/robots/{user_id}/tokens/{token_id}` 가 더해집니다. ⑷ 지표 `nexus_metrics_db_stats_ok` 가 더해집니다. ⑸ JWKS 조회가 실패하는 동안 그 발급자의 OIDC 토큰은 모두 `503` 입니다(`0.1.11` 은 실패 뒤 5 초 동안 `401`). 그 밖의 호출은 `0.1.11` 과 같습니다.
+**마이그레이션** — 없음. 롤백 안전
+**설정 키** — 없음
+**호환성** — ⑴·⑶·⑷ 는 appVersion `0.1.12` 이상에만 있습니다. 그 미만에서 `PATCH` 는 `405` 이고, `nexus_metrics_db_stats_ok` 에 건 `absent()` 알림은 계속 발화합니다.
+**운영 조치** — PostgreSQL 14 이상에서 로봇 토큰 지표에 알림을 걸어 두었다면 지금까지의 값은 신뢰할 수 없습니다(아래 「PostgreSQL 14 이상」 절). 올린 뒤 임계값을 다시 확인하십시오.
+
+**`GET /datasets/count`** — `GET /datasets` 와 같은 필터(`q`·`name`·`description`·`tags`·`favorite`·`mine`·`unowned`)에 걸리는 전체 수를 `{"count": N}` 으로 돌려줍니다. 목록은 한 페이지(기본 100, 최대 1000)만 주므로 전체 수는 이 경로로 얻습니다.
+
+- `cursor`·`limit`·`sort`·`order` 는 무시합니다(거부하지 않습니다).
+- `mine` 과 `unowned` 를 함께 주면 목록과 같이 `400` 입니다.
+- 상한 없이 셉니다(`.../samples/explorer/count` 의 10,000 상한은 없습니다).
+- 기존 리소스 `/datasets` 의 하위 읽기라 `/api/v1` 을 붙이지 않았습니다.
+
+**seal 메모리** — 버전 전체를 메모리에 올리던 자리 셋을 줄였습니다. 샘플 목록을 샤드 단위로 읽고, 버전 비교(`diff`)는 id 만 읽고, manifest 업로드의 바디 사본 하나를 없앴습니다. 샤드 NDJSON 과 manifest 의 바이트·해시·경계는 바뀌지 않아 이미 sealed 된 버전과 재현성이 같습니다.
+
+메모리 한도를 잡는 기준을 `values.yaml` 의 `resources` 주석에 적었습니다(값과 기본값은 그대로입니다). 한도는 **가장 큰 버전 하나의 샘플 수**로 정합니다 — 어림식은 `샘플 수 × 에셋 수 × 1 KB`, 한도는 그 3 배입니다. 기본값 `1Gi` 는 버전당 수십만 샘플까지를 가정합니다. 넘기면 파드가 OOMKill 되고 버전은 draft 로 남습니다. 재시도하면 이미 올라간 샤드는 건너뛰고, 남은 샤드는 GC 대상이 아니라 CAS 에 남습니다.
+
+**SDK** — `int2nexus-sdk` `0.1.12` 가 함께 나갑니다. 변경 내용과 필요한 서버 버전은 맨 아래 「SDK `0.1.12`」 절에 모았습니다.
+
+**문서 정정** — 동작 변경은 없습니다. 차트 문서를 서버 `0.1.11` 기준으로 대조해 누락·오기를 고쳤고, 운영 판단에 영향이 있었을 항목만 적습니다.
+
+```
+세션 삭제 권한    "editor 이상" 이었습니다. 사람 editor 이상이고 로봇은 403 입니다
+가입 차단의 범위  "끄면 계정을 만들 방법이 없다" 였습니다. 로봇 계정 생성은 이 값을 보지 않습니다
+config-effective "superuser 전용" 이었습니다. role=admin 계정도 조회할 수 있습니다
+지표 동결        "250ms 를 넘기면 그 다섯만 빠진다" 였습니다. 직전 값으로 남습니다(아래 PostgreSQL 14 절)
+```
+
+### PostgreSQL 14 이상: 지표 다섯과 datetime 히스토그램
+
+PostgreSQL 14 에서 `extract()` 의 반환형이 `double precision` 에서 `numeric` 으로 바뀌어, 그 값을 읽는 쿼리 둘이 실패했습니다. 13 이하는 영향이 없습니다.
+
+```
+지표        /_internal/metrics 의 DB 집계 다섯
+            nexus_robot_tokens_active · nexus_robot_tokens_expiring_soon ·
+            nexus_robot_token_min_expires_in_seconds ·
+            nexus_robot_accounts_without_active_token ·
+            nexus_cas_credential_revocations_pending
+히스토그램   GET /datasets/{id}/versions/{v}/histogram?field=meta.<datetime 필드>
+            → 500 (그 필드에 값이 있는 샘플이 있을 때)
+```
+
+지표는 활성 로봇 토큰이 0 개인 동안에는 정상이고, 하나라도 생기면 집계가 실패합니다. 실패하면 이미 나온 시리즈는 직전 값으로 남습니다 — 활성 토큰이 없을 때 뜬 파드에서는 「활성 토큰 있음」과 「로봇 없음」이 둘 다 `0` 으로 보였고, 활성 토큰이 있는 상태로 뜬 파드에서는 다섯 시리즈가 나오지 않았습니다.
+
+`nexus_metrics_db_stats_ok` 는 이번 스크레이프에서 다섯을 읽었으면 `1`, 못 읽었으면 `0` 입니다. `0` 일 때 다섯은 직전 값이거나, 기동 후 한 번도 못 읽었으면 없습니다. 다섯에 건 알림에는 이 지표를 함께 거십시오.
+
+### 로봇 토큰 만료 단축
+
+`PATCH /api/v1/admin/robots/{user_id}/tokens/{token_id}` body `{"expires_at": "<RFC 3339>"}`. 관리자 전용입니다. 토큰을 폐기하지 않고 만료만 앞당기므로, 유출이 의심될 때 교체할 시간을 두고 노출 기간을 줄일 수 있습니다.
+
+```
+200        현재 만료보다 이르고 지금보다 늦은 시각
+400        현재 만료 이상(연장·같은 값) · 과거 시각
+404        그 로봇의 폐기되지 않은 토큰이 아님
+```
+
+연장은 없습니다 — 허용하면 발급 상한(365 일)이 의미를 잃습니다. 기간이 더 필요하면 새 토큰을 발급해 기간을 겹치게 두십시오.
+
+**주의** — 단축은 인증 캐시 수명(`auth.revocationCacheTtlSecs`, 기본 5 초) 뒤에 반영되고, 이미 발급된 CAS 자격증명의 만료는 줄이지 않습니다. 유출 대응이면 `DELETE /api/v1/admin/cas-credentials/{cas_key_id}` 로 함께 폐기하십시오.
+
+### OIDC — JWKS 조회 실패
+
+`0.3.8` 은 조회가 실패하면 그 발급자의 토큰이 모두 `503` 이라고 적었지만, 이미지 `0.1.11` 에서는 조회를 시도한 요청만 `503` 이었습니다. `0.1.12` 부터 문서와 같습니다.
+
+```
+            조회를 시도한 요청   이어지는 5 초
+0.1.11      503                 401  auth_error="unknown key id"
+0.1.12      503                 503  auth_error="jwks unavailable"
+```
+
+이미 받아 둔 키로 검증되는 토큰은 영향이 없고, 마지막 조회가 성공한 키 집합에 없는 `kid` 는 `401` 입니다.
+
+**주의** — `jwksAuth: serviceaccount` 를 쓰려면 `serviceAccount.automountToken: true` 가 필요합니다. 기본값 `false` 에서는 토큰 파일이 없어 조회가 실패하고, 기동은 성공한 채 그 발급자의 토큰을 쓴 요청이 `503`(본문 `IdP 의 JWKS 를 가져오지 못했습니다`)입니다. 원인은 서버 로그의 `JWKS 조회 실패` 줄에 나옵니다. `0.3.8` 문서에는 이 요구가 빠져 있었고, 차트 템플릿 동작은 `0.3.8` 과 같습니다. 같은 마운트의 `ca.crt` 가 JWKS 조회의 TLS 신뢰에 쓰이며, CA 를 따로 넣는 값은 없습니다.
+
+### SDK `0.1.12`
+
+`int2nexus-sdk` 의 변경은 이 절에만 적습니다. 서버 이미지와 따로 설치합니다.
+
+```
+pip install --extra-index-url https://int2nexus.github.io/cas-server/sdk/simple/ int2nexus-sdk==0.1.12
+```
+
+**변경**
+
+- **CAS 임시 자격증명(STS) 모드.** `nx.connect(cas_sts=nx.CasSts(token_file=...))`(또는 `token_provider=` 에 토큰을 돌려주는 함수)로 켭니다. cas 의 `AssumeRoleWithWebIdentity` 로 임시 자격증명을 받고, 남은 수명이 600 초 이하가 되면 다시 받습니다. 토큰 파일은 받을 때마다 다시 읽습니다. `0.1.11` 이하는 세션 토큰(`x-amz-security-token`)을 보내지 않아 STS 자격증명이 `403` 이었습니다.
+- 명시 인자로만 켜집니다. AWS 환경변수(`AWS_WEB_IDENTITY_TOKEN_FILE` 등)는 읽지 않습니다. `cas_key_id`/`cas_secret` 인자와 함께 주면 `ValueError` 이고, 환경변수·설정 파일의 정적 키는 경고를 내고 무시합니다.
+- `nx.connect` 에서 한 번 받으므로 토큰 파일·매핑이 틀리면 거기서 `NexusCasError` 로 실패합니다.
+- 토큰의 남은 수명은 900 초 이상이어야 합니다(projected 토큰은 `expirationSeconds` 7200 이상, Keycloak 은 realm 액세스 토큰 수명 기본 300 초를 올립니다).
+- STS 모드는 CAS 데이터 요청의 리다이렉트를 따라가지 않고 에러를 냅니다. `cas_url` 은 리다이렉트 없는 주소(`http`→`https` 전환 포함)로 지정하십시오.
+- 요청의 `User-Agent` 가 `int2nexus-sdk/0.1.12 python-requests/<버전>` 으로 시작합니다(서버 요청 로그의 `ua`).
+- 인자·환경변수로 준 CAS 자격증명이 `InvalidAccessKeyId` 로 거절되면 만료·폐기를 가리키는 안내가 붙습니다.
+
+위 변경 말고는 `0.1.11` 과 같습니다.
+
+**필요한 서버 버전**
+
+```
+기능                       nexus-server           cas-server
+STS 모드                   무관 (아래)             이미지 0.1.28 이상 (차트 0.1.35 이상)
+                                                  auth.oidc.issuers · secrets.secretMasterKey 설정
+User-Agent                 무관                   무관
+InvalidAccessKeyId 안내     무관                   무관
+그 밖의 기능               SDK 0.1.11 과 같음      SDK 0.1.11 과 같음
+```
+
+- STS 모드는 CAS 자격증명을 nexus 에서 받지 않습니다. nexus 연결은 로그인 방식이 요구하는 버전을 따릅니다(`robot_token=` 은 appVersion `0.1.10` 이상).
+- SDK `0.1.12` 는 서버 `0.1.12` 에서 더해진 경로(`GET /datasets/count`, 토큰 만료 단축)를 부르지 않습니다. 서버와 SDK 를 올리는 순서는 무관합니다.
+
 ## 0.3.8
 
 image: `int2jieun/nexus-server:0.1.10` → `0.1.11`
