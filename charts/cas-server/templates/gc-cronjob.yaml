@@ -31,8 +31,8 @@
 {{- fail "gc.phases 에 orphan 이 없습니다. 이 이미지부터 회수 후보 큐를 확인하는 단계가 orphan 이고, 큐를 비우는 경로가 그것뿐입니다 — 빼면 회수가 돌지 않을 뿐 아니라 후보가 삭제 1 건당 1 행씩 계속 쌓입니다. gc.fullSweep 은 대신이 되지 않습니다(그쪽은 sweep 만 돕니다). 회수를 아예 돌리지 않으실 의도라면 gc.enabled: false 로 두십시오." }}
 {{- end }}
 {{- /*
-  가드 2 — `sweep` 이 어느 Job 에서도 돌지 않는 조합. 기본값(빈 gc.phases)에 sweep 이
-  없으므로 fullSweep 을 켜지 않으면 전량 스캔이 사라진다.
+  가드 2 — `sweep` 이 어느 Job 에서도 돌지 않는 조합. gc.phases 를 비우면(서버 기본값)
+  sweep 이 없으므로 fullSweep 을 켜지 않으면 전량 스캔이 사라진다.
 
   fullSweep 을 기본으로 켜지 않는 이유: 이 스캔은 무겁고 도는 시각이 결정적이라,
   기본으로 켜면 아무도 고르지 않은 시각에 생긴다.
@@ -89,7 +89,24 @@ spec:
           # 돌아 IRSA/Workload Identity 애노테이션이 한쪽에만 걸린다.
           serviceAccountName: {{ include "cas-server.serviceAccountName" $ }}
           # 이 Job은 GC 엔드포인트를 curl로 치는 것뿐이다. 쿠버네티스 API를 부르지 않는다.
+          #
+          # **Deployment 와 따로 끌 수 있다.** jwksAuth: serviceaccount 때문에 서버 쪽
+          # automountToken 을 켜야 하는 배포에서, 토큰이 필요 없는 이 Job 까지 함께
+          # 켜지는 것을 막는 자리다. 비워 두면(기본값 null) serviceAccount.automountToken
+          # 을 그대로 따른다 — 기존 배포의 렌더 결과가 바뀌지 않는다.
+          #
+          # **`default` 로 쓰지 말 것.** 그것은 `false` 를 빈 값으로 보아 서버 쪽 `true` 를
+          # 따라가게 만든다 — 이 키가 존재하는 이유(끄기)가 그대로 사라진다. nil 만
+          # 가르는 `kindIs "invalid"` 여야 한다.
+          #
+          # `dig` 도 쓰지 않는다. 동작은 같지만 `scripts/check-unrendered-values.py` 가
+          # `.Values.gc.automountToken` 이라는 참조를 못 봐서, values 에 선언된 이 키를
+          # **「설정해도 무시됨」으로 잘못 신고한다**(실측). 검사기가 읽는 형태로 적는다.
+          {{- if kindIs "invalid" $.Values.gc.automountToken }}
           automountServiceAccountToken: {{ $.Values.serviceAccount.automountToken }}
+          {{- else }}
+          automountServiceAccountToken: {{ $.Values.gc.automountToken }}
+          {{- end }}
           # 위 backoffLimit 참고. OnFailure 로 두면 재시작이 막히지 않는다.
           restartPolicy: Never
           containers:

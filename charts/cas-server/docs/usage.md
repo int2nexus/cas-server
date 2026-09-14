@@ -51,7 +51,7 @@ secrets:
   secretMasterKey: "<openssl rand -hex 32 의 출력(64자 Hex)>"
   rootAccessKeyId: "int2cas-root"             # 최고 관리자 Access Key ID. auth 를 켜면 필수
   rootSecretKey: "<최고 관리자 Secret Key>"    # auth 를 켜면 필수
-  gcToken: "<GC CronJob 용 Bearer 토큰>"       # 비우면 GC 의 Bearer 경로가 닫힌다
+  gcToken: "<GC CronJob 용 Bearer 토큰>"       # auth 를 켠 배포에서 비우면 GC 의 Bearer 경로가 닫힌다(NoAuth 면 열려 있다)
 
 # CAS 서버 인증 동작 설정.
 auth:
@@ -149,7 +149,7 @@ root 키는 전부 열립니다. 권한이 없는 화면은 탭이 표시되지 
 
 **앞의 두 줄은 이미지 `0.1.28` 이상입니다.** 그 이하에서는 `/_api/*` 가 유효한 서명만
 보고 정책을 보지 않아, 정책이 하나도 없는 키로도 이 화면들이 열립니다. 올리신 뒤 화면이
-비어 보이면 그 키의 정책을 먼저 보십시오 — 위 "5. 액션 목록" 의 `ListObjects` 항목에
+비어 보이면 그 키의 정책을 먼저 보십시오 — 아래 "5. 액션 목록" 의 `ListObjects` 항목에
 `prefix` 규칙이 있습니다.
 
 `secrets.gcToken` 과 `auth.metricsToken` 은 GC CronJob 과 스크레이프 용입니다 — 콘솔은
@@ -235,8 +235,9 @@ auth 를 켠 배포에서 root 는 필수 부트스트랩 신원이라, 비활�
 
 **`CopyObject` 는 `authz` 로그 줄을 둘 남깁니다.** 요청은 하나인데 판정이 둘이기
 때문입니다 — 대상 `PutObject`, 이어서 소스 `GetObject` 입니다. 로그를 메서드별로
-집계하시면 **`PUT` 인데 `action=GetObject` 인 줄**이 그만큼 나오는데, 그 건수가 곧
-`CopyObject` 요청 수입니다.
+집계하시면 **`PUT` 인데 `action=GetObject` 인 줄**이 그만큼 나오는데, 그 건수는 **대상
+판정을 통과한** `CopyObject` 요청 수입니다. 대상 `PutObject` 가 거절되면 그 자리에서 끝나
+소스 판정 줄은 남지 않습니다.
 
 혼동하기 쉬운 두 경로를 갈라 둡니다. **중복 확인(`x-cas-hash`) 헤더가 붙은 `PUT` 은
 판정이 `PutObject` 하나뿐입니다** — blob 존재 확인은 인가와 무관한 내부 조회라 판정을
@@ -409,8 +410,7 @@ spec:
 
 ```
 expirationSeconds  회전 직전 잔여      판정
-3607 (미지정 기본)  ~721 초            900 미만 — 회전 경계에서 간헐적으로 400
-3600               ~720 초            900 미만 — 같음
+3600 (미지정 기본)  ~720 초            900 미만 — 회전 경계에서 간헐적으로 400
 7200               ~1440 초           안전
 ```
 
@@ -570,7 +570,9 @@ print(resp["ResponseMetadata"]["HTTPHeaders"].get("x-cas-already-existed"))
 ### 업로드 최적화 — x-cas-hash 헤더
 
 파일의 BLAKE3 hash를 미리 알고 있는 경우 `x-cas-hash` 헤더로 전달하면, 중복 파일일 때
-서버가 **본문을 읽지 않고** 즉시 완료합니다.
+서버가 **본문을 읽지 않고** 즉시 완료합니다. 백엔드를 여럿 둔 배포에서 버킷을 백엔드에
+핀하지 않았으면 이 건너뜀은 보장되지 않습니다 — 그 요청에 배정된 백엔드에 블롭이 없으면
+본문을 읽어 씁니다.
 
 > **이 헤더는 무결성 검사가 아닙니다.** 그 해시의 블롭이 이미 있으면 서버는 본문을 읽지
 > 않으므로, 본문이 해시와 달라도 `200` 이고 이후 `GET` 은 먼저 저장돼 있던 내용을
@@ -1068,8 +1070,8 @@ GC가 미완료 멀티파트 업로드를 만료로 보는 기준은 `config.mul
 `/_api/backends`, `/_api/blobs/{hash}`, `/_api/whoami`, `/_api/config-effective` 에
 핸들러가 붙지 않습니다.
 응답 코드는 인증 설정에 따라 갈립니다 —
-인증이 꺼져 있으면 `404`, 켜져 있으면 인증 미들웨어가 라우팅보다 먼저 걸러 `403`입니다.
-**어느 쪽이든 유효한 자격증명으로도 응답하지 않습니다.**
+인증이 꺼져 있으면 전부 `404` 입니다. 켜져 있으면 `/_ui` 는 `404`, 나머지는 자격증명이
+없으면 `403`, 유효한 서명이면 `404` 입니다. **어느 쪽이든 핸들러는 돌지 않습니다.**
 
 `/_api/gc/*`와 `/_internal/*`은 별도 라우터에 있어 남으므로 **GC CronJob은 그대로
 동작합니다.**
@@ -1124,7 +1126,7 @@ curl -s http://localhost:8080/_internal/metrics \
 지표는 각각 그것을 켠 배포에만 등록됩니다. 전체 목록과 타입·단위, 각 값이 무엇을 보는지
 (특히 `cas_db_pool_*` 가 어느 풀을 보고하는지), 그리고 각 시리즈가 나타나는 시점은 차트
 README 의 "메트릭 스크레이프" 절에 표로 정리했습니다.
-`cas_gc_last_*` 안에서만 라벨이 갈립니다 — `ran_at_seconds`·`duration_ms`·`reclaimed_blobs`
+`cas_gc_last_*` 안에서는 라벨 유무가 갈립니다 — `ran_at_seconds`·`duration_ms`·`reclaimed_blobs`
 **셋**에 `phase` 가 붙고, **`cas_gc_last_status` 와 `cas_gc_last_errors` 에는 라벨이
 없습니다.** 같은 엔드포인트에
 `axum_http_*` 3종이 함께 나오고, `axum_http_requests_total` 과 `_duration_seconds` 는

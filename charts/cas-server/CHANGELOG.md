@@ -86,24 +86,91 @@ cas-server 는 기동 시 `sqlx::migrate!` 로 `migrations/` 를 적용합니다
 
 ## 0.1.37
 
-image: `int2jieun/cas-server:0.1.29` (변경 없음)
+image: `int2jieun/cas-server:0.1.30`
+digest: `sha256:da95c5f70d5b31de43d350ebc55895d6bc9f79d552cf6c98eaa6c1d5e761a6d2`
 
-**동작 변경** — 설치 후 안내(NOTES)의 Pod 조회 명령이 `nameOverride` 를 반영합니다. 그 값을 쓰는 배포에서는 지금까지 그 명령이 조용히 빈 결과였습니다. 렌더되는 쿠버네티스 오브젝트는 그대로입니다
-**마이그레이션** — 없음. 롤백 하한은 `0.1.28` 그대로입니다
-**설정 키** — 없음
+**동작 변경** — 설치 후 안내(NOTES)의 Pod 조회 명령이 `nameOverride` 를 반영합니다. 그 값을 쓰는 배포에서는 지금까지 그 명령이 조용히 빈 결과였습니다. 이미지의 요청 판정·응답과 렌더되는 쿠버네티스 오브젝트는 그대로입니다
+**마이그레이션** — 없음. **롤백 하한은 `0.1.28` 그대로입니다**
+**설정 키** — `gc.automountToken` 을 추가했습니다 (기본 `null` = `serviceAccount.automountToken` 상속)
 
-**주의** — **`x-cas-hash` 를 실은 업로드는 종단 무결성 대조를 받지 않습니다.** 그 해시의
-블롭이 이미 있으면 서버가 본문을 읽지 않고 완료하므로 대조할 바이트가 없습니다. 처음 보는
-해시일 때만 BLAKE3 로 대조합니다(불일치 시 `InvalidDigest`). 중복률이 높은 배포일수록 그
-경로가 많으므로, `config.integrityCheck` 로 그 업로드까지 덮으시려면 클라이언트가 체크섬을
-함께 선언해야 합니다. README 「종단 무결성 대조」에 적었습니다.
+**⑴ `403` 의 원인을 가르는 지표가 생겼습니다. `auth.anonymousGet` 을 내려도 사라지지
+않습니다.**
+
+`cas_anonymous_get_total` 은 설계상 `anonymousGet` 을 내리면 **시리즈째 사라집니다**
+(존재가 「익명 읽기가 열려 있다」를 뜻해야 하기 때문입니다). 그래서 닫은 뒤 남은 `403` 을
+원인별로 가를 수단이 없었습니다. 아래 셋은 **설정과 무관하게 기동 직후 `0` 으로 등록**되며
+사라지지 않습니다.
+
+```
+cas_authn_fail_total{plane,reason}          인증 실패. plane 은 s3·admin·gc
+cas_authz_deny_total{action}                인증은 통과했고 정책이 막음
+cas_sigv4_payload_hash_fallback_total{plane}  아래 ⑵
+```
+
+`axum_http_requests_total{status="403"}` 하나에 뭉쳐 보이던 「자격증명이 없다」·「폐기한
+키를 아직 쓴다」·「presigned 가 만료됐다」·「정책이 좁다」가 이것으로 갈립니다. 쿼리와
+증상별 대응은 README 「`anonymousGet` 을 끈 뒤 남은 `403` 을 가르는 방법」에 있습니다.
+맞대실 때 둘을 빼십시오 — `reason="malformed_header"` 는 `400` 이고, STS(`POST /`)의 `403`
+은 이 둘이 아니라 `cas_sts_reject_total{reason}` 에 잡힙니다. GC CronJob 의 Bearer 토큰이
+틀린 것은 `401` 이라 여기 들어오지 않습니다.
+
+**403 을 받은 요청자는 로그로 찾습니다.** 지표에는 출발지를 라벨로 두지 않습니다(값이
+끝없이 늘어나기 때문입니다). 대신 `authn fail` · `admin authn fail` · `anonymous GET` 로그
+줄에 **`peer`(TCP 출발지)와 `ua`(User-Agent)** 를 실었고, `RUST_LOG=info` 에서 보입니다.
+정책 거절 줄에는 둘이 없고 `key_id` 로 찾습니다. `peer` 는 서버가 받은 연결의 출발지라
+**NAT·프록시를 거치면 그 주소**입니다(README 같은 절).
+
+**⑵ `x-amz-content-sha256` 없이 서명한 요청을 셉니다.** 서버는 그 헤더가 없으면 payload
+hash 를 `UNSIGNED-PAYLOAD` 로 폴백합니다. 그 폴백에 **기대어 통과한** 요청이
+`cas_sigv4_payload_hash_fallback_total` 입니다. 지금은 세기만 하고 동작은 그대로입니다 —
+0 이 아닌 배포가 있는지 보고 나서 거절 여부를 정하겠습니다. presigned 는 규격상 그 헤더가
+없으므로 세지 않고, 헤더가 없어 서명이 어긋난 요청은 이미 `403` 이라 세지 않습니다.
+
+**⑶ 콘솔 Keys 탭이 템플릿 키에 매핑된 STS 신원을 함께 보여 줍니다.** 「이 템플릿을 지워도
+되나」를 키 목록에서 바로 판단하실 수 있습니다 — 지금까지는 관리 API 둘(`access-keys` 와
+`sts-identities`)을 `template_key_id` 로 손수 조인해야 했습니다. 매핑이 하나도 없는 템플릿
+키와, **쓸 수 없는 템플릿을 가리키는 매핑**도 함께 표시됩니다 — 그 신원의 STS 요청은
+`template_unusable` 로 거절됩니다. 폐기된 템플릿을 가리키는 매핑은 기본 화면(활성만)에서
+목록 위 경고로, 만료된 템플릿은 그 카드의 신원 칸에서 나옵니다. 서버 응답과 권한은
+그대로이고 화면만 바뀝니다.
+
+**⑷ GC CronJob 의 토큰 자동 마운트를 따로 끌 수 있습니다.** `gc.automountToken` 입니다.
+`auth.oidc.issuers` 에 `jwksAuth: serviceaccount` 를 쓰면 서버 쪽은
+`serviceAccount.automountToken: true` 가 필요한데, `curl` 로 GC 엔드포인트를 치기만 하는
+CronJob 까지 함께 켜졌습니다. **기본값 `null` 은 지금까지와 같이
+`serviceAccount.automountToken` 을 따릅니다** — 기존 배포의 렌더 결과는 바뀌지 않습니다.
+`false` 와 `null` 은 다릅니다(`false` 는 명시적으로 끄는 것입니다). `fullSweep` CronJob
+에도 걸립니다.
+
+**주의** — **`0.1.36` 의 README·`values.yaml` 은 「`x-cas-hash` 를 준 업로드는 BLAKE3 로
+이미 대조됩니다」라고 적었습니다. 중복 적중에서는 사실이 아닙니다.** `x-cas-hash` 를
+선언했고 그 해시의 블롭이 이미 있으면(DB 기록과 스토리지 양쪽), 서버는 본문을 읽지 않고
+완료하므로 BLAKE3 도 `config.integrityCheck` 의 대조도 돌지 않습니다. 처음 보는 해시면
+본문을 읽으므로 둘 다 돕니다. `x-cas-hash` 를 보내지 않는 업로드는 중복제거되어도 대조가
+돌므로, `cas_blob_dedup_total` 을 「대조가 건너뛰어지는 비율」로 읽으시면 안 됩니다. 판정은
+`storage.mode` 와 무관합니다(로컬 FS 는 파일, S3 는 `HEAD`). 건너뛰는 업로드까지 덮으시려면
+클라이언트가 체크섬을 함께 선언해야 합니다. README 「종단 무결성 대조」를 고쳤습니다.
+
+**주의** — **STS 컷오버 게이트를 `cas_sts_issue_total{result="issued"}` 로 만들지
+마십시오.** 같은 `(issuer, subject)` · 같은 템플릿에 살아 있는 세션이 있으면 서버가 그것을
+그대로 돌려주고 `result="reused"` 로 셉니다. 워크로드가 정상 동작 중인데도 `issued` 는
+움직이지 않으므로 **정상을 실패로 읽게 됩니다.** 성공 신호는 `issued + reused` 입니다.
+재사용은 이미 README 에 적혀 있던 동작(남은 수명 900 초 초과)이고, 그것이 컷오버 판정에
+주는 영향을 처음 적습니다. 차트·이미지 동작은 그대로입니다.
+
+**주의** — **`serviceAccount.automountToken` 의 설명이 틀린 말을 하고 있었습니다.**
+`templates/deployment.yaml` 주석(`helm get manifest` 로 보입니다)과 `values.yaml`·README 가
+「이 서버는 쿠버네티스 API 를 부르지 않는다 … IRSA/Workload Identity 를 쓰는 경우에만
+true 가 필요하다」로 남아 있었습니다. `auth.oidc.issuers` 의 `jwksAuth: serviceaccount` 도
+`true` 가 필요한 경우입니다. 설명만 바뀌고 값은 그대로입니다.
 
 **주의** — `aws-chunked` 요청의 **트레일러 체크섬은 이미지 `0.1.29` 부터 대조됩니다.**
-README 의 lifecycle 절이 「읽고 버립니다」로 남아 있었습니다. 청크 서명은 검증하지 않습니다.
+`0.1.36` README 의 lifecycle 절이 「읽고 버립니다」로 남아 있었습니다. 청크 서명은 검증하지 않습니다.
 
 **주의** — `axum_http_requests_pending` 의 라벨은 **`endpoint`/`method` 뿐입니다.**
 `status` 로 묶는 대시보드 쿼리는 빈 결과가 됩니다. `axum_http_requests_total` 과
-`_duration_seconds` 에는 `status` 가 붙습니다.
+`_duration_seconds` 에는 `status` 가 붙습니다. `0.1.36` README 의 지표 절은 셋 다 `status` 를
+단다고 적었습니다.
 
 **주의** — **목록 페이지네이션은 V2 형태만 지원합니다.** 응답이 `NextContinuationToken` 만
 싣고 `NextMarker` 를 싣지 않으며 요청의 `marker` 도 읽지 않으므로, `ListObjects`(V1)로

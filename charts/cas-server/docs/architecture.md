@@ -118,7 +118,7 @@ backup / old/q1.pdf                           │
 
 ```
 삭제 요청
-  → 오브젝트에 삭제 마커 기록 (즉시 접근 불가)
+  → 오브젝트를 소프트 삭제 (버저닝 버킷은 삭제 마커 기록, 즉시 접근 불가)
   → 해당 블롭을 참조하는 오브젝트가 0개가 된 경우
       → GC 실행 시 물리 파일 삭제
 ```
@@ -164,6 +164,11 @@ PUT /{버킷}/{키}
 > 주장대로 움직입니다.** 그 해시의 블롭이 이미 있으면 **본문을 읽지 않고** 그 블롭에 키를
 > 연결합니다(`x-cas-already-existed: true`). 본문이 그 해시와 달라도, 본문이 비어 있어도
 > `200` 이고 이후 `GET` 은 **먼저 저장돼 있던 내용**을 돌려줍니다.
+>
+> 「이미 있다」는 **그 요청에 배정된 백엔드**를 기준으로 봅니다. 백엔드를 여럿 둔 배포에서
+> 버킷을 백엔드에 핀하지 않았으면 배정이 요청마다 달라질 수 있어, 다른 백엔드에만 블롭이
+> 있을 때는 본문을 읽어 씁니다. 이 건너뜀은 백엔드가 하나이거나 버킷이 핀된 경우에만
+> 보장됩니다.
 >
 > 해시가 처음 보는 값일 때만 서버가 본문을 해싱해 대조하고, 그때 다르면 `400 InvalidDigest`
 > 입니다. 즉 **이 헤더는 전송을 줄이는 수단이지 무결성 검사가 아닙니다.** 해시를 잘못
@@ -386,7 +391,7 @@ SigV4 분기가 없어 root 키로도 `401` 이고, 토큰이 비면 auth 를 �
 관리 평면의 SigV4 인가에는 이미지 `0.1.21` 이상이 필요합니다.
 
 SigV4 를 켜면 데이터 API 뿐 아니라 **관리 콘솔이 쓰는 조회 API(`/_api/*`)도 같은 서명을
-요구합니다.** 자격증명 없이 호출하면 `403` 입니다.
+요구합니다.** 자격증명 없이 호출하면 `403` 입니다(`/_api/gc/*` 는 GC 평면이라 `401`).
 
 **그리고 데이터 평면과 같은 인가를 받습니다**(이미지 `0.1.28` 이상). 버킷 안을 보는 둘은
 `ListObjects`, 버킷 경계를 넘는 넷(`buckets` · `stats` · `backends` · `config-effective`)과
@@ -504,11 +509,16 @@ CronJob 은 그대로 동작합니다.
 
 ## 6. 에러 코드 및 대응
 
-데이터 평면과 `/_api/*` 의 에러는 S3 표준 XML 형식으로 반환됩니다. **관리 평면의 `401`
-만 예외로, 본문이 XML 이 아니라 `Unauthorized` 문자열입니다** — `/_internal/metrics`,
-GC 의 토큰 경로, 그리고 **`/_admin/*`** 입니다. `/_admin/*` 은 SigV4 가 아닌 요청이 bearer
-게이트로 가는데 그 평면이 받는 bearer 토큰이 없어 같은 형태로 닫힙니다. XML 파싱으로
-오류를 다루는 자동화는 이 셋을 예외로 두어야 합니다.
+데이터 평면과 `/_api/*` 의 에러는 S3 표준 XML 형식으로 반환됩니다. **XML 이 아닌 예외가
+있습니다.** XML 파싱으로 오류를 다루는 자동화는 아래를 예외로 두어야 합니다.
+
+- 관리 평면의 `401` — 본문이 `Unauthorized` 문자열입니다. `/_internal/metrics`, GC 의 토큰
+  경로, 그리고 `/_admin/*`(SigV4 가 아닌 요청이 bearer 게이트로 가는데 그 평면이 받는
+  bearer 토큰이 없어 같은 형태로 닫힙니다)
+- `408` — 요청 시한 초과. 본문이 비어 있습니다
+- `413` — 업로드 크기 상한 초과. 본문이 `length limit exceeded` 문자열입니다
+- `410` — `/_api/gc/orphan-count`. 본문이 JSON 입니다
+- STS(`POST /`) 오류 — XML 이지만 S3 의 `<Error>` 가 아니라 `<ErrorResponse>` 형태입니다
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -542,7 +552,7 @@ GC 의 토큰 경로, 그리고 **`/_admin/*`** 입니다. `/_admin/*` 은 SigV4
 | 409 | `Conflict` | 같은 `(issuer, subject)` 의 STS 신원 매핑이 이미 있음. 매니페스트를 재적용하는 구성이면 이 코드를 정상으로 다루십시오 |
 | 409 | `GcAlreadyRunning` | GC 가 이미 실행 중. 이미지 `0.1.26` 이상에서는 **다른 파드가 락을 쥐고 있어 이 호출이 아무것도 시작하지 못한 경우**도 이 코드입니다 (그 미만은 `202` 였습니다) |
 | 412 | `PreconditionFailed` | `If-None-Match: *` 인데 객체가 이미 있음 |
-| 413 | `EntityTooLarge` | `config.maxUploadSizeBytes` 초과 |
+| 413 | — | `config.maxUploadSizeBytes` 초과. 본문은 XML 이 아니라 `length limit exceeded` 문자열입니다 |
 | 500 | `InternalError` | 서버 내부 오류 (DB 오류 포함) |
 | 501 | `NotImplemented` | 지원하지 않는 파라미터 조합 (예: ListObjectVersions + delimiter) |
 | 503 | `ServiceUnavailable` | 스토리지 백엔드 접근 불가 — 운영팀 확인 필요 (내부 오류 타입명은 `BackendUnavailable`) |
@@ -569,6 +579,7 @@ WARN cas_server::auth::middleware: authn fail path=/ reason="signature_mismatch"
 | `unknown_key` | 그런 키가 없음 | 키 발급 여부 확인 |
 | `key_inactive` | 키가 비활성 | 키 재활성화 |
 | `key_expired` | 키 유효기간 만료 | 키 재발급 |
+| `key_is_template` | 템플릿 키로 서명함 (템플릿 키는 인증에 쓸 수 없음) | 그 템플릿으로 받은 STS 세션 자격증명이나 static 키를 쓰도록 클라이언트 수정 |
 | `secret_undecryptable` | 저장된 시크릿 복호화 실패 | **서버 문제** — 마스터 키(`secrets.secretMasterKey`)가 바뀌었는지 확인 |
 | `clock_skew` | 요청 시각 차이 초과 | 클라이언트 시각 동기화 |
 | `presigned_expired` | presigned URL 만료 | URL 재발급 |
@@ -598,7 +609,7 @@ aws s3 cp ./large-file.bin s3://archives/large-file.bin \
 
 **흐름 요약**:
 1. `CreateMultipartUpload` — Upload ID 발급
-2. `UploadPart` — 파트별 전송 (각 파트 최소 5 MiB, 마지막 파트 제외)
+2. `UploadPart` — 파트별 전송 (S3 규약은 마지막을 뺀 파트 최소 5 MiB. 서버는 이 하한을 검사하지 않습니다)
 3. `CompleteMultipartUpload` — 파트 조합 및 블롭 등록
 4. 미완료 업로드는 `AbortMultipartUpload` 로 정리
 

@@ -112,8 +112,8 @@ readinessProbe 예산 검증 — 렌더 시점에 막는다.
 
 주의: create: false + name: "" 이면 "default" SA 로 돌아가고, 그 SA 는 보통
 토큰을 자동 마운트한다. 즉 **아무것도 설정하지 않은 상태가 더 느슨한 쪽**이다.
-이 파드는 쿠버네티스 API 를 부르지 않으므로 create: true 로 전용 SA 를 만들고
-automountToken: false 를 쓰는 편이 안전하다.
+토큰이 필요한 구성(IRSA/Workload Identity, auth.oidc.issuers 의 jwksAuth: serviceaccount)이
+아니면 create: true 로 전용 SA 를 만들고 automountToken: false 를 쓰는 편이 안전하다.
 */}}
 {{- define "cas-server.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create }}

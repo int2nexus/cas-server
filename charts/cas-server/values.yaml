@@ -33,7 +33,7 @@ image:
   #  - 해시별 쓰기 락 테이블의 즉시 회수. GC 실행 시에만 회수되므로,
   #    gc.enabled: false 배포에서는 유휴 바닥값이 상승한다 (gc 섹션 주석 참고)
   #  - auth.metricsToken. 그 토큰으로 스크레이프하면 401 이 된다
-  tag: "0.1.29"
+  tag: "0.1.30"
   # digest 로 핀하려면 여기에 넣으십시오 (`sha256:...`). 값이 있으면 tag 대신 이것이
   # 쓰이고, 렌더 결과가 `repository@sha256:...` 가 됩니다.
   #
@@ -193,9 +193,10 @@ config:
   #   410   /_api/gc/orphan-count  (폐기 완료 — 이미지 0.1.29 부터)
   #   200   /_internal/health  /_internal/metrics
   #
-  # 막힌 쪽의 응답 코드는 인증 설정에 따라 갈린다 — 인증이 꺼져 있으면 404, 켜져 있으면
-  # 인증 미들웨어가 라우팅보다 먼저 걸러 403 이다. 어느 쪽이든 유효한 자격증명으로도
-  # 응답하지 않는다.
+  # 막힌 쪽의 응답 코드 — /_ui 는 어느 모드든 404. /_api/* 는 인증이 꺼져 있으면 404,
+  # 켜져 있으면 서명 없는 요청이 403, 유효한 서명이면 404 다. 어느 쪽이든 핸들러는
+  # 돌지 않는다. (위 200 목록의 /_internal/metrics 는 metricsToken 이 있으면 그 토큰을
+  # 요구한다.)
   #
   # 404 로 끝나는 것도 의도한 동작이다. 경로 등록을 통째로 빼면 /_api/foo 가 데이터
   # 평면의 catch-all 에 매치되어 bucket="_api" 로 들어간다.
@@ -415,9 +416,10 @@ auth:
 # **노출 주의.** NodePort 는 **클러스터의 모든 노드 x nodePort** 를 표면으로 만든다 —
 # 파드가 없는 노드 IP 에서도 응답한다.
 #
-# auth 를 켠 배포에서 무인증으로 남는 것은 /_ui 와 /_api/auth-mode 둘이고, 그것을 끄는
-# 설정 키는 config.consoleEnabled 다. 나머지 /_api/* 는 SigV4 서명을 요구한다.
-# auth 를 켜지 않으면 그 전부가 무인증이다.
+# auth 를 켠 배포에서도 인증 없이 열리는 경로가 있다 — 전체 목록은 README 「노출 주의」
+# 표다(차트 기본값 anonymousGet: true 면 객체 GET/HEAD 도 여기 든다). 그중 콘솔 표면
+# (/_ui, /_api/auth-mode)을 없애는 키는 config.consoleEnabled 다.
+# auth 를 켜지 않으면 데이터 평면과 /_api/* 가 무인증이다.
 #
 # /_api/stats 같은 전 테이블 집계가 그 표면에 있다. 상한
 # (config.statsStatementTimeoutSecs, 기본 30초)에 걸리기 전까지는 DB 부하를 만든다.
@@ -577,8 +579,8 @@ serviceAccount:
 
   # 토큰 자동 마운트. **기본값 false 다.**
   #
-  # 이 서버는 쿠버네티스 API 를 부르지 않는다. 마운트된 토큰은 컨테이너가 뚫렸을 때
-  # 그대로 API 접근 수단이 되므로 붙일 이유가 없다. 특히 이 배포는 auth.anonymousGet
+  # 마운트된 토큰은 컨테이너가 뚫렸을 때 그대로 API 접근 수단이 되므로, 아래 경우가
+  # 아니면 붙이지 않는다. 특히 이 배포는 auth.anonymousGet
   # 이 기본 true 이고 NodePort 로 노출되므로 표면을 늘리지 않는 편이 낫다.
   #
   # true 가 필요한 경우 둘:
@@ -648,6 +650,22 @@ serviceAccount:
 # 이미지 0.1.18 이상은 요청이 끝날 때 즉시 회수하므로 이 완화가 필요 없다.
 gc:
   enabled: true
+
+  # 이 CronJob 파드에만 걸리는 토큰 자동 마운트. **비워 두면(null)
+  # serviceAccount.automountToken 을 그대로 따른다** — 기본값이 그것이라 지금까지의
+  # 렌더 결과가 바뀌지 않는다.
+  #
+  # 갈라 두는 이유 하나다 — auth.oidc.issuers 에 jwksAuth: serviceaccount 를 쓰면
+  # 서버 쪽은 automountToken: true 가 필요한데, 이 Job 은 GC 엔드포인트를 curl 로
+  # 칠 뿐이라 쿠버네티스 API 를 부르지 않는다. 그때 여기에 false 를 적으면 서버만
+  # 켜고 이 Job 은 끈 채로 둘 수 있다.
+  #
+  # **`false` 와 `null` 은 다르다.** 상속 판정을 `default` 로 쓰면 `false` 가 빈 값으로
+  # 취급되어 서버 쪽 `true` 를 따라가 버린다 — 템플릿이 `kindIs "invalid"` 로 nil 만
+  # 가르는 이유다.
+  #
+  # 같은 자리가 fullSweep CronJob 에도 적용된다(같은 템플릿이다).
+  automountToken: null
   # cron 표현식 — 분 시 일 월 요일(0=일요일).
   # **UTC 다** (차트가 timeZone 을 렌더하지 않는다). 기본값은 일요일 02:00 UTC 이고
   # UTC+9 에서는 일요일 오전 11 시다.
@@ -657,8 +675,8 @@ gc:
 
   # 이 CronJob 이 돌릴 GC 단계. 쉼표로 구분.
   #
-  # 이미지 0.1.20 이상이 이 파라미터를 해석하고, sweep 은 0.1.25 이상이다. 낮은
-  # 이미지에 보내면 서버가 400 으로 거절하고 그 Job 이 실패한다. 차트가 image.tag 를
+  # 이미지 0.1.20 이상이 이 파라미터를 해석하고, sweep 은 0.1.25 이상이다. 0.1.20~0.1.24
+  # 에 sweep 을 보내면 서버가 400 으로 거절하고 그 Job 이 실패한다. 차트가 image.tag 를
   # 핀하므로 그 값을 덮어 쓰는 경우에만 해당한다.
   #
   #   multipart  만료된 미완료 멀티파트의 파트 회수

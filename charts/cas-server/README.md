@@ -112,7 +112,8 @@ storage:
 - **`/_api/backends` 의 `endpoint_url` 은 관리 주체에게만 채웁니다** — root 키 또는
   `cas:ManageAccessKeys` 를 가진 키. 그 밖의 키에는 `null` 입니다.
 
-`auth` 를 켜지 않으면 데이터 평면까지 포함해 위 전부가 무인증입니다.
+`auth` 를 켜지 않으면 데이터 평면과 `/_api/*` 가 무인증입니다. GC·metrics 는 각 토큰을
+설정했을 때만 그 토큰을 요구하고, `/_admin/*` 와 STS 는 마운트되지 않습니다.
 등록되지 않은 `/_api/*` 경로는 `404` 입니다.
 
 `service.type` 기본값이 `NodePort` 이므로 표면은 **클러스터의 모든 노드 x `nodePort`** 입니다 —
@@ -126,6 +127,12 @@ storage:
 `/_api/backends`)는 로그인 성공 뒤에 부릅니다. **다만 인증이 꺼진 NoAuth 모드에서는 여는
 즉시 그 둘이 나가고, 어느 모드든 `/_api/stats` 를 직접 호출하는 것은 막히지 않습니다.**
 그 경로의 비용과 격리 장치는 아래 「집계 조회 격리」 절에 있습니다.
+
+## PostgreSQL 버전
+
+차트는 PostgreSQL 을 배포하지 않습니다(`externalDatabase` 로 기존 것을 가리킵니다).
+**서버가 시험되는 메이저는 16 과 18 입니다** — CI 가 두 버전에서 전 스위트를 돕니다.
+17 은 그 사이라 돌 것으로 보지만 시험하지 않습니다. 16 이 하한입니다.
 
 ## 주요 values
 
@@ -152,7 +159,8 @@ storage:
 | `auth.cacheTtlSecs` | `10` | 자격증명 캐시 TTL. 폐기된 키·좁힌 정책이 실제로 막히기까지의 지연. 유출 대응 시 `0` |
 | `auth.oidc.issuers` | `[]` | STS(`POST /`) 발급자 목록. **비우면 라우트를 마운트하지 않습니다.** 이미지 `0.1.28` 이상 (아래 「STS 임시 자격증명」) |
 | `serviceAccount.create` | `false` | `true` 면 차트가 ServiceAccount 를 만든다. `false` 면 기존 것을 쓴다 |
-| `serviceAccount.automountToken` | `false` | 토큰 자동 마운트. 이 서버는 쿠버네티스 API 를 부르지 않으므로 기본 `false`. IRSA/Workload Identity 를 쓸 때, 그리고 `auth.oidc.issuers` 항목에 `jwksAuth: serviceaccount` 를 쓸 때만 `true` |
+| `serviceAccount.automountToken` | `false` | 토큰 자동 마운트. 마운트된 토큰은 컨테이너가 뚫렸을 때 API 접근 수단이 되므로 기본 `false`. IRSA/Workload Identity 를 쓸 때, 그리고 `auth.oidc.issuers` 항목에 `jwksAuth: serviceaccount` 를 쓸 때만 `true` |
+| `gc.automountToken` | `null` (= `serviceAccount.automountToken` 상속) | GC CronJob 파드에만 걸리는 토큰 자동 마운트. `jwksAuth: serviceaccount` 때문에 서버 쪽을 `true` 로 올린 배포에서, 쿠버네티스 API 를 부르지 않는 이 Job 만 `false` 로 남길 때 씁니다. `fullSweep` CronJob 에도 같이 적용됩니다 (차트 `0.1.37` 이상) |
 | `serviceAccount.annotations` | `{}` | `create: true` 일 때 SA 에 붙일 애노테이션. IRSA · Workload Identity 설정 자리 |
 | `resources.limits.memory` | `6Gi` | OOM 대응으로 올린 값. **당분간 유지할 것** — 하향 전제는 [values.yaml](values.yaml)의 `resources` 주석 참고 |
 | `gc.enabled` | `true` | GC CronJob 활성화. 초기 마이그레이션 중에는 `false` 권장. **이미지 `0.1.17` 이하에서는 끄면 메모리 회수 경로도 사라진다** (아래 참고) |
@@ -236,7 +244,10 @@ kubectl rollout restart -n <namespace> deploy/<fullname>   # 릴리스명이 아
 | `cas_gc_last_status` | gauge | — | `0`=성공 `1`=**실행** 실패 `2`=실행 중. 항목 몇 건이 실패한 실행은 `0` 입니다 — 그 수는 `cas_gc_last_errors` 입니다 (이미지 `0.1.26` 이상). `0.1.25` 이하에서는 `errors > 0` 인 실행도 `1` 이었습니다 |
 | `cas_gc_last_errors` | gauge | 건수 | 마지막 실행이 회수하지 못한 **항목** 수. **이미지 `0.1.26` 에서 새로 생겼습니다** — 그 미만에는 이 지표가 없습니다. 같은 값이 `GET /_api/gc/last-result`·`/history` 의 `errors` 필드로도 나가며, 그 계수가 `0.1.26` 에서 양방향으로 바뀌었습니다(같은 blob 이 두 단계에서 실패해도 1, 그리고 회수 직전 재확인 실패를 새로 셉니다 — CHANGELOG `0.1.33` 절). **재기동 뒤 첫 GC 실행까지 시리즈가 없습니다** |
 | `cas_gc_candidates` / `cas_gc_candidate_bytes` | gauge | 건수 / 바이트 | 회수 후보 큐. GC 실행이 끝난 시점의 값이라 `orphan` 이 큐를 비운 직후를 가리킵니다 |
-| `cas_sts_issue_total{result}` | counter | 건수 | STS 발급. `result` 는 `issued`(새로 발급) · `reused`(살아 있는 세션 재사용). **STS 를 켠 배포에만 나옵니다** (이미지 `0.1.28` 이상) |
+| `cas_authn_fail_total{plane,reason}` | counter | 건수 | **인증에 실패한 요청.** `plane` 은 `s3` · `admin` · `gc`, `reason` 은 `no_credentials` · `unknown_key` · `key_inactive` · `key_expired` · `key_is_template` · `secret_undecryptable` · `malformed_header` · `clock_skew` · `presigned_expired` · `signature_mismatch` · `other`. **어느 설정에도 딸리지 않습니다** — `anonymousGet` 을 내린 뒤 남은 `403` 의 원인을 가르는 지표가 이것입니다 (이미지 `0.1.30` 이상, 아래 참고) |
+| `cas_authz_deny_total{action}` | counter | 건수 | **정책이 막은 요청.** 인증은 통과했고 그 키에 그 액션이 없는 경우입니다. 와이어에서는 위와 똑같은 `403` 이라, 이 축이 없으면 「자격증명을 고칠 일」과 「정책을 넓힐 일」이 한 숫자가 됩니다 (이미지 `0.1.30` 이상) |
+| `cas_sigv4_payload_hash_fallback_total{plane}` | counter | 건수 | `x-amz-content-sha256` **없이** 서명했는데 서버의 부재 폴백 덕분에 통과한 요청. presigned 는 규격상 그 헤더가 없으므로 세지 않습니다 (이미지 `0.1.30` 이상) |
+| `cas_sts_issue_total{result}` | counter | 건수 | STS 발급. `result` 는 `issued`(새로 발급) · `reused`(살아 있는 세션 재사용). **성공 신호는 `issued` 가 아니라 `issued + reused` 입니다** — 살아 있는 세션이 있으면 그것을 그대로 돌려주므로 정상 동작 중에도 `issued` 가 멎어 있을 수 있습니다. **STS 를 켠 배포에만 나옵니다** (이미지 `0.1.28` 이상) |
 | `cas_sts_reject_total{reason}` | counter | 건수 | STS 거절. `reason` 은 `invalid_token` · `expired_token` · `no_mapping` · `template_unusable` · `idp_unavailable` · `validation`. 〃 |
 | `cas_integrity_mismatch_total{source}` | counter | 건수 | 선언 체크섬과 받은 바이트가 다른 건수. `source` 는 `content_sha256` · `trailer_checksum`(바이트가 어긋남) · `trailer_protocol`(`x-amz-trailer` 선언을 어김). **`config.integrityCheck` 가 `off` 가 아닌 배포에만 나옵니다** (이미지 `0.1.29` 이상). `log` 에서 이 값이 곧 `enforce` 의 예상 거절 건수입니다 — 요청당 한 번만 셉니다 |
 | `cas_integrity_unchecked_total{algo,form}` | counter | 건수 | 체크섬이 왔는데 **대조하지 못한** 건수. `algo` 는 `sha1` · `other` 등 닫힌 집합이고 `form` 은 `trailer` · `header` 입니다. **여기 잡히는 것은 거절되지 않습니다** — 거절되는 것은 위의 `cas_integrity_mismatch_total` 입니다. 0 이 아니면 그만큼이 무검사로 통과하고 있습니다 |
@@ -255,6 +266,7 @@ kubectl rollout restart -n <namespace> deploy/<fullname>   # 릴리스명이 아
 | `cas_blob_put_bytes_total` · `cas_blob_dedup_total` · `cas_gc_deleted_blobs_total` · `cas_gc_freed_bytes_total` | 이미지 `0.1.26` 이상에서 기동 직후. 그 미만은 첫 이벤트 뒤 | `0.1.26` 이상에서 걸어도 됩니다 |
 | `cas_anonymous_get_total{reason="unsigned"}` · `{reason="signed_valid"}` | `anonymousGet: true` 이고 이미지 `0.1.26` 이상이면 기동 직후 | 위와 같습니다. 끈 배포에는 나오지 않습니다 |
 | `cas_anonymous_get_total{reason="signed_invalid"}` | 그 원인이 처음 생겼을 때 | **걸지 마십시오** — `cause` 라벨 값이 열려 있어 미리 등록하지 않습니다 |
+| `cas_authn_fail_total{plane,reason}` · `cas_authz_deny_total{action}` · `cas_sigv4_payload_hash_fallback_total{plane}` | 이미지 `0.1.30` 이상이면 기동 직후. **어느 설정에서도 나옵니다** | 걸어도 됩니다. 이 셋은 설정을 따르지 않으므로 부재는 「그 이미지 미만이거나 서버가 이상하다」는 뜻입니다 |
 | `cas_gc_last_ran_at_seconds{phase}` | 기동 시 이력에서 복원 | 걸어도 됩니다. **GC 정지를 보는 알림은 이 값으로 겁니다** |
 | `cas_gc_last_duration_ms{phase}` · `cas_gc_last_reclaimed_blobs{phase}` · `cas_gc_last_status` · `cas_gc_last_errors` | **재기동 뒤 첫 GC 실행까지 없습니다** | **걸지 마십시오** — 재기동마다 울립니다 |
 | `cas_gc_candidates` · `cas_gc_candidate_bytes` | 첫 GC 실행 뒤 | **걸지 마십시오** — 같은 이유 |
@@ -306,6 +318,56 @@ kubectl rollout restart -n <namespace> deploy/<fullname>   # 릴리스명이 아
 
 **풀별 분리는 없습니다** — `cas_db_pool_connections` 로는 집계 격리가 동작하는지 판정할 수
 없습니다. 격리 확인은 "집계 조회 격리" 절의 방법을 쓰십시오.
+
+### `anonymousGet` 을 끈 뒤 남은 `403` 을 가르는 방법 (이미지 `0.1.30` 이상)
+
+`cas_anonymous_get_total` 은 **`auth.anonymousGet: false` 로 내리면 시리즈 자체가
+사라집니다.** 시리즈의 존재가 「익명 읽기가 열려 있다」를 뜻해야 하기 때문인데, 정작 원인을
+알고 싶은 시점은 내린 뒤입니다. 그 자리를 아래 둘이 메웁니다 — **설정과 무관하게 기동 직후
+`0` 으로 등록되므로 사라지지 않습니다.**
+
+```
+cas_authn_fail_total{plane,reason}   인증이 실패했다. reason 이 원인이다
+cas_authz_deny_total{action}         인증은 통과했고 정책이 막았다
+```
+
+`axum_http_requests_total{status="403"}` 하나에 뭉쳐 보이던 것이 이것으로 갈립니다.
+
+| 증상 | 보이는 값 | 고치는 곳 |
+|---|---|---|
+| 자격증명을 배선하지 않은 소비자 | `cas_authn_fail_total{reason="no_credentials"}` | 그 클라이언트에 키(또는 STS)를 줍니다 |
+| 폐기·삭제한 키를 아직 쓰는 클라이언트 | `{reason="unknown_key"}` · `{reason="key_inactive"}` | 그 워크로드를 새 자격증명으로 옮깁니다 |
+| presigned URL 이 만료됐다 | `{reason="presigned_expired"}` | 발급 쪽 만료를 늘리거나 재발급합니다 |
+| 세션 자격증명이 만료됐다 | `{reason="key_expired"}` | 갱신 주기와 `expirationSeconds` 를 봅니다 |
+| 클라이언트 배선(값 잘림·시계) | `{reason="signature_mismatch"}` · `{reason="clock_skew"}` | 그 클라이언트를 고칩니다 |
+| 정책이 좁다 | `cas_authz_deny_total{action="GetObject"}` | 그 키의 정책을 넓힙니다 |
+
+주의: **`malformed_header` 는 `400` 이고, `other` 는 서버 내부 오류라 `5xx` 일 수 있습니다.**
+나머지 `reason` 은 `403` 입니다. 두 카운터의 합을 `axum_http_requests_total{status="403"}` 과
+맞대실 때는 그 둘을 빼고 세십시오. 반대로 STS(`POST /`)의 `403` 은 이 둘이 아니라
+`cas_sts_reject_total{reason}` 에 잡히고, GC·관리 경로의 Bearer 토큰 실패는 `401` 이라 어느
+카운터에도 들어가지 않습니다.
+
+**403 을 받은 요청자는 로그로 찾습니다.** 지표에는 출발지를 라벨로 두지 않습니다(값이
+끝없이 늘어나기 때문입니다). **요청자 단서가 붙는 것은 인증 실패뿐입니다** — 정책 거절에는 `peer`·`ua` 가
+없습니다(데이터 평면은 `info` 의 `authz ... result="deny"` 줄에 `key_id`·`action`, 관리
+평면은 `warn` 의 `admin authz fail` 줄에 `key_id`·`required`·`path`). 인증 실패는 한 건마다
+`warn` 으로 아래가 나가고, **`RUST_LOG=info` 에서 보입니다.**
+
+```
+WARN authn fail path="/bucket/key" reason="key_inactive" key_id="CASK…" peer=10.42.3.17:51234
+                ua="Boto3/1.40.50 Python/3.11" error=…
+```
+
+문자열 필드는 따옴표로 감싸 나옵니다 — `grep` 하실 때는 `reason="key_inactive"` 처럼 찾으십시오.
+`peer` 는 서버가 받은 TCP 연결의 출발지이고, **호출자 주소라는 보장은 없습니다.**
+NodePort(`externalTrafficPolicy: Cluster`)·인그레스·리버스 프록시를 거치면 노드나 프록시
+주소가 보입니다. ClusterIP 경유가 파드 IP 로 보이는지는 CNI·kube-proxy 설정에 달려 있으므로
+배포에서 한 번 확인하십시오. `ua` 는 요청자가 정하는 값이라 제어문자를 지우고 200 자로 자릅니다(없으면 `-`).
+관리 평면은 같은 필드를 `admin authn fail` 로 냅니다.
+
+> 로그 보존 창이 짧은 배포에서는 이 줄을 사후에 되짚을 수 없습니다. 그래서 **원인(`reason`)은
+> 지표에도 싣습니다** — 위 두 카운터가 그것입니다. 로그가 필요한 것은 요청자를 찾을 때뿐입니다.
 
 ### Prometheus Operator 를 쓰는 경우
 
@@ -478,10 +540,10 @@ DB 도 타지 않습니다. 그 이전 이미지에서는 `blobs` 전량을 안�
 
 주기는 데이터 크기가 아니라 **회수 대상이 쌓이는 속도**로 정하십시오. 스캔 비용은 회수할
 blob 이 0건이든 수천 건이든 같습니다. 판단 기준과 미루는 비용 계산은
-[docs/usage.md](docs/usage.md) 의 "주기를 정하는 기준" 을 참고하십시오.
+[docs/usage.md](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.37/charts/cas-server/docs/usage.md) 의 "주기를 정하는 기준" 을 참고하십시오.
 
 `gc.phases` 는 이미지 `0.1.20` 이상이 해석합니다. **`sweep` 은 `0.1.25` 이상**이라,
-그보다 낮은 이미지에 보내면 서버가 `400` 으로 거절하고 그 Job 이 실패합니다.
+`0.1.20`~`0.1.24` 에 보내면 서버가 `400` 으로 거절하고 그 Job 이 실패합니다.
 
 ## 관리 API 자격증명 (이미지 `0.1.21` 이상)
 
@@ -645,6 +707,12 @@ kubeadm 기본 구성은 위 예시의 `https://kubernetes.default.svc.cluster.l
 로 싣습니다.** 광고된 JWKS 호스트는 발급자와 달라도 됩니다 — **발급자를 신뢰하는 만큼
 그 문서가 가리키는 호스트도 신뢰하게 됩니다.** 좁히시려면 `jwksUri` 를 명시하십시오.
 
+**광고값이 IP 주소여도 TLS 검증은 통과합니다.** 쿠버네티스 디스커버리 문서가 `jwks_uri` 로
+컨트롤플레인 노드 IP 를 광고하는 구성이 흔한데, 서버의 TLS 스택(rustls)은 인증서의
+`iPAddress` SAN 을 검증하므로 그 주소로도 정상 동작합니다. **다만 그 값은 노드 한 대를
+가리킵니다** — 컨트롤플레인이 여럿이면 그 노드의 장애가 곧 인증 장애가 되므로, 엔드포인트
+여럿 뒤에 있는 서비스 DNS 이름을 `jwksUri` 에 명시하시는 편이 낫습니다.
+
 **⑵ 템플릿 키를 만들고 정책을 붙입니다.** 임시 자격증명이 받을 권한이 이 키의 정책입니다.
 
 ```bash
@@ -700,7 +768,7 @@ SDK 가 만료 전에 스스로 갱신합니다.
   액세스 토큰 수명은 300초라 이 하한보다 짧습니다 — IdP 쪽을 올리십시오
 - **`botocore`(boto3)는 `DurationSeconds` 를 보내지 않습니다.** 서버 기본값 3600초를
   받습니다. 프로파일의 `duration_seconds` 도 이 제공자는 읽지 않습니다
-- **같은 `(issuer, subject)` 는 살아 있는 세션을 재사용합니다**(남은 수명 900초 이상).
+- **같은 `(issuer, subject)` · 같은 템플릿은 살아 있는 세션을 재사용합니다**(남은 수명 900초 초과).
   AWS 는 호출마다 새로 발급합니다. 같은 ServiceAccount 의 파드 여럿이 같은 자격증명을
   받으므로 감사 로그에서 파드를 가르실 수 없습니다
 - **템플릿의 정책을 고쳐도 이미 나간 세션의 권한은 바뀌지 않습니다.** 발급 시점의
@@ -742,6 +810,20 @@ curl -X DELETE "$BASE/_admin/access-keys/$SESSION_KEY_ID" -H "$SIGV4"
 지표 둘이 함께 늡니다 — `cas_sts_issue_total{result}`(`issued`·`reused`)와
 `cas_sts_reject_total{reason}`. **`auth.oidc.issuers` 가 비면 등록되지 않으므로**
 `absent()` 알림을 거실 때 그 조건을 함께 보십시오.
+
+⚠ **컷오버 게이트를 `issued` 로 만들지 마십시오.** 같은 `(issuer, subject)` 에 살아 있는
+세션이 있으면 서버가 그것을 그대로 돌려주고 `result="reused"` 로 셉니다 — 워크로드가 정상
+동작 중인데도 `issued` 는 움직이지 않습니다. **성공 신호는 `issued + reused` 입니다.**
+
+```promql
+sum(increase(cas_sts_issue_total[15m]))          # 이쪽을 보십시오
+sum(increase(cas_sts_issue_total{result="issued"}[15m]))   # 정상을 실패로 읽습니다
+```
+
+재사용에도 하한이 걸립니다 — **남은 수명이 900 초 이하인 세션은 재사용되지 않고 새로
+발급됩니다.** `botocore` 의 갱신 창(남은 15 분)과 경계가 맞닿아 있어, 받자마자 다시 갱신
+창에 드는 경우가 있어도 그 다음 호출은 새 세션을 받습니다. 요청마다 갱신을 도는 상태로
+눌러앉지 않습니다.
 
 ## 대량 적재 중에는 GC를 끄십시오 (모든 이미지 버전)
 
@@ -870,8 +952,24 @@ kubectl get deploy "$REL" -n "$NS" \
 
 **`x-cas-hash` 는 이 대조를 대신하지 않습니다.** 그 해시의 블롭이 **처음 보는 것일 때만**
 서버가 본문을 BLAKE3 로 대조합니다(불일치 시 `InvalidDigest`). 이미 있는 해시면 본문을
-읽지 않고 즉시 완료하므로 대조가 일어나지 않습니다 — 중복률이 높은 배포일수록 그 경로가
-많습니다. 그 업로드까지 덮으려면 클라이언트가 체크섬을 함께 선언해야 합니다.
+읽지 않고 즉시 완료하므로 대조가 일어나지 않습니다.
+
+⚠ **그 건너뜀은 둘이 동시에 참일 때만 일어납니다.**
+
+```
+⑴ 요청이 x-cas-hash 로 BLAKE3 를 선언했다
+⑵ 그 해시의 블롭이 이미 물리적으로 있다
+```
+
+**중복제거율은 이 비율이 아닙니다.** `x-cas-hash` 를 보내지 않는 클라이언트의 업로드는
+서버가 BLAKE3 를 구하려고 본문을 끝까지 읽으므로, **같은 바이트가 중복제거되어도 대조는
+돕니다.** 즉 ⑴ 이 방아쇠이고 ⑵ 만으로는 건너뛰지 않습니다 — `cas_blob_dedup_total` 을
+「대조가 건너뛰어지는 비율」로 읽으시면 안 됩니다.
+
+⑵ 의 기준은 응답의 `x-cas-already-existed` 가 아니라 **물리 파일의 존재**입니다. 로컬 FS 는
+파일, S3 백엔드는 `HEAD` 로 보므로 `storage.mode` 에 따라 갈리지 않습니다.
+
+건너뛰는 업로드까지 덮으려면 그 클라이언트가 체크섬을 함께 선언해야 합니다.
 
 **대조하는 알고리즘은 `crc32` · `crc32c` · `crc64nvme` · `sha256` 입니다.** SDK 기본값이
 전부 여기 듭니다 — `boto3` 는 `crc32`, AWS CLI v2 와 `botocore[crt]` 는 `crc64nvme` 를
@@ -923,7 +1021,8 @@ kubectl get deploy "$REL" -n "$NS" \
 그보다 큰 레벨은 **잘리고, 응답에 그 사실이 실리지 않습니다.** `prefixes` 는 페이지를 나누지
 않는 계약이라(폴더는 매 페이지 전량, 파일만 `after` 로 이어 받음) 「더 있음」을 적을 자리가
 없기 때문입니다. **두 상한 모두 서버가 경고 로그를 남기므로 그쪽으로 확인하십시오.** 두 줄 다 `bucket` 과
-`prefix` 를 필드로 남기므로 어느 레벨인지 바로 나옵니다.
+`prefix` 를 필드로 남기므로 어느 레벨인지 바로 나옵니다. 둘 다 넘으면 걸음 상한 줄 하나만
+나옵니다.
 
 ```bash
 # 걸음 상한: steps 필드가 있는 쪽
@@ -1005,7 +1104,7 @@ soft-delete 행도 같은 트랜잭션에서 함께 지워지므로, 이 값이 
 치우지 못한 행뿐입니다(delete marker, 그리고 다른 객체가 같은 blob 을 참조 중이라 blob 이
 살아 있는 행).
 
-**되돌림 창은 다음 GC 실행까지입니다.** 기본 스케줄이 주 1회(일요일 02:00)이므로 최대
+**되돌림 창은 다음 GC 실행까지입니다.** 기본 스케줄이 주 1회(일요일 02:00 UTC — UTC+9 오전 11시)이므로 최대
 그만큼이지만, 보장이 아닙니다 — `POST /_internal/gc` 를 수동으로 치면 즉시 닫히고,
 비버저닝 버킷은 같은 키에 새 PUT 이 들어오면 그 시점에 닫힙니다. GC 가 지나간 뒤에는
 blob 과 행이 함께 사라져 백업 복원 외에 방법이 없습니다. 창 안이라면 되살릴 수 있지만
@@ -1078,6 +1177,8 @@ lifecycle 은 **그 정리가 실패했을 때의 백스톱**이므로 그 값�
 
 ```bash
 # 1) 미완료 업로드 목록 — 이 응답은 PostgreSQL 에서 옵니다(스토리지 목록 API 를 타지 않음)
+#    auth 를 켠 배포에서는 서명 없이 403 입니다. ListObjects 권한 키로 서명해 부르십시오
+#    (awscurl --service s3 ... 등)
 curl -s "http://<host>/<bucket>?uploads"
 
 # 2) 그 uploadId 의 파트를 정확한 키로 조회 — 파트가 평범한 객체라 HEAD 가 됩니다
@@ -1122,9 +1223,17 @@ serviceAccount:
 | `false` | `""` | 네임스페이스의 `default` SA 사용 (생성 없음) |
 | `false` | `existing-sa` | `existing-sa` 사용 (생성 없음) |
 
-`automountToken` 은 **기본 `false`** 입니다. 이 서버는 쿠버네티스 API 를 부르지 않는데,
-마운트된 토큰은 컨테이너가 뚫렸을 때 그대로 API 접근 수단이 됩니다. `auth.anonymousGet`
-이 기본 `true` 이고 NodePort 로 노출되는 배포라 표면을 늘리지 않는 편이 낫습니다.
+`automountToken` 은 **기본 `false`** 입니다. 마운트된 토큰은 컨테이너가 뚫렸을 때 그대로
+API 접근 수단이 됩니다. `auth.anonymousGet` 이 기본 `true` 이고 NodePort 로 노출되는
+배포라 표면을 늘리지 않는 편이 낫습니다.
+
+**`true` 가 필요한 경우는 셋입니다.**
+
+| 경우 | 토큰이 쓰이는 곳 |
+|---|---|
+| AWS IRSA · GCP Workload Identity | 투영 토큰으로 클라우드 자격증명을 받습니다 |
+| `auth.oidc.issuers` 의 항목에 `jwksAuth: serviceaccount` | 서버가 JWKS 를 조회할 때 그 토큰을 `Bearer` 로 싣고, 같은 디렉터리의 `ca.crt` 를 TLS 신뢰에 얹습니다 |
+| 사이드카 등이 쿠버네티스 API 를 부르는 구성 | 그 컨테이너가 씁니다 |
 
 **`0.1.24` 부터 `default` SA 의 토큰 자동 마운트가 막힙니다.** 사이드카 등으로 쿠버네티스
 API 를 쓰고 계셨다면 `automountToken: true` 로 되돌리세요.
@@ -1138,6 +1247,20 @@ serviceAccount:
   annotations:
     eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/cas-server
 ```
+
+**GC CronJob 만 따로 끌 수 있습니다** (차트 `0.1.37` 이상). 두 번째 경우처럼 서버 쪽만
+토큰이 필요한 배포에서, `curl` 로 GC 엔드포인트를 치기만 하는 CronJob 파드까지 함께
+켜지지 않게 하는 자리입니다.
+
+```yaml
+serviceAccount:
+  automountToken: true    # jwksAuth: serviceaccount 때문에 서버는 필요합니다
+gc:
+  automountToken: false   # 이 Job 은 쿠버네티스 API 를 부르지 않습니다
+```
+
+`gc.automountToken` 을 적지 않으면 `serviceAccount.automountToken` 을 그대로 따릅니다 —
+기존 배포의 동작은 바뀌지 않습니다. `fullSweep` CronJob 에도 같이 걸립니다.
 
 ## 릴리스 전 점검 — 선언됐는데 렌더되지 않는 키
 
