@@ -42,7 +42,7 @@ nexus-server는 cas-server와 동일한 Helm repo를 사용한다.
 
 #### 시크릿 주입 (sealed-secret)
 
-차트는 Secret을 만들지 않고 외부 Secret을 envFrom으로 참조한다. 아래 4개의 키를 가진 Secret을 먼저 클러스터에 주입한다(kubeseal로 봉인). 나머지 넷은 그 기능을 쓸 때만 같은 Secret에 더한다 — CVAT 연동의 `NEXUS__CVAT__PASSWORD`([2.2](#22-cvat-연동-선택-차트-020)), superuser의 `NEXUS__AUTH__SUPERUSER_PASSWORD`([superuser](#superuser-차트-030-선택)), CAS 자격증명 자동 발급의 `NEXUS__CAS__ADMIN_SECRET`, 지표의 `NEXUS__METRICS__TOKEN`:
+차트는 Secret을 만들지 않고 외부 Secret을 envFrom으로 참조한다. 아래 4개의 키를 가진 Secret을 먼저 클러스터에 주입한다(kubeseal로 봉인). 나머지 셋은 그 기능을 쓸 때만 같은 Secret에 더한다 — CVAT 연동의 `NEXUS__CVAT__PASSWORD`([2.2](#22-cvat-연동-선택-차트-020)), superuser의 `NEXUS__AUTH__SUPERUSER_PASSWORD`([superuser](#superuser-차트-030-선택)), 지표의 `NEXUS__METRICS__TOKEN`(`NEXUS__CAS__ADMIN_SECRET`은 서버 0.1.13부터 쓰지 않는다):
 
 ```bash
 kubectl create secret generic nexus-server -n <namespace> --dry-run=client -o yaml \
@@ -152,14 +152,12 @@ nx.connect()
 
 `cas_key_id`/`cas_secret`(또는 `CAS_KEY_ID`/`CAS_SECRET`)는 CAS 업로드 서명용 키. CAS가 인정하는(해당 버킷에 write 권한 있는) 키면 동작하며, nexus 서비스 키를 공유하거나 내부 정책에 따라 개인별로 발급받은 키 사용.
 
-**둘을 주지 않으면 nexus가 이 계정 앞으로 자동 발급한다**(서버 `0.1.9`+, 서버에 CAS 관리 자격증명이 구성된 배포에서만). 운영자가 손으로 만들어 나눠주던 것을 대체한다.
+**둘을 주지 않았을 때 — 서버 0.1.13부터 nexus는 CAS 자격증명을 발급하지 않는다.** SDK `0.1.9`~`0.1.13`은 STS 모드가 아니면 접속 시 nexus에 발급을 요청하고, 서버가 `503`을 주면 경고 한 줄을 남긴 뒤 **CAS 자격증명 없이 접속을 계속한다**(CAS가 서명 없는 요청을 받는 배포에서만 CAS를 쓸 수 있다). 경고 문구(「서버에 CAS 관리 자격증명이 구성되지 않아」)는 이 서버에서는 사실과 다르지만 동작은 맞다. CAS 자격증명은 둘 중 하나로 준다.
 
-- **판정은 `cas_key_id`와 `cas_secret`이 둘 다 해소됐는가**다. 둘 다 있으면 발급 단계를 아예 타지 않는다 — CI·학습 파드가 환경변수로 주입하는 영구 자격증명이 항상 이기고, 그 값이 있는 한 파드를 띄울 때마다 자격증명이 쌓이지 않는다.
-- **한쪽만 있으면 발급이 일어나고 있던 쪽까지 새 값으로 덮인다** — 한쪽만으로는 서명을 만들 수 없어 그 값이 아무 일도 하지 못하기 때문이다. 덮기 전에 경고를 낸다.
-- **발급받은 값을 설정 파일에 쓰지 않는 것이 기본이다**(`save_cas_credentials`, SDK `0.1.10`에서 `True` → `False`로 뒤집었다). 발급 자체는 그대로 일어나고 이 프로세스 안에서는 쓰인다 — 파일에 남기지 않을 뿐이다. 저장이 맞는 배포는 `nx.connect(save_cas_credentials=True)`로 명시한다.
-- 저장하지 않으면 다음 실행에서 새로 발급받으므로 `key_id`가 쌓인다. 그것이 싫으면 환경변수로 영구 자격증명을 주입한다(그러면 발급 자체가 일어나지 않는다). 한 사람이 동시에 가질 수 있는 활성 자격증명 수는 서버의 `cas.credentialsPerUser`(기본 10)로 제한된다.
-- **발급받은 자격증명에는 만료가 있다**(서버 `0.1.11`+). 만료는 **그 발급을 요청한 토큰의 남은 수명**을 그대로 물려받는다 — 사람 JWT면 `jwt.ttlHours`의 잔여(기본 24시간 이내), 로봇 토큰이면 그 토큰의 잔여(최장 365일), OIDC 토큰이면 `min(토큰의 exp, 지금 + jwt.ttlHours)`다. 「토큰이 죽으면 CAS 키도 죽는다」가 폐기라는 사건 없이 시간으로 성립한다. `0.1.11` **이전에 발급된 것은 여전히 무만료이고 재발급으로만 없어진다**(마이그레이션이 소급해 채우지 않는다 — 채우면 nexus만 만료로 알고 cas는 계속 받아 준다).
-- 그래서 **오래 도는 잡은 SDK `0.1.11` 이상이어야 한다.** 만료된 키로 CAS가 403을 주면 SDK가 S3 에러 코드를 읽어 갈린다 — `AccessDenied`(정책 거부)면 재발급하지 않고, 그 밖이면 60초 간격으로 다시 발급받아 이어간다. SDK `0.1.9`~`0.1.10`은 클라이언트당 한 번만 재발급하므로 한 프로세스가 만료를 **두 번** 넘기면 그 자리에서 실패한다.
+- **CAS 임시 자격증명(STS)** — `nx.connect(cas_sts=nx.CasSts(token_file=...))`(SDK `0.1.12`+, cas-server 이미지 `0.1.28`+).
+- **운영자가 발급한 키** — `cas_key_id`/`cas_secret` 인자나 `CAS_KEY_ID`/`CAS_SECRET` 환경변수.
+
+서버 `0.1.9`~`0.1.12`는 CAS 관리 자격증명이 구성된 배포에서 이 계정 앞으로 자격증명을 자동 발급했다. 그렇게 받은 키는 서버 0.1.13 이후 nexus로 폐기할 수 없으므로 올리기 전에 정리한다([CHANGELOG 0.3.10](../CHANGELOG.md)).
 
 #### 사내 프록시로 SSL 인증서 에러가 날 때 (SDK 0.1.1+)
 
@@ -238,7 +236,7 @@ requests.post(f"{base}/api/v1/admin/datasets/transfer-owner",
 - **담당자 이전은 인가를 옮기지 않는다**(서버 0.1.9). 이전 담당자도 계속 쓰고 지울 수 있다 — 역할이 `editor`이기 때문이다. 옮겨가는 것은 「다시 넘길 자격」 하나다.
 - 담당자가 없는 dataset은 `GET /datasets?unowned=true`로 조회한다. 담당자가 비어도 권한이 생기지 않으므로 위험한 상태가 아니라 **인수 대기**다. 그런 dataset도 `editor` 이상이면 지울 수 있다(서버 0.1.9 — 그 전에는 `admin` 전용이었다). 담당자가 있는 dataset을 넘기는 것은 담당자 본인이 한다([4.4](#44-dataset-담당자-이전-서버-016)).
 - **superuser 비밀번호를 바꾼 뒤에도 시크릿을 갱신할 필요가 없다.** `NEXUS__AUTH__SUPERUSER_PASSWORD`는 **그 계정이 없을 때 새로 만드는 용도로만** 읽힌다 — 계정이 이미 있으면 기동 시 값을 읽지도, 비교하지도 않는다. 그래서 시크릿의 값과 실제 로그인 비밀번호가 달라도 파드는 정상 기동하고, 반대로 시크릿을 바꿔 재배포해도 비밀번호는 바뀌지 않는다. 이 값을 "현재 비밀번호"가 아니라 **"계정 생성용 씨앗"**으로 보시는 편이 정확하다. 실제로 다시 쓰이는 경우는 하나뿐이다 — `auth.superuserEmail`을 **아직 가입되지 않은** 주소로 바꿔 재배포하면, 그때 이 값으로 새 계정이 만들어진다(이미 누가 쓰는 주소를 넣으면 그 계정을 채택하므로 그 사람이 superuser가 된다).
-- **지표를 보려면 `GET /_internal/metrics`**(차트 0.3.6+). 시크릿의 `NEXUS__METRICS__TOKEN`을 bearer로 받고, 그 값이 없으면 경로 자체가 **404**다. Prometheus 텍스트를 내며, **서버 0.1.9까지는 DB를 전혀 조회하지 않았고 0.1.10부터 아래 다섯이 워크로드 풀에서 한 왕복을 쓴다**(250ms를 넘기거나 조회가 실패해도 그 다섯은 사라지지 않고 직전 값으로 남는다(기동 후 한 번도 못 읽었으면 처음부터 없다) — 서버 0.1.12부터 `nexus_metrics_db_stats_ok`로 가른다). 15초보다 촘촘한 주기는 권하지 않는다.
+- **지표를 보려면 `GET /_internal/metrics`**(차트 0.3.6+). 시크릿의 `NEXUS__METRICS__TOKEN`을 bearer로 받고, 그 값이 없으면 경로 자체가 **404**다. Prometheus 텍스트를 내며, **서버 0.1.9까지는 DB를 전혀 조회하지 않았고 0.1.10부터 아래 DB 집계(0.1.12까지 다섯, 그 뒤로 넷)가 워크로드 풀에서 한 왕복을 쓴다**(250ms를 넘기거나 조회가 실패해도 그 값은 사라지지 않고 직전 값으로 남는다(기동 후 한 번도 못 읽었으면 처음부터 없다) — 서버 0.1.12부터 `nexus_metrics_db_stats_ok`로 가른다). 15초보다 촘촘한 주기는 권하지 않는다.
 
   ```bash
   curl -H "Authorization: Bearer $METRICS_TOKEN" $base/_internal/metrics
@@ -246,7 +244,13 @@ requests.post(f"{base}/api/v1/admin/datasets/transfer-owner",
 
   DB 풀 셋(`nexus_db_pool_connections` · `_idle_connections` · `_acquire_timeouts_total`)과 적재 유입 제어 셋(`nexus_ingest_permits_total` · `_available` · `nexus_ingest_rejected_total`)이다. **`_acquire_timeouts_total`이 오르기 시작하는 순간이 풀 포화의 시작점이다** — readiness는 전용 커넥션을 쓰므로 그 상황에서도 계속 200이고, 이 카운터가 유일한 신호다.
 
-  **서버 0.1.10부터 다섯이 더 붙는다** — `nexus_cas_credential_revocations_pending`(미처리 CAS 자격증명 폐기 건수. **없어도 `0`으로 나온다**)과 로봇 토큰 넷(`nexus_robot_tokens_active` · `_expiring_soon` · `nexus_robot_token_min_expires_in_seconds` · `nexus_robot_accounts_without_active_token`). 이 다섯만 DB를 조회한다(250ms 제한). **조회가 실패하거나 250ms를 넘겨도 그 다섯은 사라지지 않고 직전 값으로 남는다(기동 후 한 번도 못 읽었으면 처음부터 없다)** — 이번 스크레이프에서 실제로 읽었는지는 **서버 0.1.12부터** `nexus_metrics_db_stats_ok`(읽었으면 `1`, 못 읽었으면 `0`)로 가른다. 다섯을 읽는 알림에는 `and nexus_metrics_db_stats_ok == 1`을 함께 건다. `min_expires_in_seconds`는 **활성 토큰이 없을 때 `+Inf`**이므로 `< 임계값` 경보가 저절로 풀린다.
+  **서버 0.1.10부터 로봇 토큰 넷이 더 붙는다** — `nexus_robot_tokens_active` · `_expiring_soon` · `nexus_robot_token_min_expires_in_seconds` · `nexus_robot_accounts_without_active_token`. 이 넷만 DB를 조회한다(250ms 제한). **조회가 실패하거나 250ms를 넘겨도 그 넷은 사라지지 않고 직전 값으로 남는다(기동 후 한 번도 못 읽었으면 처음부터 없다)** — 이번 스크레이프에서 실제로 읽었는지는 **서버 0.1.12부터** `nexus_metrics_db_stats_ok`(읽었으면 `1`, 못 읽었으면 `0`)로 가른다. 넷을 읽는 알림에는 `and nexus_metrics_db_stats_ok == 1`을 함께 건다. `min_expires_in_seconds`는 **활성 토큰이 없을 때 `+Inf`**이므로 `< 임계값` 경보가 저절로 풀린다. 서버 `0.1.10`~`0.1.12`에 있던 `nexus_cas_credential_revocations_pending`(미처리 CAS 자격증명 폐기 건수)은 **서버 0.1.13에서 없어졌다** — 여기에 건 알림은 걷는다.
+
+  **서버 0.1.13부터 HTTP 요청 지표 셋이 더 붙는다** — `axum_http_requests_total`(라벨 `method` · `status` · `endpoint`) · `axum_http_requests_duration_seconds`(히스토그램, 같은 라벨) · `axum_http_requests_pending`(라벨 `method` · `endpoint`). 이름·라벨 키·지연 구간이 cas-server와 같다(매칭되지 않은 요청만 cas-server는 요청 경로, nexus는 `unmatched`로 적는다). `endpoint`는 요청 경로가 아니라 **라우트 템플릿**(`/datasets/{dataset_id}`)이라 id마다 시리즈가 생기지 않고, 어느 라우트에도 매칭되지 않은 요청은 `unmatched` 하나로 모인다. 엔드포인트 하나만 5xx인 결함을 이렇게 본다.
+
+  ```promql
+  sum by (endpoint) (rate(axum_http_requests_total{status=~"5.."}[5m]))
+  ```
 
 - **적용된 설정을 확인하려면 `GET /api/v1/admin/config-effective`**(차트 0.3.5+, 관리자 전용 — 설정 superuser와 `role = admin` 둘 다 통과한다). 지금 그 프로세스가 **읽은 값**을 돌려준다 — 차트 렌더 결과가 아니므로 `extraEnv` 오버라이드도 드러난다.
 
@@ -1272,7 +1276,7 @@ nx.connect(nexus_url="http://nexus-server", robot_token="nxr_...", cas_url="http
 ### 최상위 함수
 |||
 |---|---|
-|`nx.connect(nexus_url=, email=, password=, robot_token=, cas_url=, cas_key_id=, cas_secret=, save_cas_credentials=False, cas_sts=)`|서버 연결. `robot_token=`이면 로그인하지 않는다(SDK 0.1.10+). `save_cas_credentials` 기본값은 **SDK 0.1.10부터 `False`**(자동 발급받은 CAS 자격증명을 설정 파일에 남기지 않는다). `cas_sts=nx.CasSts(...)`이면 CAS 임시 자격증명(STS) 모드(SDK 0.1.12+)|
+|`nx.connect(nexus_url=, email=, password=, robot_token=, cas_url=, cas_key_id=, cas_secret=, save_cas_credentials=False, cas_sts=)`|서버 연결. `robot_token=`이면 로그인하지 않는다(SDK 0.1.10+). `save_cas_credentials`(서버 0.1.13부터는 nexus가 자동 발급하지 않아 서버 0.1.12 이하에서만 뜻이 있다) 기본값은 **SDK 0.1.10부터 `False`**(자동 발급받은 CAS 자격증명을 설정 파일에 남기지 않는다). `cas_sts=nx.CasSts(...)`이면 CAS 임시 자격증명(STS) 모드(SDK 0.1.12+)|
 |`nx.list_datasets(q=, name=, description=, tags=, sort=, order=, favorite=, mine=, unowned=, limit=, cursor=)`|dataset 목록 검색. `limit`을 주지 않으면 커서를 자동 순회해 전체를 모은다([4.1](#41-데이터셋-목록-조회))|
 |`nx.upload(paths, bucket, prefix="", workers=8, overwrite=False)` → {경로: CasRef}|파일 업로드. `overwrite=True`면 같은 key에 다른 내용이 있어도 에러 대신 덮어씀(SDK 0.1.4+)|
 |`nx.probe(refs, workers=8, strict=False, max_header_bytes=65536)` → [CasRef]|업로드 없이 CAS 객체의 이미지 크기만 채움(앞부분만 읽음, 순서 보존)|

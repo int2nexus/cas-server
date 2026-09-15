@@ -4,9 +4,9 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
 
 ## 문서
 
-- [아키텍처](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.9/charts/nexus-server/docs/architecture.md)
+- [아키텍처](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.10/charts/nexus-server/docs/architecture.md)
   — 도메인 모델, Version 생명주기, Annotation CoW, 스냅샷·Manifest 구조
-- [사용법](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.9/charts/nexus-server/docs/usage.md)
+- [사용법](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.10/charts/nexus-server/docs/usage.md)
   — 설치, Python SDK 연결, Dataset 적재·검색·seal 워크플로우, API 레퍼런스
 - [변경 이력](CHANGELOG.md)
   — 버전별 동작 변경·마이그레이션·설정 키. 각 항목은 해당 GitHub Release 본문과 동일하다
@@ -16,9 +16,8 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
 - **외부 PostgreSQL** — 접속 정보(비번 포함 DSN)는 시크릿으로 주입. 차트가 DB를 띄우지 않는다.
 - **클러스터 내 cas-server** — CAS(파일) 백엔드.
 - **시크릿 4키** (sealed-secret으로 주입): `NEXUS__DATABASE__URL`, `NEXUS__CAS__KEY_ID`, `NEXUS__CAS__SECRET`, `NEXUS__JWT__SECRET`.
-  선택 키가 넷 더 있고, 쓰는 기능이 있을 때만 넣는다 — CVAT annotation 편집 세션의
+  선택 키가 셋 더 있고, 쓰는 기능이 있을 때만 넣는다 — CVAT annotation 편집 세션의
   `NEXUS__CVAT__PASSWORD`, superuser의 `NEXUS__AUTH__SUPERUSER_PASSWORD`,
-  CAS 자격증명 자동 발급의 `NEXUS__CAS__ADMIN_SECRET`(`cas.adminKeyId`와 짝),
   지표의 `NEXUS__METRICS__TOKEN`(values 스위치가 없다 — 이 키가 곧 스위치다).
   전체 목록은 [`examples/secret.example.yaml`](examples/secret.example.yaml).
 - **CVAT은 선택** — 설정하지 않아도 서버는 정상 동작한다. 세션 생성·결과 회수만 503이 되고 카탈로그·업로드·seal·조회는 영향이 없다.
@@ -27,6 +26,12 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
 DB 마이그레이션은 바이너리에 임베드되어 **기동 시 자동 적용**된다(별도 Job 불필요). 마이그레이션이 끝나야 포트가 열리므로 그 시간은 곧 startupProbe 예산(기본 `periodSeconds 10 × failureThreshold 60` = 600초)에서 나간다 — 스키마가 바뀌는 릴리스로 올릴 때는 [CHANGELOG](CHANGELOG.md)의 해당 버전 **마이그레이션** 항목에서 예상 소요를 먼저 확인할 것. **거기 적힌 실측값은 특정 환경의 것이라 행 수로 환산해 그대로 쓸 수 없다** — 소요가 행 수에 선형인 것은 같은 하드웨어 안에서일 뿐이고 계수는 DB마다 다르다. 예산은 넉넉한 쪽으로 잡는다(모자라면 기동 실패가 반복되고, 남으면 아무 일도 일어나지 않는다). 서버는 stateless(파일=CAS, 메타=Postgres)라 PVC가 없다.
 
 > **업그레이드 전에 [CHANGELOG](CHANGELOG.md)를 읽을 것.**
+
+**차트 0.3.10 / appVersion 0.1.13** — 마이그레이션은 없다. 지금까지와 달라지는 것은 둘이고, 그 밖은 새로 더해지는 것이다.
+
+1. **nexus가 CAS 자격증명을 발급·폐기하지 않는다.** 발급·본인 폐기·강제 폐기가 항상 `503`이고 미처리 재시도 경로가 없어진다. `cas.adminKeyId`를 설정한 적이 없는 배포는 원래 `503`이었으므로 달라지는 호출이 없다. 설정해 쓰던 배포는 CHANGELOG 0.3.10을 먼저 볼 것. SDK는 판을 올리지 않아도 된다.
+2. 지표 `nexus_cas_credential_revocations_pending`이 없어진다 — 여기에 건 알림을 먼저 걷을 것.
+3. 새로 더해지는 것: HTTP 요청 지표 셋(`axum_http_requests_total`·`_duration_seconds`·`_pending` — 이름·라벨 키가 cas-server와 같다). `endpoint` 라벨은 라우트 템플릿이다.
 
 **차트 0.3.9 / appVersion 0.1.12** — 마이그레이션도 설정 키 변경도 없다. 쓰던 호출은 그대로 동작한다.
 
@@ -77,7 +82,7 @@ helm repo update
 
 ### 1) 시크릿 주입 (sealed-secret)
 
-차트는 Secret을 만들지 않고 외부 Secret을 `envFrom`으로 참조한다. 아래 키를 가진 Secret을 **먼저** 주입한다(앞의 넷은 필수, 뒤의 넷은 그 기능을 쓸 때만):
+차트는 Secret을 만들지 않고 외부 Secret을 `envFrom`으로 참조한다. 아래 키를 가진 Secret을 **먼저** 주입한다(앞의 넷은 필수, 뒤의 셋은 그 기능을 쓸 때만):
 
 ```bash
 kubectl create secret generic nexus-server -n <namespace> --dry-run=client -o yaml \
@@ -87,7 +92,6 @@ kubectl create secret generic nexus-server -n <namespace> --dry-run=client -o ya
   --from-literal=NEXUS__JWT__SECRET='...' \
   --from-literal=NEXUS__CVAT__PASSWORD='...' \
   --from-literal=NEXUS__AUTH__SUPERUSER_PASSWORD='...' \
-  --from-literal=NEXUS__CAS__ADMIN_SECRET='...' \
   --from-literal=NEXUS__METRICS__TOKEN='...' \
   | kubeseal --format yaml > sealed-nexus-server.yaml
 kubectl apply -f sealed-nexus-server.yaml -n <namespace>
@@ -115,8 +119,6 @@ helm install nexus-server int2nexus/nexus-server -n <namespace> \
 | `cas.region` / `cas.defaultBucket` | `cas-default` / `data` | CAS region·기본 버킷. **버킷 이름은 S3 규칙**(소문자·숫자·`-`·`.`, 3~63자)을 따라야 한다 |
 | `database.maxConnections` | `16` | 워크로드 풀 상한. 적재가 쓸 수 있는 자리는 **이 값 - 4**(조회·관리·seal 몫)이고, readiness 전용 커넥션이 이 풀 **밖에** 하나 더 붙는다(Postgres 쪽 계산은 replica당 이 값 + 1). `ingest.batchItemConcurrency`와의 불변식은 [`values.yaml`](values.yaml) 주석 |
 | `ingest.admissionWaitMs` | `""` | 적재가 자리를 기다리는 상한(ms). 넘기면 대기가 아니라 **`429` + `Retry-After: 1`**. 비우면 서버 기본 3000. `0`이면 기다리지 않는다(자리가 비어 있으면 통과, 없으면 그 자리에서 `429`) |
-| `cas.adminKeyId` | `""` | 비우면 **CAS 자격증명 자동 발급이 꺼진다**(기본). 채우면 시크릿의 `NEXUS__CAS__ADMIN_SECRET`이 함께 있어야 하고 데이터 평면 키와 **다른 키**여야 한다. cas 정책 요구사항은 [`values.yaml`](values.yaml) 주석 |
-| `cas.credentialsPerUser` | `""` | 비우면 서버 기본 10. 한 사람이 동시에 가질 수 있는 활성 CAS 자격증명(기기당 하나) 상한. 1 미만이면 기동 실패 |
 | `secret.existingSecret` | `""` | 비밀 Secret 이름(비우면 fullname) |
 | `service.type` / `service.nodePort` | `NodePort` / `30090` | 서비스 노출 |
 | `ingress.enabled` | `false` | Ingress 사용 여부 |
@@ -169,12 +171,11 @@ CVAT 연동은 `cvat.baseUrl`·`cvat.user`·시크릿의 `NEXUS__CVAT__PASSWORD`
 | `DELETE /api/v1/admin/robots/{user_id}/tokens/{token_id}` | 토큰 폐기 |
 | `POST /api/v1/admin/oidc-identities` · `GET` | OIDC 신원 `(issuer, subject)` → 계정 매핑 등록·목록(appVersion 0.1.11+). 목록은 `?user_id=`로 좁힌다 |
 | `DELETE /api/v1/admin/oidc-identities/{identity_id}` | 매핑 삭제. 그 신원 하나만 막는다 |
-| `GET /api/v1/admin/cas-credentials` | 전체 사용자의 CAS 자격증명 목록. **`cas.adminKeyId`가 비어도 200이다** — 이 표만 읽는 조회라, 기능을 끈 뒤에도 켜져 있던 동안 발급된 것을 계속 확인할 수 있어야 하기 때문이다 |
-| `DELETE /api/v1/admin/cas-credentials/{cas_key_id}` | 남의 자격증명 강제 폐기 |
-| `POST /api/v1/admin/cas-credentials/retry-revocations` | cas 쪽 폐기에 실패해 미처리로 남은 것을 다시 시도(`nexus_cas_credential_revocations_pending`이 0이 아닐 때) |
+| `GET /api/v1/admin/cas-credentials` | 전체 사용자의 CAS 자격증명 목록. appVersion 0.1.13부터 nexus가 발급하지 않으므로 **이미 발급된 것을 찾아 cas에서 폐기하는 창구**다 |
+| `DELETE /api/v1/admin/cas-credentials/{cas_key_id}` | superuser가 아니면 403, 맞으면 appVersion 0.1.13부터 **항상 503**(그 전에는 남의 자격증명 강제 폐기) |
 | `GET /api/v1/admin/config-effective` | 지금 그 프로세스가 읽은 설정값(차트 렌더 결과가 아니다). 비밀은 값 대신 `<set>`/`<unset>`이고, `database.url`만 비밀번호를 가린 채 호스트·DB명을 남긴다 |
 
-CAS 자격증명 셋 중 **강제 폐기와 미처리 재시도는 `cas.adminKeyId`가 비면 503**이다 — cas를 실제로 불러야 하는 조작이라 관리 키 없이는 할 수 없다. 목록만 그 설정과 무관하게 200이다.
+appVersion 0.1.13부터 **nexus는 CAS 자격증명을 발급·폐기하지 않는다**([CHANGELOG](CHANGELOG.md) 0.3.10) — 목록은 200, 발급·폐기는 항상 503이고 미처리 재시도 경로는 없다.
 
 감사 로그는 없다.
 
@@ -195,13 +196,15 @@ curl localhost:8090/_internal/health      # {"status":"ok","db":true}
 
 **readiness는 워크로드와 커넥션 풀을 나눠 쓴다**(0.3.6+). `/_internal/health`는 크기 1의 전용 풀로 ping하므로 적재가 워크로드 풀을 전부 써도 200이다. 그래서 **readiness 실패는 「DB에 못 닿는다」만 뜻하고**, 「앱이 바쁘다」는 더 이상 파드를 서비스에서 빼지 않는다. 앱이 커넥션을 못 받고 있는지는 readiness가 아니라 `nexus_db_pool_acquire_timeouts_total`(아래)로 본다.
 
-`GET /_internal/metrics`는 **인증이 면제되지 않는다.** 시크릿의 `NEXUS__METRICS__TOKEN`을 bearer로 받고, 비어 있으면 경로 자체가 404다. 스크레이퍼는 로그인할 수 없고 JWT를 쓰게 하면 모니터링 스택이 카탈로그 전체를 읽는 계정을 들고 있어야 해서 토큰을 따로 뒀다. **appVersion 0.1.9까지는 DB를 전혀 조회하지 않았고, 0.1.10부터 아래 다섯이 한 왕복을 쓴다**(250ms를 넘기거나 조회가 실패해도 그 다섯은 사라지지 않고 직전 값으로 남는다(기동 후 한 번도 못 읽었으면 처음부터 없다) — appVersion 0.1.12부터 `nexus_metrics_db_stats_ok`로 가른다). 그 한 왕복이 워크로드 풀에서 나가므로 15초보다 촘촘한 주기는 권하지 않는다. 설정 여부는 `GET /api/v1/admin/config-effective`의 `metrics.token_set`으로 확인한다.
+`GET /_internal/metrics`는 **인증이 면제되지 않는다.** 시크릿의 `NEXUS__METRICS__TOKEN`을 bearer로 받고, 비어 있으면 경로 자체가 404다. 스크레이퍼는 로그인할 수 없고 JWT를 쓰게 하면 모니터링 스택이 카탈로그 전체를 읽는 계정을 들고 있어야 해서 토큰을 따로 뒀다. **appVersion 0.1.9까지는 DB를 전혀 조회하지 않았고, 0.1.10부터 아래 DB 집계(0.1.12까지 다섯, 그 뒤로 넷)가 한 왕복을 쓴다**(250ms를 넘기거나 조회가 실패해도 그 값은 사라지지 않고 직전 값으로 남는다(기동 후 한 번도 못 읽었으면 처음부터 없다) — appVersion 0.1.12부터 `nexus_metrics_db_stats_ok`로 가른다). 그 한 왕복이 워크로드 풀에서 나가므로 15초보다 촘촘한 주기는 권하지 않는다. 설정 여부는 `GET /api/v1/admin/config-effective`의 `metrics.token_set`으로 확인한다.
 
 ```bash
 curl -H "Authorization: Bearer $METRICS_TOKEN" localhost:8090/_internal/metrics
 ```
 
-내는 시리즈는 열둘이다(appVersion 0.1.10부터 다섯, 0.1.12부터 하나가 늘었다) — DB 풀 셋(`nexus_db_pool_connections`·`_idle_connections`·`_acquire_timeouts_total`), 적재 유입 제어 셋(`nexus_ingest_permits_total`·`_available`·`nexus_ingest_rejected_total`), 미처리 CAS 자격증명 폐기(`nexus_cas_credential_revocations_pending`), 로봇 토큰 넷(`nexus_robot_tokens_active`·`_expiring_soon`·`nexus_robot_token_min_expires_in_seconds`·`nexus_robot_accounts_without_active_token`), 그리고 `nexus_metrics_db_stats_ok`. 가운데 다섯만 DB를 조회한다(한 왕복, 250ms 제한). **조회가 실패하거나 250ms를 넘겨도 그 다섯은 사라지지 않고 직전 값으로 남는다(기동 후 한 번도 못 읽었으면 처음부터 없다)** — 그래서 `nexus_metrics_db_stats_ok`가 이번 스크레이프에서 다섯을 실제로 읽었으면 `1`, 못 읽었으면 `0`이다(appVersion 0.1.12+). 다섯을 읽는 알림은 이 값을 함께 본다. 나머지 여섯은 메모리 상태라 풀이 말라도 그대로 나온다.
+내는 지표 이름은 열넷이다(라벨 조합·히스토그램 구간마다 시리즈는 따로 생긴다. appVersion 0.1.10부터 다섯, 0.1.12부터 하나가 늘었고, 0.1.13에서 하나가 빠지고 셋이 늘었다) — DB 풀 셋(`nexus_db_pool_connections`·`_idle_connections`·`_acquire_timeouts_total`), 적재 유입 제어 셋(`nexus_ingest_permits_total`·`_available`·`nexus_ingest_rejected_total`), 로봇 토큰 넷(`nexus_robot_tokens_active`·`_expiring_soon`·`nexus_robot_token_min_expires_in_seconds`·`nexus_robot_accounts_without_active_token`), `nexus_metrics_db_stats_ok`, 그리고 HTTP 요청 셋(`axum_http_requests_total`·`axum_http_requests_duration_seconds`·`axum_http_requests_pending`, appVersion 0.1.13+). 로봇 토큰 넷만 DB를 조회한다(한 왕복, 250ms 제한). **조회가 실패하거나 250ms를 넘겨도 그 넷은 사라지지 않고 직전 값으로 남는다(기동 후 한 번도 못 읽었으면 처음부터 없다)** — 그래서 `nexus_metrics_db_stats_ok`가 이번 스크레이프에서 넷을 실제로 읽었으면 `1`, 못 읽었으면 `0`이다(appVersion 0.1.12+). 넷을 읽는 알림은 이 값을 함께 본다. 나머지는 메모리 상태라 풀이 말라도 그대로 나온다. 미처리 CAS 자격증명 폐기(`nexus_cas_credential_revocations_pending`)는 appVersion 0.1.13에서 없어졌다.
+
+**HTTP 요청 지표의 `endpoint`는 요청 경로가 아니라 라우트 템플릿이다**(`/datasets/{dataset_id}`) — dataset id마다 시리즈가 생기지 않는다. 어느 라우트에도 매칭되지 않은 요청은 `unmatched` 하나로 모이고, 프로브·스크레이프 경로도 함께 세어진다. 이름·라벨 키가 cas-server와 같아 같은 쿼리를 쓸 수 있다 — 매칭되지 않은 요청만 cas-server는 요청 경로, nexus는 `unmatched`로 적는다. 응답 전에 끊긴 요청은 요청 수·지연에 잡히지 않는다(로그의 `요청이 취소됐다` 줄로 본다).
 
 `live`와 `health` 두 경로는 프로브가 자격증명 없이 호출해야 하므로 인증이 면제된다. 그 밖의 면제 경로는 `POST /api/v1/auth/register`·`POST /api/v1/auth/login`과 API 문서 경로(`/api-docs/openapi.json`, `/swagger-ui`, `/swagger-ui/`)뿐이며, 문서 경로는 `auth.docsEnabled: false`로 끄면 404가 된다. **데이터 API는 조회를 포함해 전부 토큰이 필요하다.**
 

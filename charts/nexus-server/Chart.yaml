@@ -5,8 +5,8 @@ type: application
 # 발행 시 이 둘과 values.yaml의 image.tag·image.digest를 함께 올린다. 올리지 않으면
 # 차트가 광고하는 auth.oidc.issuers를 고객이 넣어도 그 이미지가 그 env를 몰라 에러
 # 없이 기능만 꺼진다.
-version: 0.3.9
-appVersion: "0.1.12"
+version: 0.3.10
+appVersion: "0.1.13"
 # NOTE: ingest.batchItemConcurrency를 설정하려면 IngestConfig 전 필드 serde default가 든
 # 새 이미지(> 0.0.3)가 필요하다. 그 전 이미지엔 database.maxConnections만 주입해도 안전.
 # NOTE: cvat.baseUrl을 설정하려면 CvatConfig 전 필드 serde default가 든 새 이미지(0.1.1 이상)가
@@ -17,10 +17,10 @@ appVersion: "0.1.12"
 # 신설된 경로다. 이미지를 0.1.2 이하로 고정해 쓰면 이 경로가 404라 startupProbe가 절대
 # 성공하지 못해 파드가 무한 재시작한다 — startupProbe.enabled=false와
 # livenessProbe.httpGet.path=/_internal/health로 되돌릴 것.
-# NOTE: cas.adminKeyId / Secret의 NEXUS__CAS__ADMIN_SECRET / cas.credentialsPerUser(CAS 자격증명 자동
-# 발급)는 appVersion 0.1.9 이상이 필요하다. 구 이미지에 이 env를 줘도 기동은 깨지지
-# 않는다(모르는 설정 키는 무시된다) — 다만 기능도 켜지지 않는다. 비워두면(기본값)
-# 어떤 이미지에서도 안전하다.
+# NOTE: CAS 자격증명 자동 발급(cas.adminKeyId / Secret의 NEXUS__CAS__ADMIN_SECRET /
+# cas.credentialsPerUser)은 차트 0.3.10에서 values와 템플릿에서 뺐다 — 그 판의 이미지가
+# 발급 경로를 걷었다. 이 차트로 appVersion 0.1.12 이하 이미지를 띄우면 그 기능을 켜는 값이
+# 렌더되지 않는다(되돌릴 때 주의는 CHANGELOG 0.3.10).
 # NOTE: ingest.admissionWaitMs(적재 유입 제어의 대기 상한)도 appVersion 0.1.9 이상이다.
 # 구 이미지는 이 값을 무시하고 지금까지처럼 무한 대기한다.
 # NOTE: Secret의 NEXUS__METRICS__TOKEN(=/_internal/metrics를 여는 값)도 appVersion 0.1.9
@@ -33,3 +33,5 @@ appVersion: "0.1.12"
 # NOTE: auth.oidc.issuers(OIDC 발급자 목록)를 설정하려면 appVersion 0.1.11 이상이
 # 필요하다. 구 이미지는 이 env를 무시하므로 기동은 깨지지 않지만 기능도 켜지지 않는다.
 # 비워두면(기본값) 어떤 이미지에서도 안전하다.
+# NOTE: HTTP 요청 지표(axum_http_requests_*)는 차트 0.3.10의 이미지부터 나온다. 구 이미지에서는
+# 그 시리즈가 없다.

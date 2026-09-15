@@ -80,6 +80,64 @@ nexus-server 는 마이그레이션이 바이너리에 임베드되어 **기동 
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.3.10
+
+image: `int2jieun/nexus-server:0.1.12` → `0.1.13`
+digest: `sha256:9b24657b5bafd957c350914a90127bf2ec071d8c825907679e2552ee427dec49`
+
+**동작 변경** — ⑴ nexus 가 CAS 자격증명을 발급·폐기하지 않습니다(아래 「CAS 자격증명 발급 경로」). ⑵ 지표 `nexus_cas_credential_revocations_pending` 이 없어집니다. ⑶ HTTP 요청 지표 셋이 더해집니다(아래 「HTTP 요청 지표」). ⑷ `GET /api/v1/admin/config-effective` 의 `cas` 에서 `admin_key_id` · `admin_secret` · `credentials_per_user` 가 빠집니다. ⑸ OpenAPI 에서 CAS 자격증명 발급의 요청 본문과 `201` · `409` 응답, 두 폐기 경로의 `204` · `404` 응답, 재시도 경로, 관련 스키마 넷이 빠집니다. 그 밖의 호출은 `0.1.12` 와 같습니다.
+**마이그레이션** — 없음. 롤백 안전(`cas.adminKeyId` 를 설정했던 배포는 아래 「관리 키를 설정해 쓰던 배포」를 보십시오)
+**설정 키** — `cas.adminKeyId` · `cas.credentialsPerUser` 를 values 에서 뺐습니다. `cas.adminKeyId` 를 설정한 적이 없는 배포는 할 일이 없습니다.
+**호환성** — ⑶ 은 appVersion `0.1.13` 이상에만 있습니다. SDK 는 판을 올리지 않아도 됩니다.
+**운영 조치** — `nexus_cas_credential_revocations_pending` 에 알림이나 `absent()` 조건을 걸었으면 올리기 전에 걷으십시오.
+
+### CAS 자격증명 발급 경로
+
+CAS STS 임시 자격증명(cas-server 이미지 `0.1.28` 이상)이 생기면서, nexus 가 사용자 대신 CAS 자격증명을 발급하던 경로를 걷습니다. 이 판은 그 첫 단계입니다.
+
+```
+POST   /api/v1/auth/cas-credentials                     항상 503 (401 · 403 이 먼저)
+DELETE /api/v1/auth/cas-credentials/{cas_key_id}        항상 503 (401 · 403 이 먼저)
+DELETE /api/v1/admin/cas-credentials/{cas_key_id}       superuser 가 아니면 403, 맞으면 항상 503
+GET    /api/v1/auth/cas-credentials                     200 (그대로)
+GET    /api/v1/admin/cas-credentials                    200 (그대로)
+POST   /api/v1/admin/cas-credentials/retry-revocations  없음 (405)
+```
+
+역할 변경 · 계정 정지 · 계정 삭제 · 로봇 삭제 · 로봇의 마지막 토큰 폐기가 CAS 자격증명을 폐기하지 않습니다.
+
+`cas.adminKeyId` 를 설정한 적이 없는 배포는 발급 · 폐기가 원래 `503` 이었으므로 달라지는 호출이 없습니다. 발급 경로를 지우지 않고 `503` 으로 남긴 이유는 SDK 입니다 — SDK `0.1.9`~`0.1.13` 은 STS 모드가 아닐 때 자격증명 없이 접속하면 이 경로로 발급을 요청하고, `503` 이면 경고 한 줄을 남긴 뒤 접속을 계속합니다. 그 밖의 응답이면 접속이 실패합니다.
+
+**관리 키를 설정해 쓰던 배포.** 올리기 전에 `GET /api/v1/admin/cas-credentials` 로 발급된 자격증명을 확인해 정리하십시오 — 이 판부터 nexus 는 cas 에서 키를 폐기할 수 없습니다. 그 키를 들고 있는 SDK 는 키가 만료되거나 폐기되면 재발급 요청이 `503` 으로 실패하므로 STS 모드나 직접 준 키로 바꾸십시오. 이미지를 `0.1.9`~`0.1.12` 로 되돌릴 때는 `cas.adminKeyId` 와 Secret 의 `NEXUS__CAS__ADMIN_SECRET` 을 함께 두거나 함께 빼십시오 — 한쪽만 있으면 그 이미지는 기동하지 않습니다.
+
+이후 판에서 남은 다섯 경로와 자격증명 기록을 지웁니다. 발급을 요청하지 않는 SDK 판이 나온 뒤이고, 지우는 판은 그 전에 이 파일로 알립니다.
+
+### HTTP 요청 지표
+
+`GET /_internal/metrics` 에 셋이 더해집니다. 이름 · 라벨 키 · 지연 구간이 cas-server 와 같습니다. 다만 어느 라우트에도 매칭되지 않은 요청을 cas-server 는 요청 경로로, nexus 는 `unmatched` 로 적습니다.
+
+```
+axum_http_requests_total              카운터     method · status · endpoint
+axum_http_requests_duration_seconds   히스토그램  method · status · endpoint
+axum_http_requests_pending            게이지     method · endpoint
+```
+
+`endpoint` 는 요청 경로가 아니라 라우트 템플릿입니다(`/datasets/{dataset_id}`). dataset id 마다 시리즈가 생기지 않습니다. 어느 라우트에도 매칭되지 않은 요청은 `endpoint="unmatched"` 하나로 모입니다. 프로브(`/_internal/live` · `/_internal/health`)와 스크레이프 경로도 함께 셉니다.
+
+**클라이언트가 응답 전에 연결을 끊은 요청은 `axum_http_requests_total` · `_duration_seconds` 에 들어가지 않습니다** — 응답이 만들어지는 시점에 기록하는데, 그 전에 끊기면 그 시점이 오지 않기 때문입니다(`axum_http_requests_pending` 은 끊기는 순간 되돌아갑니다). `_duration_seconds` 는 응답 헤더가 만들어질 때까지의 시간이고, 헤더가 나간 뒤 끊긴 요청은 셉니다. 그런 요청은 서버 로그의 `요청이 취소됐다` 줄로 봅니다.
+
+엔드포인트 하나만 `5xx` 인 결함은 이렇게 봅니다.
+
+```promql
+sum by (endpoint) (rate(axum_http_requests_total{status=~"5.."}[5m]))
+```
+
+요청률을 볼 때는 프로브와 스크레이프 경로를 빼십시오.
+
+```promql
+sum by (endpoint) (rate(axum_http_requests_total{endpoint!~"/_internal/.*"}[5m]))
+```
+
 ## 0.3.9
 
 image: `int2jieun/nexus-server:0.1.11` → `0.1.12`
