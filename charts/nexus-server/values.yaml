@@ -1,22 +1,21 @@
 # nexus-server Helm Chart — values.yaml
 # 비밀(NEXUS__DATABASE__URL, NEXUS__CAS__KEY_ID/SECRET, NEXUS__JWT__SECRET,
-#      NEXUS__CVAT__PASSWORD, NEXUS__AUTH__SUPERUSER_PASSWORD,
-#      NEXUS__CAS__ADMIN_SECRET, NEXUS__METRICS__TOKEN)은
+#      NEXUS__CVAT__PASSWORD, NEXUS__AUTH__SUPERUSER_PASSWORD, NEXUS__METRICS__TOKEN)은
 # 여기에 두지 않는다 — sealed-secret으로 클러스터에 주입하고 envFrom으로 받는다.
-# 앞의 넷이 필수, 뒤의 넷은 그 기능을 쓸 때만이다(examples/secret.example.yaml).
+# 앞의 넷이 필수, 뒤의 셋은 그 기능을 쓸 때만이다(examples/secret.example.yaml).
 #
 # ── 문서 ─────────────────────────────────────────────────────────────────────
 #   아키텍처 (도메인 모델·버전 관리·스냅샷 구조)
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.9/charts/nexus-server/docs/architecture.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.10/charts/nexus-server/docs/architecture.md
 #   사용법 (설치·SDK 연결·Dataset 워크플로우)
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.9/charts/nexus-server/docs/usage.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.10/charts/nexus-server/docs/usage.md
 #   차트 README
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.9/charts/nexus-server/README.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.10/charts/nexus-server/README.md
 # ─────────────────────────────────────────────────────────────────────────────
 
 image:
   repository: int2jieun/nexus-server
-  tag: "0.1.12"
+  tag: "0.1.13"
   # digest 로 핀하려면 여기에 넣으십시오 (`sha256:...`). 값이 있으면 tag 대신 이것이
   # 쓰이고, 렌더 결과가 `repository@sha256:...` 가 됩니다.
   #
@@ -71,28 +70,16 @@ cas:
   region: "cas-default"
   defaultBucket: "data"
 
-  # ── CAS 자격증명 자동 발급 (선택, appVersion 0.1.9+) ────────────────
-  # 채우면 SDK 접속 시 nexus가 그 사람 몫의 CAS 자격증명을 대신 발급하고, 역할 변경·
-  # 계정 정지·계정 삭제가 그것을 전부 폐기한다. 배경과 롤백은 CHANGELOG 0.3.6 참조.
   #
-  # 둘 다 비우면(기본) 이 기능만 꺼진다. **하나만 채우면 기동에 실패한다.**
+  # cas 쪽에서 데이터 평면 키(Secret의 NEXUS__CAS__KEY_ID/SECRET)에 걸어야 할 정책:
+  #   CreateBucket/PutObject/DeleteObject/GetObject. CreateBucket은 버킷이 이미 있어도
+  #   필요하다 — 없으면 기동 시 기본 버킷 보장이 403으로 실패한다.
+  #   annotations/·manifests/ 앞에 deny를 걸지 말 것 — seal이 이 키로 그 두 접두사에 직접 쓴다.
+  #   **cas의 root 키를 쓰지 말 것**(root는 정책 평가를 건너뛰어 관리 평면 전권이다).
+  #   서버는 이것을 확인하지 않는다.
   #
-  # cas 쪽에 걸어야 할 정책 — 하나라도 어긋나면 배포가 깨진다.
-  #   관리 키(이 값)       cas:ManageAccessKeys 하나만. **데이터 평면 키와 다른 키여야
-  #                        한다**(같으면 기동 거부). 데이터 평면 키에 이 정책을 얹으면
-  #                        그 키가 새는 순간 자격증명 공장이 된다.
-  #   데이터 평면 키       CreateBucket/PutObject/DeleteObject/GetObject (기존 그대로).
-  #                        CreateBucket은 버킷이 이미 있어도 필요하다 — 없으면 기동 시
-  #                        기본 버킷 보장이 403으로 실패한다.
-  #                        **cas의 root 키이면 기동을 거부한다**(root는 정책 평가를
-  #                        건너뛰어 이미 관리 평면 전권이다). 이 확인은 adminKeyId를
-  #                        채운 배포에서만 돌고, cas에 못 닿으면 경고 후 계속한다.
-  #                        annotations/·manifests/ 앞에 deny를 걸지 말 것 — seal이
-  #                        이 키로 그 두 접두사에 직접 쓴다.
-  adminKeyId: ""          # 관리 키 id. 비우면 기능 꺼짐. 비밀은 Secret의 NEXUS__CAS__ADMIN_SECRET
-  # 한 사용자의 활성 자격증명(기기당 하나) 상한. 넘으면 가장 오래된 것을 폐기한다.
-  # 비우면 서버 기본 10. 1 미만이면 기동 실패.
-  credentialsPerUser: ""
+  # CAS 자격증명 자동 발급(cas.adminKeyId · cas.credentialsPerUser)은 차트 0.3.10에서 뺐다 —
+  # 그 값을 적어도 렌더되지 않는다. CHANGELOG 0.3.10 참조.
 
 # ── DB 풀 / ingest 동시성 ────────────────────────────────────────────
 # 불변식: (동시에 적재하는 전원의 flush workers 합) × ingest.batchItemConcurrency
@@ -268,7 +255,8 @@ auth:
 # 나머지 엔드포인트와 달리 JWT가 아니라 별도 bearer를 받는다 — 스크레이퍼는 로그인할 수
 # 없고, JWT를 쓰게 하면 모니터링 스택이 카탈로그 전체를 읽는 계정을 들고 있어야 한다.
 #
-# 내는 시리즈 열둘(appVersion 0.1.10부터 다섯, 0.1.12부터 하나가 늘었다):
+# 내는 지표 이름 열넷(appVersion 0.1.10부터 다섯, 0.1.12부터 하나가 늘었고, 차트 0.3.10의 이미지에서
+# 하나가 빠지고 셋이 늘었다):
 #   nexus_db_pool_connections            워크로드 풀의 현재 커넥션 수(상한이 아니다)
 #   nexus_db_pool_idle_connections       그중 유휴. 현재 - 유휴 = 사용 중
 #   nexus_db_pool_acquire_timeouts_total 풀 획득 타임아웃 누적 — 이 값이 오르기
@@ -276,26 +264,27 @@ auth:
 #   nexus_ingest_permits_total           적재 자리 수(maxConnections - 4)
 #   nexus_ingest_permits_available       그중 비어 있는 자리
 #   nexus_ingest_rejected_total          유입 제어가 429로 돌려보낸 누적 건수
-#   nexus_cas_credential_revocations_pending  미처리 CAS 자격증명 폐기 건수.
-#                                        **미처리가 없어도 0으로 나온다** — 시리즈가
-#                                        사라지면 "없다"와 "안 나온다"가 구분되지 않고,
-#                                        그 구분이 이 값의 존재 이유다
 #   nexus_robot_tokens_active            폐기되지 않았고 만료 전인 로봇 토큰 수
 #   nexus_robot_tokens_expiring_soon     그중 7일 안에 만료되는 것
 #   nexus_robot_token_min_expires_in_seconds  가장 가까운 만료까지 남은 초.
 #                                        **활성 토큰이 없으면 +Inf** — 0을 내면 알림이
 #                                        "임박"으로 읽고, 시리즈를 빼면 옛 값이 남는다
-#   nexus_robot_accounts_without_active_token 활성 토큰이 하나도 없는 로봇 계정 수.
-#                                        이 값이 0이 아닌 채로 유지되면 그 계정들의
-#                                        CAS 자격증명이 살아 있다는 뜻이다
-#   nexus_metrics_db_stats_ok            DB를 읽는 다섯(미처리 폐기 + 로봇 넷)을 이번
-#                                        스크레이프에서 실제로 읽었으면 1, 못 읽었으면 0
-#                                        (appVersion 0.1.12+)
+#   nexus_robot_accounts_without_active_token 활성 토큰이 하나도 없는 로봇 계정 수
+#   nexus_metrics_db_stats_ok            DB를 읽는 로봇 넷을 이번 스크레이프에서
+#                                        실제로 읽었으면 1, 못 읽었으면 0 (appVersion 0.1.12+)
+#   axum_http_requests_total             요청 수. 라벨 method·status·endpoint
+#   axum_http_requests_duration_seconds  요청 지연 히스토그램. 라벨 method·status·endpoint
+#   axum_http_requests_pending           처리 중인 요청 수. 라벨 method·endpoint
+#                                        (HTTP 셋은 차트 0.3.10의 이미지부터. 이름·라벨 키가
+#                                        cas-server와 같다. endpoint는 라우트 템플릿이고,
+#                                        어느 라우트에도 매칭되지 않은 요청은 unmatched다 —
+#                                        cas-server는 그 자리에 요청 경로를 적는다)
+#   nexus_cas_credential_revocations_pending은 차트 0.3.10의 이미지에서 없어졌다.
 # readiness 전용 커넥션은 세지 않는다(크기 1 고정).
 #
-# **DB를 조회하는 것은 그 다섯뿐이다**(한 왕복, 250ms 제한). **조회가 실패하거나 250ms를
-# 넘겨도 그 다섯은 사라지지 않고 직전 값으로 남는다**(기동 후 한 번도 못 읽었으면 처음부터
-# 없다) — 그래서 다섯을 읽는 알림은
+# **DB를 조회하는 것은 로봇 넷뿐이다**(한 왕복, 250ms 제한). **조회가 실패하거나 250ms를
+# 넘겨도 그 넷은 사라지지 않고 직전 값으로 남는다**(기동 후 한 번도 못 읽었으면 처음부터
+# 없다) — 그래서 넷을 읽는 알림은
 # nexus_metrics_db_stats_ok == 1 을 함께 건다. 풀·유입 제어 지표는 메모리 상태라 그대로
 # 나온다. readiness 전용
 # 풀(크기 1)은 쓰지 않는다: 스크레이프가 그 하나를 잡으면 readiness가 굶어 파드가
@@ -330,7 +319,6 @@ cvat:
 #   NEXUS__DATABASE__URL, NEXUS__CAS__KEY_ID, NEXUS__CAS__SECRET, NEXUS__JWT__SECRET
 # CVAT 연동을 쓰면 여기에 NEXUS__CVAT__PASSWORD도 함께 넣는다.
 # superuser를 쓰면 NEXUS__AUTH__SUPERUSER_PASSWORD도 함께 넣는다(위 auth 참조).
-# CAS 자격증명 자동 발급(cas.adminKeyId)을 쓰면 NEXUS__CAS__ADMIN_SECRET도 함께 넣는다(위 cas 참조).
 # 메트릭을 쓰면 NEXUS__METRICS__TOKEN도 함께 넣는다 — 그 키를 넣는 것이 곧 켜는 것이다(위 metrics 참조).
 # existingSecret 비우면 기본 이름(<fullname>) 사용.
 secret:
@@ -452,14 +440,6 @@ terminationGracePeriodSeconds: 30
 # 일어나지 않지만, 모자라면 kill → 재기동 → 마이그레이션 재시작이 반복된다. 자기 환경의
 # 실제 소요는 첫 기동 로그의 `마이그레이션 완료 applied=<건수> elapsed_ms=<소요>` 중
 # applied가 0보다 큰 줄에서 확인하고, 그 값을 다음 릴리스의 예산 근거로 삼을 것.
-#
-# **CAS 자격증명 자동 발급(위 cas.adminKeyId)을 켠 배포는 여기에 최악 130초가 더
-# 얹힌다.** 서버는 마이그레이션 뒤, 포트를 열기(bind) 전에 이전 cas 장애로 미처리로
-# 남은 자격증명 폐기를 마저 보낸다 — 이 구간도 마이그레이션과 마찬가지로 포트가 아직
-# 안 열려 있어 프로브는 connection refused를 받는다. 130초는 이 sweep이 한 번에 보는
-# 상한(100건, 동시성 8, 호출당 타임아웃 10초 → `ceil(100/8) × 10초`)이고, 흔한 경우
-# (미처리 몇십 건 이하)는 그보다 짧게 끝난다. adminKeyId를 비워 기능을 끈 배포에는 이
-# 구간 자체가 없다.
 startupProbe:
   enabled: true
   httpGet:
