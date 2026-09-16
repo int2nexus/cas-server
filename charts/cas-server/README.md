@@ -5,9 +5,9 @@ HTTP API를 제공한다.
 
 ## 문서
 
-- [아키텍처](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.37/charts/cas-server/docs/architecture.md)
+- [아키텍처](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.38/charts/cas-server/docs/architecture.md)
   — 스토리지 모델(CAS·dedup·GC), 백엔드 구성, S3 호환 API 명세, 에러 코드
-- [사용법](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.37/charts/cas-server/docs/usage.md)
+- [사용법](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.38/charts/cas-server/docs/usage.md)
   — 배포 절차, 웹 UI 키 관리, AWS CLI/boto3 예제, 내부 API
 - [변경 이력](CHANGELOG.md)
   — 버전별 동작 변경·마이그레이션·설정 키. 각 항목은 해당 GitHub Release 본문과 동일하다
@@ -49,7 +49,7 @@ kubectl apply -f sealed-secret.yaml -n <namespace>
 배포에서 그 값이 없으면 스크레이프가 `401`** 이다. 용도는 [메트릭 스크레이프](#메트릭-스크레이프) 참고.
 
 `secrets.secretMasterKey`를 비우면 NoAuth 모드(인증 없음, 내부망 전용)로 동작한다. 상세 절차와 값 교체
-방법은 [`examples/sealed-secret.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.37/charts/cas-server/examples/sealed-secret.yaml) 참고.
+방법은 [`examples/sealed-secret.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.38/charts/cas-server/examples/sealed-secret.yaml) 참고.
 
 ## 설치
 
@@ -57,7 +57,7 @@ kubectl apply -f sealed-secret.yaml -n <namespace>
 helm install cas-server int2nexus/cas-server -n <namespace> -f values-prod.yaml
 ```
 
-`values-prod.yaml`은 직접 작성하거나 [`examples/values-prod.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.37/charts/cas-server/examples/values-prod.yaml)을
+`values-prod.yaml`은 직접 작성하거나 [`examples/values-prod.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.38/charts/cas-server/examples/values-prod.yaml)을
 내려받아 값을 채운 뒤 사용하세요(이 레포를 clone했다면 `charts/cas-server/examples/values-prod.yaml`).
 
 ### S3 / MinIO 모드 values 예시
@@ -244,9 +244,8 @@ kubectl rollout restart -n <namespace> deploy/<fullname>   # 릴리스명이 아
 | `cas_gc_last_status` | gauge | — | `0`=성공 `1`=**실행** 실패 `2`=실행 중. 항목 몇 건이 실패한 실행은 `0` 입니다 — 그 수는 `cas_gc_last_errors` 입니다 (이미지 `0.1.26` 이상). `0.1.25` 이하에서는 `errors > 0` 인 실행도 `1` 이었습니다 |
 | `cas_gc_last_errors` | gauge | 건수 | 마지막 실행이 회수하지 못한 **항목** 수. **이미지 `0.1.26` 에서 새로 생겼습니다** — 그 미만에는 이 지표가 없습니다. 같은 값이 `GET /_api/gc/last-result`·`/history` 의 `errors` 필드로도 나가며, 그 계수가 `0.1.26` 에서 양방향으로 바뀌었습니다(같은 blob 이 두 단계에서 실패해도 1, 그리고 회수 직전 재확인 실패를 새로 셉니다 — CHANGELOG `0.1.33` 절). **재기동 뒤 첫 GC 실행까지 시리즈가 없습니다** |
 | `cas_gc_candidates` / `cas_gc_candidate_bytes` | gauge | 건수 / 바이트 | 회수 후보 큐. GC 실행이 끝난 시점의 값이라 `orphan` 이 큐를 비운 직후를 가리킵니다 |
-| `cas_authn_fail_total{plane,reason}` | counter | 건수 | **인증에 실패한 요청.** `plane` 은 `s3` · `admin` · `gc`, `reason` 은 `no_credentials` · `unknown_key` · `key_inactive` · `key_expired` · `key_is_template` · `secret_undecryptable` · `malformed_header` · `clock_skew` · `presigned_expired` · `signature_mismatch` · `other`. **어느 설정에도 딸리지 않습니다** — `anonymousGet` 을 내린 뒤 남은 `403` 의 원인을 가르는 지표가 이것입니다 (이미지 `0.1.30` 이상, 아래 참고) |
+| `cas_authn_fail_total{plane,reason}` | counter | 건수 | **인증에 실패한 요청.** `plane` 은 `s3` · `admin` · `gc`, `reason` 은 `no_credentials` · `unknown_key` · `key_inactive` · `key_expired` · `key_is_template` · `secret_undecryptable` · `malformed_header` · `clock_skew` · `presigned_expired` · `signature_mismatch` · `missing_payload_hash` · `other`. **어느 설정에도 딸리지 않습니다** — `anonymousGet` 을 내린 뒤 남은 `403` 의 원인을 가르는 지표가 이것입니다 (이미지 `0.1.30` 이상, 아래 참고) |
 | `cas_authz_deny_total{action}` | counter | 건수 | **정책이 막은 요청.** 인증은 통과했고 그 키에 그 액션이 없는 경우입니다. 와이어에서는 위와 똑같은 `403` 이라, 이 축이 없으면 「자격증명을 고칠 일」과 「정책을 넓힐 일」이 한 숫자가 됩니다 (이미지 `0.1.30` 이상) |
-| `cas_sigv4_payload_hash_fallback_total{plane}` | counter | 건수 | `x-amz-content-sha256` **없이** 서명했는데 서버의 부재 폴백 덕분에 통과한 요청. presigned 는 규격상 그 헤더가 없으므로 세지 않습니다 (이미지 `0.1.30` 이상) |
 | `cas_sts_issue_total{result}` | counter | 건수 | STS 발급. `result` 는 `issued`(새로 발급) · `reused`(살아 있는 세션 재사용). **성공 신호는 `issued` 가 아니라 `issued + reused` 입니다** — 살아 있는 세션이 있으면 그것을 그대로 돌려주므로 정상 동작 중에도 `issued` 가 멎어 있을 수 있습니다. **STS 를 켠 배포에만 나옵니다** (이미지 `0.1.28` 이상) |
 | `cas_sts_reject_total{reason}` | counter | 건수 | STS 거절. `reason` 은 `invalid_token` · `expired_token` · `no_mapping` · `template_unusable` · `idp_unavailable` · `validation`. 〃 |
 | `cas_integrity_mismatch_total{source}` | counter | 건수 | 선언 체크섬과 받은 바이트가 다른 건수. `source` 는 `content_sha256` · `trailer_checksum`(바이트가 어긋남) · `trailer_protocol`(`x-amz-trailer` 선언을 어김). **`config.integrityCheck` 가 `off` 가 아닌 배포에만 나옵니다** (이미지 `0.1.29` 이상). `log` 에서 이 값이 곧 `enforce` 의 예상 거절 건수입니다 — 요청당 한 번만 셉니다 |
@@ -266,7 +265,8 @@ kubectl rollout restart -n <namespace> deploy/<fullname>   # 릴리스명이 아
 | `cas_blob_put_bytes_total` · `cas_blob_dedup_total` · `cas_gc_deleted_blobs_total` · `cas_gc_freed_bytes_total` | 이미지 `0.1.26` 이상에서 기동 직후. 그 미만은 첫 이벤트 뒤 | `0.1.26` 이상에서 걸어도 됩니다 |
 | `cas_anonymous_get_total{reason="unsigned"}` · `{reason="signed_valid"}` | `anonymousGet: true` 이고 이미지 `0.1.26` 이상이면 기동 직후 | 위와 같습니다. 끈 배포에는 나오지 않습니다 |
 | `cas_anonymous_get_total{reason="signed_invalid"}` | 그 원인이 처음 생겼을 때 | **걸지 마십시오** — `cause` 라벨 값이 열려 있어 미리 등록하지 않습니다 |
-| `cas_authn_fail_total{plane,reason}` · `cas_authz_deny_total{action}` · `cas_sigv4_payload_hash_fallback_total{plane}` | 이미지 `0.1.30` 이상이면 기동 직후. **어느 설정에서도 나옵니다** | 걸어도 됩니다. 이 셋은 설정을 따르지 않으므로 부재는 「그 이미지 미만이거나 서버가 이상하다」는 뜻입니다 |
+| `cas_authn_fail_total{plane,reason}` · `cas_authz_deny_total{action}` | 이미지 `0.1.30` 이상이면 기동 직후. **어느 설정에서도 나옵니다** | 걸어도 됩니다. 이 둘은 설정을 따르지 않으므로 부재는 「그 이미지 미만이거나 서버가 이상하다」는 뜻입니다 |
+| ~~`cas_sigv4_payload_hash_fallback_total{plane}`~~ | 이미지 `0.1.30` 에만 있었습니다. `0.1.31` 부터 **나오지 않습니다** | **걸어 둔 `absent()` 룰을 지우십시오** — 지우지 않으면 영원히 발화합니다. 그 자리는 `cas_authn_fail_total{reason="missing_payload_hash"}` 입니다 |
 | `cas_gc_last_ran_at_seconds{phase}` | 기동 시 이력에서 복원 | 걸어도 됩니다. **GC 정지를 보는 알림은 이 값으로 겁니다** |
 | `cas_gc_last_duration_ms{phase}` · `cas_gc_last_reclaimed_blobs{phase}` · `cas_gc_last_status` · `cas_gc_last_errors` | **재기동 뒤 첫 GC 실행까지 없습니다** | **걸지 마십시오** — 재기동마다 울립니다 |
 | `cas_gc_candidates` · `cas_gc_candidate_bytes` | 첫 GC 실행 뒤 | **걸지 마십시오** — 같은 이유 |
@@ -340,13 +340,33 @@ cas_authz_deny_total{action}         인증은 통과했고 정책이 막았다
 | presigned URL 이 만료됐다 | `{reason="presigned_expired"}` | 발급 쪽 만료를 늘리거나 재발급합니다 |
 | 세션 자격증명이 만료됐다 | `{reason="key_expired"}` | 갱신 주기와 `expirationSeconds` 를 봅니다 |
 | 클라이언트 배선(값 잘림·시계) | `{reason="signature_mismatch"}` · `{reason="clock_skew"}` | 그 클라이언트를 고칩니다 |
+| `x-amz-content-sha256` 을 안 싣는 서명기 | `{reason="missing_payload_hash"}` | 그 클라이언트가 그 헤더를 싣게 합니다. **이쪽은 `400` 입니다** |
 | 정책이 좁다 | `cas_authz_deny_total{action="GetObject"}` | 그 키의 정책을 넓힙니다 |
 
-주의: **`malformed_header` 는 `400` 이고, `other` 는 서버 내부 오류라 `5xx` 일 수 있습니다.**
+주의: **`malformed_header` 와 `missing_payload_hash` 는 `400` 이고, `other` 는 서버 내부 오류라 `5xx` 일 수 있습니다.**
 나머지 `reason` 은 `403` 입니다. 두 카운터의 합을 `axum_http_requests_total{status="403"}` 과
-맞대실 때는 그 둘을 빼고 세십시오. 반대로 STS(`POST /`)의 `403` 은 이 둘이 아니라
+맞대실 때는 그 셋을 빼고 세십시오. 반대로 STS(`POST /`)의 `403` 은 이 둘이 아니라
 `cas_sts_reject_total{reason}` 에 잡히고, GC·관리 경로의 Bearer 토큰 실패는 `401` 이라 어느
 카운터에도 들어가지 않습니다.
+
+**내리기 전에 보던 `cas_anonymous_get_total{reason}` 과의 대응입니다.** 내린 뒤 그 시리즈는
+사라지므로, 전후를 이어 보려면 이 표를 씁니다.
+
+| 내리기 전 | 내린 뒤 |
+|---|---|
+| `{reason="unsigned"}` | `cas_authn_fail_total{plane="s3", reason="no_credentials"}` |
+| `{reason="signed_invalid", cause=X}` | `cas_authn_fail_total{plane="s3", reason=X}` — `cause` 와 `reason` 이 같은 값입니다 |
+| `{reason="signed_valid"}` | **전용 시리즈가 없습니다.** 가장 가까운 값은 객체 경로의 성공 응답 수 — `axum_http_requests_total{endpoint="/{bucket}/{*key}", method=~"GET\|HEAD", status=~"2.."}` 입니다(presigned 포함). **같은 값은 아닙니다** — 아래를 보십시오 |
+
+⚠ **`signed_valid` 이 그대로 성공으로 넘어오지는 않습니다.** 익명 경로는 정책을 건너뛰므로,
+그 키에 `GetObject` 가 없어도 `signed_valid` 로 세어집니다. 내리면 그 요청들은
+`cas_authz_deny_total` 의 `403` 이 됩니다 — 내린 뒤 성공 수가 `signed_valid` 보다 작다면
+먼저 그 카운터를 보십시오.
+
+⚠ **`anonymousGet: true` 인 동안에는 객체 `GET`·`HEAD` 가 `missing_payload_hash` 로
+거절되지 않습니다.** 그 경로는 인증 결과와 무관하게 통과하므로 그 헤더를 빼먹은
+요청도 200 이고, `cas_anonymous_get_total{reason="signed_invalid", cause="missing_payload_hash"}`
+에만 남습니다. 내리면 그때부터 `400` 입니다.
 
 **403 을 받은 요청자는 로그로 찾습니다.** 지표에는 출발지를 라벨로 두지 않습니다(값이
 끝없이 늘어나기 때문입니다). **요청자 단서가 붙는 것은 인증 실패뿐입니다** — 정책 거절에는 `peer`·`ua` 가
@@ -540,7 +560,7 @@ DB 도 타지 않습니다. 그 이전 이미지에서는 `blobs` 전량을 안�
 
 주기는 데이터 크기가 아니라 **회수 대상이 쌓이는 속도**로 정하십시오. 스캔 비용은 회수할
 blob 이 0건이든 수천 건이든 같습니다. 판단 기준과 미루는 비용 계산은
-[docs/usage.md](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.37/charts/cas-server/docs/usage.md) 의 "주기를 정하는 기준" 을 참고하십시오.
+[docs/usage.md](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.38/charts/cas-server/docs/usage.md) 의 "주기를 정하는 기준" 을 참고하십시오.
 
 `gc.phases` 는 이미지 `0.1.20` 이상이 해석합니다. **`sweep` 은 `0.1.25` 이상**이라,
 `0.1.20`~`0.1.24` 에 보내면 서버가 `400` 으로 거절하고 그 Job 이 실패합니다.
@@ -588,9 +608,15 @@ blob 이 0건이든 수천 건이든 같습니다. 판단 기준과 미루는 �
 값이나 됩니다 — 서버는 클라이언트가 선언한 값으로 서명 키를 유도합니다).
 
 **그 묶음에 `x-amz-content-sha256` 이 들어가야 합니다.** 서버는 그 헤더 값을 payload
-hash 로 쓰고, 없으면 `UNSIGNED-PAYLOAD` 로 봅니다. 빈 바디의 SHA256 으로 서명하면서 그
-헤더를 붙이지 않는 범용 SigV4 서명기를 쓰면 `403 SignatureDoesNotMatch` 가 됩니다 —
-권한 문제로 보이지만 서명 대상이 어긋난 것입니다. 데이터 평면도 같은 규칙입니다.
+hash 로 쓰고, **없거나 비어 있으면 `400 InvalidRequest` 로 거절합니다**(이미지 `0.1.31`
+이상). 빈 바디의 SHA256 으로 서명하면서 그 헤더를 붙이지 않는 범용 SigV4 서명기가
+그렇습니다. 데이터 평면도 같은 규칙입니다.
+
+`0.1.30` 이하는 그 헤더가 없으면 `UNSIGNED-PAYLOAD` 로 보고 통과시켰습니다. 그때도
+범용 서명기는 `403 SignatureDoesNotMatch` 였으므로 — 서명 대상이 어긋나서입니다 —
+그 서명기를 쓰는 클라이언트는 **이전에도 동작하지 않았고** 상태코드만 403 에서 400 으로
+바뀝니다. presigned 는 규격이 `UNSIGNED-PAYLOAD` 를 못박고 있어 그 헤더가 오지 않는
+것이 정상이고, 이 거절의 대상이 아닙니다.
 
 ```bash
 curl -X POST "$BASE/_admin/access-keys" -H "$SIGV4" \

@@ -84,6 +84,77 @@ cas-server 는 기동 시 `sqlx::migrate!` 로 `migrations/` 를 적용합니다
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.1.38
+
+image: `int2jieun/cas-server:0.1.31`
+digest: `sha256:7bacb1ac26aa71b6fbfd65d9dea00162194fca727f1ff59e1af54dd96d1ee69b`
+
+**동작 변경** — ⑴ 헤더로 SigV4 서명한 요청에 `x-amz-content-sha256` 이 없거나 비어 있으면 `400 InvalidRequest` 입니다. ⑵ 오브젝트 스토리지가 응답하지 않을 때 쓰기·복사가 `500` 대신 `503` 입니다. ⑶ `storage.mode: nfs` 이고 `storage.nfs.backends` 가 둘 이상인 배포에서 블롭의 위치 판정이 달라집니다
+**마이그레이션** — 없음. **롤백 하한은 `0.1.28` 그대로입니다**
+**설정 키** — 없음
+**운영 조치** — `cas_sigv4_payload_hash_fallback_total` 이 없어집니다. 그 시계열에 `absent()` 알림을 걸어 두었다면 지우십시오 (⑷)
+
+**⑴ `x-amz-content-sha256` 이 필수가 됐습니다.**
+
+헤더로 SigV4 서명하는 요청은 그 헤더를 실어야 합니다. 없거나 비어 있으면
+`400 InvalidRequest` 이고 본문이 그 헤더 이름을 말합니다. `0.1.30` 이하는 없으면
+`UNSIGNED-PAYLOAD` 로 보고 통과시켰습니다.
+
+AWS SDK · AWS CLI · `curl --aws-sigv4` · `requests-aws4auth` 는 이 헤더를 싣습니다.
+**SigV4 를 직접 구현한 클라이언트는 확인하십시오** — 정경화에 `UNSIGNED-PAYLOAD` 를 쓰면서
+헤더를 싣지 않던 클라이언트는 `0.1.30` 이하에서 통과했고 이 판부터 `400` 입니다.
+
+presigned URL 은 규격이 payload hash 를 `UNSIGNED-PAYLOAD` 로 못박고 있어 그 헤더가
+오지 않는 것이 정상이고, 이 거절의 대상이 아닙니다.
+
+`auth.anonymousGet: true` 인 동안에는 객체 `GET`·`HEAD` 가 이 거절을 받지 않습니다 —
+그 경로는 인증 결과와 무관하게 통과하므로
+`cas_anonymous_get_total{reason="signed_invalid", cause="missing_payload_hash"}` 에만
+남습니다. 내리면 그때부터 `400` 입니다.
+
+`cas_authn_fail_total` 에 `reason="missing_payload_hash"` 가 생깁니다.
+**`malformed_header` 와 함께 `400` 이라**, 그 카운터를
+`axum_http_requests_total{status="403"}` 과 맞대실 때는 그 둘과 `other`(5xx)를 빼고
+세십시오.
+
+**⑵ 오브젝트 스토리지가 응답하지 않을 때 `503` 입니다.**
+
+`storage.mode: s3` 인 배포에 **백엔드가 하나여도** 해당합니다. 블롭이 있는지 확인하는
+조회가 실패하면 — 오브젝트 스토리지가 불통이거나 자격증명·권한이 어긋났을 때입니다 —
+`500 InternalError` 대신 `503 ServiceUnavailable` 이 나갑니다. 쓰기(PUT·멀티파트 완료)와
+`CopyObject` 의 소스 재확인이 이 경로입니다.
+
+AWS SDK 는 `503` 을 재시도 대상으로 보고 `500` 은 그렇지 않으므로, **일시적인 불통에서
+클라이언트가 스스로 회복합니다.** 5xx 알림을 걸어 두었다면 `503` 이 늘고 `500` 이 주는
+형태로 보입니다.
+
+**⑶ 블롭의 위치 판정이 기록된 백엔드를 따릅니다.**
+
+`storage.mode: nfs` 이고 `storage.nfs.backends` 가 둘 이상인 배포에만 해당합니다
+(`storage.mode: s3` 는 이 차트가 백엔드를 하나만 렌더하므로 전후가 같습니다).
+
+블롭이 어디 있는지를 요청마다 고른 백엔드가 아니라 **그 블롭에 기록된 백엔드**로
+판정합니다. 버킷을 백엔드에 핀하지 않아도 `x-cas-hash` 업로드의 본문 건너뜀이
+일관되게 동작합니다.
+
+**그 대신 기록된 백엔드가 내려가 있거나 `storage.nfs.backends` 에서 빠져 있으면 그 블롭에
+대한 쓰기가 `503` 입니다.** `0.1.30` 이하는 다른 백엔드에 써서 `200` 을 돌려줬고, 그렇게
+생긴 사본은 추적되지 않았습니다. **백엔드를 정리할 때는** 그 백엔드에 기록된 블롭이 남아
+있는지 먼저 보십시오 — 항목만 지우면 그 블롭에 대한 쓰기가 영구히 `503` 입니다.
+
+**바뀐 것은 블롭의 위치 판정뿐입니다** — 멀티파트 업로드의 파트는 아직 요청마다 백엔드를
+다시 고르므로, 백엔드가 둘 이상이면 버킷을 백엔드에 핀하십시오.
+
+**⑷ `cas_sigv4_payload_hash_fallback_total` 이 없어집니다.**
+
+⑴ 로 그 값이 오를 수 있는 경로가 사라졌습니다. `0.1.30` 문서가 이 시계열에
+`absent()` 를 걸어도 된다고 적었으므로, **걸어 두었다면 지우십시오 — 지우지 않으면
+영원히 발화합니다.** 그 자리는 `cas_authn_fail_total{reason="missing_payload_hash"}` 이고
+기동 직후 `0` 으로 등록되므로 `absent()` 를 그대로 옮길 수 있습니다.
+
+시리즈 수는 그대로입니다 — 3 개(`cas_sigv4_payload_hash_fallback_total` 3 평면)가
+빠지고 3 개(`cas_authn_fail_total` 3 평면 × 새 `reason` 1)가 생깁니다.
+
 ## 0.1.37
 
 image: `int2jieun/cas-server:0.1.30`
