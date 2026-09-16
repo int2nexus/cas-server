@@ -152,7 +152,7 @@ nx.connect()
 
 `cas_key_id`/`cas_secret`(또는 `CAS_KEY_ID`/`CAS_SECRET`)는 CAS 업로드 서명용 키. CAS가 인정하는(해당 버킷에 write 권한 있는) 키면 동작하며, nexus 서비스 키를 공유하거나 내부 정책에 따라 개인별로 발급받은 키 사용.
 
-**둘을 주지 않았을 때 — 서버 0.1.13부터 nexus는 CAS 자격증명을 발급하지 않는다.** SDK `0.1.9`~`0.1.13`은 STS 모드가 아니면 접속 시 nexus에 발급을 요청하고, 서버가 `503`을 주면 경고 한 줄을 남긴 뒤 **CAS 자격증명 없이 접속을 계속한다**(CAS가 서명 없는 요청을 받는 배포에서만 CAS를 쓸 수 있다). 경고 문구(「서버에 CAS 관리 자격증명이 구성되지 않아」)는 이 서버에서는 사실과 다르지만 동작은 맞다. CAS 자격증명은 둘 중 하나로 준다.
+**둘을 주지 않았을 때 — 서버 0.1.13부터 nexus는 CAS 자격증명을 발급하지 않고, SDK 0.1.14부터는 요청하지도 않는다.** 자격증명 없이 접속하면 경고 한 줄을 남긴 뒤 **CAS 요청이 서명 없이 나간다**(CAS가 익명 읽기를 받는 배포에서만 CAS를 쓸 수 있다). SDK `0.1.9`~`0.1.13`은 이때 nexus에 발급을 요청했고 `503`을 받아 같은 상태로 진행했다 — **발급 경로를 지운 다음 서버 판에서는 `404`라 접속이 실패하므로, 자격증명 없이 접속하는 설치본은 SDK `0.1.14` 이상으로 올린다.** CAS 자격증명은 둘 중 하나로 준다.
 
 - **CAS 임시 자격증명(STS)** — `nx.connect(cas_sts=nx.CasSts(token_file=...))`(SDK `0.1.12`+, cas-server 이미지 `0.1.28`+).
 - **운영자가 발급한 키** — `cas_key_id`/`cas_secret` 인자나 `CAS_KEY_ID`/`CAS_SECRET` 환경변수.
@@ -1276,7 +1276,7 @@ nx.connect(nexus_url="http://nexus-server", robot_token="nxr_...", cas_url="http
 ### 최상위 함수
 |||
 |---|---|
-|`nx.connect(nexus_url=, email=, password=, robot_token=, cas_url=, cas_key_id=, cas_secret=, save_cas_credentials=False, cas_sts=)`|서버 연결. `robot_token=`이면 로그인하지 않는다(SDK 0.1.10+). `save_cas_credentials`(서버 0.1.13부터는 nexus가 자동 발급하지 않아 서버 0.1.12 이하에서만 뜻이 있다) 기본값은 **SDK 0.1.10부터 `False`**(자동 발급받은 CAS 자격증명을 설정 파일에 남기지 않는다). `cas_sts=nx.CasSts(...)`이면 CAS 임시 자격증명(STS) 모드(SDK 0.1.12+)|
+|`nx.connect(nexus_url=, email=, password=, robot_token=, cas_url=, cas_key_id=, cas_secret=, save_cas_credentials=False, cas_sts=)`|서버 연결. `robot_token=`이면 로그인하지 않는다(SDK 0.1.10+). `save_cas_credentials`는 **SDK 0.1.14부터 아무 일도 하지 않는다**(발급이 없어 저장할 값이 생기지 않는다 — `True`로 주면 경고한다). 시그니처 호환으로 남아 있다. `cas_sts=nx.CasSts(...)`이면 CAS 임시 자격증명(STS) 모드(SDK 0.1.12+)|
 |`nx.list_datasets(q=, name=, description=, tags=, sort=, order=, favorite=, mine=, unowned=, limit=, cursor=)`|dataset 목록 검색. `limit`을 주지 않으면 커서를 자동 순회해 전체를 모은다([4.1](#41-데이터셋-목록-조회))|
 |`nx.upload(paths, bucket, prefix="", workers=8, overwrite=False)` → {경로: CasRef}|파일 업로드. `overwrite=True`면 같은 key에 다른 내용이 있어도 에러 대신 덮어씀(SDK 0.1.4+)|
 |`nx.probe(refs, workers=8, strict=False, max_header_bytes=65536)` → [CasRef]|업로드 없이 CAS 객체의 이미지 크기만 채움(앞부분만 읽음, 순서 보존)|
