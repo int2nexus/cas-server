@@ -524,6 +524,16 @@ entries:
     version: 0.1.0
   nexus-server:
   - apiVersion: v2
+    appVersion: 0.1.14
+    created: "2026-09-16T08:08:03.017464882Z"
+    description: ML 학습 데이터 카탈로그 서버 (cas-server 위 Sample→Dataset 버전 관리)
+    digest: 36f6e212bf67f3325be5722fc1ae2df8e7a7a674e1151338c4ed25eada606b3d
+    name: nexus-server
+    type: application
+    urls:
+    - https://github.com/int2nexus/cas-server/releases/download/nexus-server-0.3.11/nexus-server-0.3.11.tgz
+    version: 0.3.11
+  - apiVersion: v2
     appVersion: 0.1.13
     created: "2026-09-15T07:50:38.422719229Z"
     description: ML 학습 데이터 카탈로그 서버 (cas-server 위 Sample→Dataset 버전 관리)
@@ -743,4 +753,4 @@ entries:
     urls:
     - https://github.com/int2nexus/cas-server/releases/download/nexus-server-0.0.1/nexus-server-0.0.1.tgz
     version: 0.0.1
-generated: "2026-09-16T04:22:59.364042153Z"
+generated: "2026-09-16T08:08:03.017737198Z"
