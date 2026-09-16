@@ -5,8 +5,8 @@ type: application
 # 발행 시 이 둘과 values.yaml의 image.tag·image.digest를 함께 올린다. 올리지 않으면
 # 차트가 광고하는 auth.oidc.issuers를 고객이 넣어도 그 이미지가 그 env를 몰라 에러
 # 없이 기능만 꺼진다.
-version: 0.3.10
-appVersion: "0.1.13"
+version: 0.3.11
+appVersion: "0.1.14"
 # NOTE: ingest.batchItemConcurrency를 설정하려면 IngestConfig 전 필드 serde default가 든
 # 새 이미지(> 0.0.3)가 필요하다. 그 전 이미지엔 database.maxConnections만 주입해도 안전.
 # NOTE: cvat.baseUrl을 설정하려면 CvatConfig 전 필드 serde default가 든 새 이미지(0.1.1 이상)가
@@ -35,3 +35,8 @@ appVersion: "0.1.13"
 # 비워두면(기본값) 어떤 이미지에서도 안전하다.
 # NOTE: HTTP 요청 지표(axum_http_requests_*)는 차트 0.3.10의 이미지부터 나온다. 구 이미지에서는
 # 그 시리즈가 없다.
+# NOTE: appVersion 0.1.14 는 마이그레이션 023(`instances.components` GIN 인덱스 제거)을 추가한다.
+# 이 판을 올린 DB 는 이미지 0.1.13 이하로 롤백할 수 없다(sqlx 가 기동 시 적용 이력과 임베드된
+# 마이그레이션 집합을 대조하고, 모르는 버전이 남아 있으면 기동을 거부한다). 그리고 이 마이그레이션은
+# `instances` 에 AccessExclusiveLock 을 잡으므로 대량 적재 중에 올리면 적재 INSERT 가 전부 정지한다 —
+# 적재를 멈춘 창에서 올릴 것(CHANGELOG 0.3.11 마이그레이션 항목).
