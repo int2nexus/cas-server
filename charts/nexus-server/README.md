@@ -28,7 +28,15 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
 
 DB 마이그레이션은 바이너리에 임베드되어 **기동 시 자동 적용**된다(별도 Job 불필요). 마이그레이션이 끝나야 포트가 열리므로 그 시간은 곧 startupProbe 예산(기본 `periodSeconds 10 × failureThreshold 60` = 600초)에서 나간다 — 스키마가 바뀌는 릴리스로 올릴 때는 [CHANGELOG](CHANGELOG.md)의 해당 버전 **마이그레이션** 항목에서 예상 소요를 먼저 확인할 것. **거기 적힌 실측값은 특정 환경의 것이라 행 수로 환산해 그대로 쓸 수 없다** — 소요가 행 수에 선형인 것은 같은 하드웨어 안에서일 뿐이고 계수는 DB마다 다르다. 예산은 넉넉한 쪽으로 잡는다(모자라면 기동 실패가 반복되고, 남으면 아무 일도 일어나지 않는다). 서버는 stateless(파일=CAS, 메타=Postgres)라 PVC가 없다.
 
+**한 번도 vacuum 되지 않은 대형 표**(예: `instances`)의 autovacuum 임계를 낮출 때는 값이 아니라 **순서**가 중요하다. analyze 축(`autovacuum_analyze_*`)은 임계만 걸면 되지만, vacuum 축(`autovacuum_vacuum_*`)은 **① `autovacuum_vacuum_cost_delay` 를 먼저 걸고 → ② 창을 잡아 첫 `VACUUM` 을 손으로 돌린 뒤 → ③ 임계**를 건다. 첫 vacuum 을 끝내기 전에 임계부터 걸면 visibility map 이 비어 있어 힙 전량을 읽는 대규모 vacuum 이 예고 없이 발동한다 — 수동 `VACUUM` 은 `autovacuum_vacuum_cost_delay` 를 쓰지 않으므로(기본 0) 세션에서 `SET vacuum_cost_delay` 를 먼저 걸어 I/O 를 눌러 둔다.
+
 > **업그레이드 전에 [CHANGELOG](CHANGELOG.md)를 읽을 것.**
+
+**차트 0.3.12 / appVersion 0.1.15** — **마이그레이션 024 가 추가된다. CAS 자격증명 경로 다섯이 없어진다.**
+
+1. **`cas_credentials` 표를 지운다(024).** `0.3.11` 이 예고한 판이다 — 발급·본인 폐기·강제 폐기·목록 둘, 다섯 경로가 이제 `404` 다(라우트가 없어 인증을 보기 전에 끝나므로 인증 여부와 무관). **DROP 이 참조되는 `users` 에 AccessExclusiveLock 을 잡으므로** 긴 트랜잭션이 앞에 있으면 그 뒤 인증 조회가 함께 갇힌다 — `lock_timeout` 3 초로 끊는다. 소요는 밀리초라 행 수에 걸리지 않는다.
+2. **롤백 하한이 올라간다** — 이 판을 올린 DB 는 이미지 `0.1.14` 이하로 되돌릴 수 없고, 표·행이 사라져 되돌리려면 `pg_dump` 스냅샷뿐이다.
+3. **올리기 전에 둘을 끝낼 것** — ① 자격증명 없이 접속하는 SDK 를 `0.1.14` 이상으로(구 SDK 는 `404` 에 접속이 실패한다), ② 남은 CAS 자격증명을 cas 에서 폐기(올린 뒤에는 nexus 에서 목록을 볼 수 없다). 상세는 [CHANGELOG](CHANGELOG.md) `0.3.12`.
 
 **차트 0.3.11 / appVersion 0.1.14** — **마이그레이션 023 이 추가된다. 준비가 두 경우로 갈린다.**
 
@@ -166,6 +174,8 @@ CVAT 연동은 `cvat.baseUrl`·`cvat.user`·시크릿의 `NEXUS__CVAT__PASSWORD`
 
 이 계정의 권한은 토큰이 아니라 **설정값**으로 판정하므로, 이메일을 바꿔 재배포하면 즉시 회수된다 — 토큰을 무효화할 수 없는 이 서버에서 유일한 예외다(`role = admin` 쪽은 캐시 수명만큼 늦게 듣는다). **superuser 계정을 대상으로 삼는 관리 조작 셋은 누가 부르든 403이다** — `POST /api/v1/admin/users/role`(역할 변경)·`.../active`(정지)·`.../password-reset`(비밀번호 재설정). 호출자가 superuser 본인이든 `role = admin`이든 같다. 마지막 하나는 appVersion 0.1.10에서 채웠다 — 그전에는 `role = admin` 계정이 superuser의 비밀번호를 가져가 강등도 정지도 되지 않는 관리자가 될 수 있었다.
 
+**로그인·가입·갱신·OIDC 교환의 `200` 응답은 모두 `{ token, user_id, email }`이다** — 로그인 화면이 실어 쓰는 토큰 필드는 `token`이다. 가입이 승인 대기(`auth.approvalRequired`)면 `202`이고 타입이 다르다. 이 타입은 OpenAPI로 발행되지만 `auth.docsEnabled`를 끈 배포에서는 받을 수 없어 여기 적는다.
+
 관리 엔드포인트는 다음과 같다. 전부 superuser 또는 `role = admin`이 통과한다.
 
 | 경로 | 용도 |
@@ -182,8 +192,6 @@ CVAT 연동은 `cvat.baseUrl`·`cvat.user`·시크릿의 `NEXUS__CVAT__PASSWORD`
 | `DELETE /api/v1/admin/robots/{user_id}/tokens/{token_id}` | 토큰 폐기 |
 | `POST /api/v1/admin/oidc-identities` · `GET` | OIDC 신원 `(issuer, subject)` → 계정 매핑 등록·목록(appVersion 0.1.11+). 목록은 `?user_id=`로 좁힌다 |
 | `DELETE /api/v1/admin/oidc-identities/{identity_id}` | 매핑 삭제. 그 신원 하나만 막는다 |
-| `GET /api/v1/admin/cas-credentials` | 전체 사용자의 CAS 자격증명 목록. appVersion 0.1.13부터 nexus가 발급하지 않으므로 **이미 발급된 것을 찾아 cas에서 폐기하는 창구**다 |
-| `DELETE /api/v1/admin/cas-credentials/{cas_key_id}` | superuser가 아니면 403, 맞으면 appVersion 0.1.13부터 **항상 503**(그 전에는 남의 자격증명 강제 폐기) |
 | `GET /api/v1/admin/config-effective` | 지금 그 프로세스가 읽은 설정값(차트 렌더 결과가 아니다). 비밀은 값 대신 `<set>`/`<unset>`이고, `database.url`만 비밀번호를 가린 채 호스트·DB명을 남긴다 |
 
 appVersion 0.1.13부터 **nexus는 CAS 자격증명을 발급·폐기하지 않는다**([CHANGELOG](CHANGELOG.md) 0.3.10) — 목록은 200, 발급·폐기는 항상 503이고 미처리 재시도 경로는 없다.
