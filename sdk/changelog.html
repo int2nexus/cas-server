@@ -18,6 +18,25 @@ h2{border-bottom:1px solid #d0d7de;padding-bottom:4px;margin-top:2em}
 </code></pre>
 <p><code>scripts/publish_sdk.py</code> 는 <code>sdk/pyproject.toml</code> 의 버전과 같은 <code>## &lt;버전&gt;</code> 절이 이 파일에 없으면
 빌드하지 않고 멈춥니다. 최신 버전이 위로 오게 적습니다.</p>
+<h2>0.1.15</h2>
+<p><strong>외부 IdP(OIDC) 토큰으로 nexus 에 인증하는 경로를 더합니다</strong> — <code>nx.connect(oidc=OidcAuth(...))</code>.
+로봇 계정의 장수명 토큰 대신, 회전하는 짧은 OIDC 토큰을 매 요청 공급할 수 있습니다. <code>CasSts</code> 와
+대칭입니다(CAS 축의 <code>token_file</code>/<code>token_provider</code> 를 nexus 인증에도 줍니다).</p>
+<pre><code class="language-python"># 쿠버네티스: kubelet 이 갈아 끼우는 projected ServiceAccount 토큰 파일.
+nx = nexus.connect(oidc=nexus.OidcAuth(token_file=&quot;/var/run/secrets/tokens/nexus&quot;))
+# Keycloak 등: 코드가 유효한 토큰을 가져오는 콜러블.
+nx = nexus.connect(oidc=nexus.OidcAuth(token_provider=lambda: keycloak.access_token()))
+</code></pre>
+<ul>
+<li>서버가 등록된 발급자의 OIDC 토큰을 요청마다 직접 Bearer 로 받습니다(교환 없이). 만료가 가까우면
+  SDK 가 출처에서 다시 가져오고, 놓쳐서 <code>401</code> 이면 한 번 더 가져와 재시도합니다.</li>
+<li><code>email</code>/<code>password</code>·<code>robot_token</code> 과는 함께 줄 수 없습니다(<code>ValueError</code>) — 셋 다 로그인을
+  대체합니다. <code>cas_sts</code>(CAS 축)와는 함께 씁니다.</li>
+<li>이 경로에는 <code>refresh</code>·비밀번호 변경·계정 삭제가 없습니다(서버가 OIDC 요청에 <code>403</code>). 신원은
+  관리자가 <code>POST /api/v1/admin/oidc-identities</code> 로 명시 등록합니다.</li>
+<li><strong>부가 기능입니다</strong> — 정적 키·로봇 토큰·STS 경로는 그대로입니다. 올리지 않아도 동작이 바뀌지
+  않습니다.</li>
+</ul>
 <h2>0.1.14</h2>
 <p><strong>호환성(중요): CAS 자격증명을 nexus 에서 자동으로 받아 오지 않습니다.</strong></p>
 <p>nexus 가 CAS 자격증명을 발급하지 않게 되면서(브로커 경로 폐지) SDK 도 요청하지 않습니다.

@@ -9,6 +9,28 @@ pip install --extra-index-url https://int2nexus.github.io/cas-server/sdk/simple/
 `scripts/publish_sdk.py` 는 `sdk/pyproject.toml` 의 버전과 같은 `## <버전>` 절이 이 파일에 없으면
 빌드하지 않고 멈춥니다. 최신 버전이 위로 오게 적습니다.
 
+## 0.1.15
+
+**외부 IdP(OIDC) 토큰으로 nexus 에 인증하는 경로를 더합니다** — `nx.connect(oidc=OidcAuth(...))`.
+로봇 계정의 장수명 토큰 대신, 회전하는 짧은 OIDC 토큰을 매 요청 공급할 수 있습니다. `CasSts` 와
+대칭입니다(CAS 축의 `token_file`/`token_provider` 를 nexus 인증에도 줍니다).
+
+```python
+# 쿠버네티스: kubelet 이 갈아 끼우는 projected ServiceAccount 토큰 파일.
+nx = nexus.connect(oidc=nexus.OidcAuth(token_file="/var/run/secrets/tokens/nexus"))
+# Keycloak 등: 코드가 유효한 토큰을 가져오는 콜러블.
+nx = nexus.connect(oidc=nexus.OidcAuth(token_provider=lambda: keycloak.access_token()))
+```
+
+- 서버가 등록된 발급자의 OIDC 토큰을 요청마다 직접 Bearer 로 받습니다(교환 없이). 만료가 가까우면
+  SDK 가 출처에서 다시 가져오고, 놓쳐서 `401` 이면 한 번 더 가져와 재시도합니다.
+- `email`/`password`·`robot_token` 과는 함께 줄 수 없습니다(`ValueError`) — 셋 다 로그인을
+  대체합니다. `cas_sts`(CAS 축)와는 함께 씁니다.
+- 이 경로에는 `refresh`·비밀번호 변경·계정 삭제가 없습니다(서버가 OIDC 요청에 `403`). 신원은
+  관리자가 `POST /api/v1/admin/oidc-identities` 로 명시 등록합니다.
+- **부가 기능입니다** — 정적 키·로봇 토큰·STS 경로는 그대로입니다. 올리지 않아도 동작이 바뀌지
+  않습니다.
+
 ## 0.1.14
 
 **호환성(중요): CAS 자격증명을 nexus 에서 자동으로 받아 오지 않습니다.**
