@@ -4,9 +4,9 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
 
 ## 문서
 
-- [아키텍처](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.12/charts/nexus-server/docs/architecture.md)
+- [아키텍처](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.13/charts/nexus-server/docs/architecture.md)
   — 도메인 모델, Version 생명주기, Annotation CoW, 스냅샷·Manifest 구조
-- [사용법](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.12/charts/nexus-server/docs/usage.md)
+- [사용법](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.13/charts/nexus-server/docs/usage.md)
   — 설치, Python SDK 연결, Dataset 적재·검색·seal 워크플로우, API 레퍼런스
 - [변경 이력](CHANGELOG.md)
   — 버전별 동작 변경·마이그레이션·설정 키. 각 항목은 해당 GitHub Release 본문과 동일하다
@@ -31,6 +31,11 @@ DB 마이그레이션은 바이너리에 임베드되어 **기동 시 자동 적
 **한 번도 vacuum 되지 않은 대형 표**(예: `instances`)의 autovacuum 임계를 낮출 때는 값이 아니라 **순서**가 중요하다. analyze 축(`autovacuum_analyze_*`)은 임계만 걸면 되지만, vacuum 축(`autovacuum_vacuum_*`)은 **① `autovacuum_vacuum_cost_delay` 를 먼저 걸고 → ② 창을 잡아 첫 `VACUUM` 을 손으로 돌린 뒤 → ③ 임계**를 건다. 첫 vacuum 을 끝내기 전에 임계부터 걸면 visibility map 이 비어 있어 힙 전량을 읽는 대규모 vacuum 이 예고 없이 발동한다 — 수동 `VACUUM` 은 `autovacuum_vacuum_cost_delay` 를 쓰지 않으므로(기본 0) 세션에서 `SET vacuum_cost_delay` 를 먼저 걸어 I/O 를 눌러 둔다.
 
 > **업그레이드 전에 [CHANGELOG](CHANGELOG.md)를 읽을 것.**
+
+**차트 0.3.13 / appVersion 0.1.16** — 마이그레이션도 설정 키 변경도 없다. 관리 엔드포인트 하나가 더해진다.
+
+1. 새로 더해지는 것: **`POST /api/v1/admin/users`** — 관리자가 사람 계정을 만든다. 공개 가입(`auth.registrationEnabled`)을 끈 배포에서 가입을 열었다 닫는 창 없이 사람을 늘리는 경로이고, 만든 계정은 만드는 순간 승인된다. `role` 은 `editor`/`viewer` 만(admin 은 `400` — 승격은 `POST /api/v1/admin/users/role`), 비밀번호는 선택(`issue_password` — 주지 않으면 OIDC 신원을 붙여 쓰는, 비밀번호로 로그인할 수 없는 계정이 된다). 이미 있는 이메일·superuser 이메일은 `409`, 로봇 도메인은 `400`(로봇은 `POST /api/v1/admin/robots`).
+2. **롤백 하한 변화 없음** — 마이그레이션이 없어 이미지 `0.1.15`(차트 `0.3.12`)로 되돌릴 수 있다. 상세는 [CHANGELOG](CHANGELOG.md) `0.3.13`.
 
 **차트 0.3.12 / appVersion 0.1.15** — **마이그레이션 024 가 추가된다. CAS 자격증명 경로 다섯이 없어진다.**
 

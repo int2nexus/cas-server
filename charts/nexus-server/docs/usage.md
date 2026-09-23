@@ -203,6 +203,11 @@ result = client.delete_account("새비번123")          # 완전 삭제 — 되�
 import requests
 h = {"Authorization": f"Bearer {admin_token}"}   # superuser 또는 role=admin 계정의 토큰
 
+# 0) 사람 계정 만들기 — 공개 가입을 닫아 둔 채 (차트 0.3.13 / 서버 0.1.16+)
+r = requests.post(f"{base}/api/v1/admin/users",
+                  json={"email": "새사람@example.com", "role": "editor", "issue_password": True}, headers=h)
+print(r.json().get("password"))   # issue_password=True 일 때만 응답에 실린다. 지금 전달할 것
+
 # 1) 비밀번호를 잊은 계정 풀어주기 — 임시 비밀번호가 응답에 한 번만 실려 온다
 r = requests.post(f"{base}/api/v1/admin/users/password-reset",
                   json={"email": "잠긴사람@example.com"}, headers=h)
@@ -227,6 +232,7 @@ requests.post(f"{base}/api/v1/admin/datasets/transfer-owner",
               json={"from_email": "떠난사람@example.com", "to_email": "새담당자@example.com"}, headers=h)
 ```
 
+- **사람 계정 만들기(`POST /api/v1/admin/users`, 차트 0.3.13 / 서버 0.1.16+).** 공개 가입(`auth.registrationEnabled`)을 끈 배포에서도, 승인 대기(`auth.approvalRequired`)를 켠 배포에서도 만들 수 있고 **만든 계정은 만드는 순간 승인된다.** `role`은 `editor`/`viewer`만(`admin`은 `400` — 승격은 위 `users/role`). `issue_password: true`면 임시 비밀번호를 응답에 한 번만 싣고, 생략하면 **비밀번호로는 로그인할 수 없는 계정**이 된다(OIDC 신원을 붙여 쓸 사람용 — `admin/oidc-identities`로 매핑하고, 나중에 비밀번호가 필요하면 `users/password-reset`). 이미 있는 이메일·superuser 이메일은 `409`, 로봇 도메인 이메일은 `400`(로봇은 `admin/robots`).
 - **계정 정지는 삭제가 아니다.** 이메일을 계속 점유하므로 그 주소로 재가입할 수 없고, `active: true`로 해제하면 그대로 돌아온다. 정지하면 로그인이 `403 forbidden`이 되고, **이미 발급된 토큰도 캐시 수명(`auth.revocationCacheTtlSecs`, 기본 5초) 안에 막힌다.**
 - **설정 superuser 계정은 역할 변경·정지·비밀번호 재설정의 대상이 될 수 없다**(403). 유일한 부트스트랩 수단이 스스로 잠기는 것을 막기 위해서다. 호출하는 쪽이 superuser 본인이든 `role = admin`이든 같다 — **비밀번호 재설정 가드는 서버 0.1.10에서 채웠다.** 그전에는 `role = admin` 계정이 superuser의 비밀번호를 가져가 강등도 정지도 되지 않는 관리자가 될 수 있었다.
 - `GET /api/v1/admin/users`는 `?email=`(부분검색)·`?role=`로 좁히고 `?cursor=<마지막 user_id>`·`?limit=`(기본 100, 최대 1000)으로 페이지를 넘긴다. 각 행의 `is_superuser`가 `true`이면 위 제한이 걸리는 계정이다.
@@ -277,7 +283,7 @@ superuser 외에 인증 관련 설정을 helm 값으로 조정할 수 있다.
 | values 키 | 기본값 | 설명 |
 |---|---|---|
 | `jwt.ttlHours` | 빈 값 (서버 기본 **24**) | 발급 토큰의 수명(시간). 허용 범위 **1~8760**. 이 서버는 토큰을 무효화할 수 없으므로(위 계정 관리·superuser 항목 참조) 이 값이 곧 탈취·비밀번호변경·계정삭제 이후에도 토큰이 살아있는 최대 시간이다. **범위를 벗어난 값(`0` 포함)을 주면 서버가 기동에 실패한다** — DB 연결보다 먼저 검사하므로 "0을 줬는데 조용히 24시간으로 되돌아갔다"처럼 잘못 설정한 채 넘어가는 일이 없다. 줄이면 노출 시간은 줄지만 `POST /api/v1/auth/refresh` 호출이 그만큼 잦아진다. |
-| `auth.registrationEnabled` | `true` | `false`로 하면 `POST /api/v1/auth/register`만 403이 되고, 로그인·토큰 갱신·기존 계정은 영향을 받지 않는다. **끄기 전에 필요한 사람 계정을 모두 만들어 둘 것** — 끈 뒤에는 사람 계정을 새로 만들 방법이 없다(사람 계정을 만드는 API가 register 하나뿐이라 superuser도 만들 수 없다). 로봇 계정은 예외다 — `POST /api/v1/admin/robots`(서버 0.1.10+)는 이 값을 보지 않으므로 가입을 닫은 뒤에도 관리자가 만들 수 있다. |
+| `auth.registrationEnabled` | `true` | `false`로 하면 `POST /api/v1/auth/register`만 403이 되고, 로그인·토큰 갱신·기존 계정은 영향을 받지 않는다. **가입을 닫은 뒤에도 관리자는 `POST /api/v1/admin/users`로 사람 계정을 만들 수 있다**(차트 0.3.13 / 서버 0.1.16+, 만든 계정은 즉시 승인되어 `approvalRequired`도 지나지 않는다). 로봇 계정은 `POST /api/v1/admin/robots`(서버 0.1.10+)로 만든다 — 둘 다 이 값을 보지 않는다. |
 | `auth.docsEnabled` | `true` | `false`로 하면 `/api-docs/openapi.json`, `/swagger-ui`, `/swagger-ui/` 세 경로가 **404**가 된다(라우트 자체가 등록되지 않아서다 — 403이 아니다). 스펙은 이미 전 경로가 인증 뒤에 있으므로, 이걸로 감추는 것은 API 경로 목록뿐이다. |
 | `auth.approvalRequired` (0.3.4+) | `false` | `true`로 하면 가입은 열어 둔 채 **승인 전까지 아무것도 할 수 없다.** 가입 요청은 계정을 만들되 **토큰을 주지 않고** `202`와 `{"status": "pending"}`을 반환하며, 승인 전에는 로그인·토큰 갱신이 `403`이다(본문 `pending_approval`). 승인은 `POST /api/v1/admin/users/approve`(본문에 `email`·`role` 필수), 대기 목록은 `GET /api/v1/admin/users/pending`. **켜기 전에 가입 화면이 `202`를 처리해야 하고**, 승인 엔드포인트가 관리자 전용이라 `auth.superuserEmail`도 함께 설정해야 한다. 켜기 전에 가입한 계정은 영향받지 않는다. |
 | `auth.oidc.issuers` (0.3.8+) | `[]` (기능 꺼짐) | 외부 IdP가 발급한 토큰을 인증 자격증명으로 받을 발급자 목록. 항목마다 `issuer`(필수, `https://`, 토큰의 `iss`와 같아야 한다) · `audience`(필수, 토큰 `aud` **안에 있으면** 통과하는 포함 검사) · `exchange`(기본 `false`, `POST /api/v1/auth/oidc/exchange`를 이 발급자에게 여는 스위치 — 자동 회전하는 토큰에는 켜지 말 것) · `jwksUri`(선택, 발급자와 JWKS 호스트가 다를 때) · `jwksAuth`(선택, `serviceaccount` 하나만 — 파드 자신의 SA 토큰을 실어 JWKS를 읽는다). **`audience`가 비었거나 `issuer`가 비-https·중복이면 기동에 실패한다.** 목록이 비면 기능이 꺼질 뿐 기동은 정상이다. **발급자만 설정하면 아무도 인증되지 않는다** — 신원 `(issuer, subject)` → 계정 매핑을 `POST /api/v1/admin/oidc-identities`로 관리자가 등록해야 하고 자동 생성은 없다. 이 갈래로 온 요청은 `POST /api/v1/auth/refresh`가 `403`이다. |
