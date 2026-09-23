@@ -80,6 +80,31 @@ nexus-server 는 마이그레이션이 바이너리에 임베드되어 **기동 
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.3.13
+
+image: `int2jieun/nexus-server:0.1.15` → `0.1.16`
+digest: `sha256:e6e9135150854918fecc090ec8ac3f29d7992bde6366e49fae049e8032a79814`
+
+**동작 변경** — 관리자가 사람 계정을 만드는 엔드포인트가 생깁니다. `POST /api/v1/admin/users`
+(관리자 전용). 공개 가입(`auth.registrationEnabled`)을 끈 배포에서 사람을 늘리는 경로입니다 —
+가입을 열었다 닫는 창 없이 관리자가 직접 만듭니다. 만든 계정은 만드는 순간 승인된 상태라
+승인 대기 게이트(`auth.registrationEnabled` · `admin/users/approve`)를 지나지 않습니다.
+
+- **`role` 은 `editor`/`viewer` 만** 받습니다. `admin` 은 `400` 입니다 — admin 승격은 이 생성
+  경로가 아니라 `POST /api/v1/admin/users/role`(및 승인 시 `.../users/approve`)에서 합니다.
+  만드는 것과 관리 권한을 주는 것을 갈라 둡니다.
+- **비밀번호는 선택입니다.** `issue_password: true` 면 임시 비밀번호를 응답에 한 번만 실어
+  돌려주고, 아니면(기본값) **비밀번호로는 로그인할 수 없는 계정**이 됩니다. 후자는 OIDC 신원
+  (`POST /api/v1/admin/oidc-identities`)을 붙여 쓰는 사람을 위한 것입니다 — 나중에 필요하면
+  `POST /api/v1/admin/users/password-reset` 가 출구입니다.
+- 이미 있는 이메일과 superuser 이메일은 `409`, 로봇 도메인 이메일은 `400` 입니다(로봇은
+  `POST /api/v1/admin/robots` 로만 만듭니다).
+
+**마이그레이션** — 없음. 기존 `users` 표에 행을 더하는 순수 가산 경로라 스키마가 바뀌지
+않습니다. 이 판은 이미지 `0.1.15`(차트 `0.3.12`)로 되돌릴 수 있습니다.
+
+**설정 키** — 없음.
+
 ## 0.3.12
 
 image: `int2jieun/nexus-server:0.1.14` → `0.1.15`
