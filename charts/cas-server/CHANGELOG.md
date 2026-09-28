@@ -84,6 +84,35 @@ cas-server 는 기동 시 `sqlx::migrate!` 로 `migrations/` 를 적용합니다
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.1.39
+
+image: `int2jieun/cas-server:0.1.32`
+digest: `sha256:a3d99835e0106dadcd6aef216ee0c2a5707947f19c52c8460823d4a92a076855`
+
+**동작 변경** — `storage.mode: s3` 에서 `x-cas-hash` 를 실은 5 MiB 이하 업로드를 오브젝트 스토리지에 단일 `PutObject` 로 보냅니다. 이전엔 크기와 무관하게 멀티파트(3 회)였습니다
+**마이그레이션** — 없음. **롤백 하한은 `0.1.28` 그대로입니다**
+**설정 키** — 없음
+**주의** — SigV4 서명을 직접 구성하는 클라이언트를 위해 canonical URI 규약을 usage.md 에 명문화했습니다. 서버 동작은 이전과 같습니다
+
+**작은 `x-cas-hash` 업로드가 단일 PUT 으로 나갑니다.**
+
+`storage.mode: s3` 에서, `x-cas-hash` 헤더를 실었고 `Content-Length` 가 5 MiB 이하인
+업로드는 오브젝트 스토리지에 `PutObject` 한 번으로 저장됩니다. `0.1.31` 이하는 크기와
+무관하게 멀티파트(Create·UploadPart·Complete 세 번)로 보냈습니다.
+
+저장 결과·해시·`x-cas-already-existed` 응답은 모두 같습니다 — 바뀌는 것은 오브젝트
+스토리지에 나가는 API 호출 수뿐입니다. 그 스토리지의 요청 수 과금이나 접근 로그를 보고
+있다면 작은 업로드에서 호출이 줄어든 형태로 보입니다. 조치할 것은 없습니다.
+
+**canonical URI 규약을 usage.md 에 문서화했습니다.**
+
+서버가 서명 대조에 쓰는 canonical URI 규칙(경로 세그먼트마다 한 번 디코드한 뒤 RFC 3986
+unreserved 밖을 대문자 `%XX` 로 인코딩, `/` 보존, 점·빈 세그먼트 미정규화, 이중 인코딩
+없음)을 usage.md 의 「서명을 직접 만들 때 — canonical URI」 절에 적었습니다.
+
+AWS SDK·AWS CLI·`requests-aws4auth` 를 쓰면 무관하고, SigV4 를 직접 구성하는 클라이언트만
+해당합니다. **서버 동작은 `0.1.31` 이하와 같습니다 — 늘어난 것은 문서뿐입니다.**
+
 ## 0.1.38
 
 image: `int2jieun/cas-server:0.1.31`
