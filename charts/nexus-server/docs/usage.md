@@ -38,7 +38,7 @@ pip install --upgrade --extra-index-url https://int2nexus.github.io/cas-server/s
 python -c "import importlib.metadata as m; print(m.version('int2nexus-sdk'))" 
 ```
 
-이 문서는 서버 `0.1.18`(차트 `0.3.14`)과 SDK `0.1.16` 기준이다. SDK는 서버와 따로 발행되므로 위 명령으로 최신을 유지한다 — 문서의 기능이 없다는 에러가 나면 대개 SDK가 낮은 것이다. 버전별 변경은 [차트 CHANGELOG](../CHANGELOG.md)와 [SDK 변경 이력](https://int2nexus.github.io/cas-server/sdk/changelog.html)에 있다.
+이 문서는 서버 `0.1.18`(차트 `0.3.14`)과 SDK `0.1.17` 기준이다. SDK는 서버와 따로 발행되므로 위 명령으로 최신을 유지한다 — 문서의 기능이 없다는 에러가 나면 대개 SDK가 낮은 것이다. 버전별 변경은 [차트 CHANGELOG](../CHANGELOG.md)와 [SDK 변경 이력](https://int2nexus.github.io/cas-server/sdk/changelog.html)에 있다.
 
 ### 2.2 연결 설정
 
@@ -690,12 +690,12 @@ s["seatbelt_gt"].add(inst)
 ```
 
 - 키워드로 만들면 `type`은 클래스가 채우고, 클래스가 모르는 필드(`rct=` 같은 오타)는 그 자리에서 `TypeError`다. 값이 `None`인 키워드는 빼고 만든다. 표에 없는 필드를 담아야 하면 wire dict를 그대로 넘긴다 — `nx.Detection({"type": "bounding_box", "rect": [...], "extra": 1})`.
-- `Instance(id, label, components, track_id=None, confidence=None, extras=None)` — `id=None`이면 새 id를 붙인다. 행의 그 밖의 키(위의 `occluded`)는 `inst.extras`에 보존된다. id 형식은 검사하지 않고, component 단위 id는 없다.
+- `Instance(id, label, components, track_id=None, confidence=None, extras=None)` — id가 없거나(`None`) 빈 문자열이면 UUID v4(`8-4-4-4-12`)를 붙인다. 서버는 id 없이 적재된 행을 빈 문자열로 돌려주므로 그런 행도 불러오면 id가 채워지고, 그 그룹을 고쳐 저장할 때 서버에 기록된다. 행의 그 밖의 키(위의 `occluded`)는 `inst.extras`에 보존된다. 이미 있는 id는 형식을 검사하지 않고, component 단위 id는 없다.
 - 그룹: `grp[i]`, `len(grp)`, `grp.instances`(목록), `grp.add(inst)`, `grp.remove(inst)`. `LabelContainer.labels`는 각 행의 component 목록이다.
 - 인스턴스: `inst.get_component(이름)` / `set_component(이름, label)` / `remove_component(이름)` — 이름은 component 키다.
 - `meta`: `s.meta[k] = v`, `del s.meta[k]`(또는 `s.meta[k] = None` — 저장 때 그 키를 지운다), `s["meta"] = {...}`(통째로 바꾼다 — 사라진 키는 저장 때 삭제로 나간다).
 
-**검증은 `save()` 때 한 번 한다.** 로드·생성·속성 대입은 검증하지 않으므로 기존 데이터가 그대로 열린다. 검사는 **타입과 구조만** 본다 — 위 표의 검사(모든 component 는 wire `type`이 클래스와 같아야 하고, `Polygon`/`Polyline`의 `points`는 짝수 길이)와 인스턴스의 `label`(필수, 문자열)·`confidence` 숫자(있으면)·`track_id` 정수(있으면), 그룹 행에 `Instance`만, component 자리에 `Label`만(그룹 중첩 금지), container의 행당 component 1개·같은 타입, `meta`가 객체인지. 좌표가 0~1을 넘거나 visibility가 0~3 밖이어도 통과한다. **바뀐 그룹만 검사하므로** 손대지 않은 그룹의 옛 데이터가 저장을 막지 않는다. 실패하면 `nx.NexusValidationError`(`status_code`는 `None`)이고 서버로 아무것도 나가지 않는다.
+**검증은 `save()` 때 한 번 한다.** 로드·생성·속성 대입은 검증하지 않으므로 기존 데이터가 그대로 열린다. 검사는 **타입과 구조만** 본다 — 위 표의 검사(모든 component 는 wire `type`이 클래스와 같아야 하고, `Polygon`/`Polyline`의 `points`는 짝수 길이)와 인스턴스의 `label`(필수, 문자열)·`confidence` 숫자(있으면)·`track_id` 정수(있으면), 그룹 행에 `Instance`만, component 자리에 `Label`만(그룹 중첩 금지), container의 행당 component 1개·같은 타입, 그룹 안 instance id 유일(그룹이 다르면 같은 id는 정상), `meta`가 객체인지. 좌표가 0~1을 넘거나 visibility가 0~3 밖이어도 통과한다. **바뀐 그룹만 검사하므로** 손대지 않은 그룹의 옛 데이터가 저장을 막지 않는다. 실패하면 `nx.NexusValidationError`(`status_code`는 `None`)이고 서버로 아무것도 나가지 않는다.
 
 **`save()`가 보내는 것.**
 
