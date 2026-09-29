@@ -2,7 +2,8 @@ apiVersion: v2
 name: nexus-server
 description: ML 학습 데이터 카탈로그 서버 (cas-server 위 Sample→Dataset 버전 관리)
 type: application
-# 발행 시 이 둘과 values.yaml의 image.tag·image.digest를 함께 올리고, CHANGELOG.md 맨 위에
+# 발행 시 이 둘과 values.yaml의 image.tag를 함께 올리고(digest 는 CHANGELOG 절에 적는다 —
+# values 의 image.digest 는 사용자가 핀할 때 채우는 칸이다), CHANGELOG.md 맨 위에
 # `## <version>` 절을 더한다. 차트가 렌더하는 설정 키를 이미지가 모르면 에러 없이 기능만
 # 꺼지므로 appVersion 을 차트와 맞춘다. 버전별 호환성·마이그레이션·롤백 하한은 CHANGELOG 에만 적는다.
 version: 0.3.14

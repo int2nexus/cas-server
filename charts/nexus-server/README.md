@@ -22,7 +22,7 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
   선택 키가 셋 더 있고, 쓰는 기능이 있을 때만 넣는다 — CVAT annotation 편집 세션의
   `NEXUS__CVAT__PASSWORD`, superuser의 `NEXUS__AUTH__SUPERUSER_PASSWORD`,
   지표의 `NEXUS__METRICS__TOKEN`(values 스위치가 없다 — 이 키가 곧 스위치다).
-  전체 목록은 [`examples/secret.example.yaml`](examples/secret.example.yaml).
+  전체 목록은 [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.14/charts/nexus-server/examples/secret.example.yaml).
 - **CVAT은 선택** — 설정하지 않아도 서버는 정상 동작한다. 세션 생성·결과 회수만 503이 되고 카탈로그·업로드·seal·조회는 영향이 없다.
 - **superuser도 선택** — 설정하지 않으면 관리자를 만들 부트스트랩 수단이 없다(`users.role = admin`은 백필하지 않는다). 다만 **CVAT과 달리 반쪽 설정은 조용히 꺼지지 않고 기동을 실패시킨다**(아래 참조).
 
@@ -56,7 +56,7 @@ kubectl create secret generic nexus-server -n <namespace> --dry-run=client -o ya
 kubectl apply -f sealed-nexus-server.yaml -n <namespace>
 ```
 
-평문 예시: [`examples/secret.example.yaml`](examples/secret.example.yaml).
+평문 예시: [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.14/charts/nexus-server/examples/secret.example.yaml).
 Secret 이름은 `secret.existingSecret`(비우면 릴리즈 fullname, 기본 `nexus-server`)과 일치해야 한다.
 
 - `NEXUS__JWT__SECRET`은 직접 생성하는 임의의 비밀 키(로그인 JWT HS256 서명용)  
@@ -85,7 +85,7 @@ helm upgrade nexus-server int2nexus/nexus-server -n <namespace> \
 | `image.digest` | `""` | 채우면 `tag` 대신 이 값으로 핀한다(`repository@sha256:...`). 태그는 같은 이름으로 다시 밀릴 수 있어 무엇이 도는지 확정하지 못하므로, 고정이 필요하면 이쪽을 쓴다. 각 버전의 digest 는 [CHANGELOG](CHANGELOG.md) 의 그 버전 절 맨 위에 있다 |
 | `server.port` | `8090` | 컨테이너 포트. **이 값 하나만 바꾼다** — 프로브와 `service.targetPort`는 숫자가 아니라 컨테이너 포트 이름 `http`를 가리키므로 따라온다. 숫자를 함께 박으면 오히려 어긋난다(아래 참조) |
 | `cas.baseUrl` | `http://cas-server:80` | CAS(cas-server) 주소 |
-| `cas.region` / `cas.defaultBucket` | `cas-default` / `data` | CAS region·기본 버킷. **버킷 이름은 S3 규칙**(소문자·숫자·`-`·`.`, 3~63자)을 따라야 한다 |
+| `cas.region` / `cas.defaultBucket` | `cas-default` / `data` | CAS region·기본 버킷 이름. 서버는 이 이름 뒤에 `-manifests`를 붙인 버킷에 seal 스냅샷을 저장한다(이 이름 자체에는 저장하지 않는다). 붙인 이름이 **S3 규칙**(소문자·숫자·`-`·`.`, 3~63자)을 따라야 하므로 이 값은 53자 이하 |
 | `database.maxConnections` | `16` | 워크로드 풀 상한. 적재가 쓸 수 있는 자리는 **이 값 - 4**(조회·관리·seal 몫)이고, readiness 전용 커넥션이 이 풀 **밖에** 하나 더 붙는다(Postgres 쪽 계산은 replica당 이 값 + 1). `ingest.batchItemConcurrency`와의 불변식은 [`values.yaml`](values.yaml) 주석 |
 | `ingest.admissionWaitMs` | `""` | 적재가 자리를 기다리는 상한(ms). 넘기면 대기가 아니라 **`429` + `Retry-After: 1`**. 비우면 서버 기본 3000. `0`이면 기다리지 않는다(자리가 비어 있으면 통과, 없으면 그 자리에서 `429`) |
 | `secret.existingSecret` | `""` | 비밀 Secret 이름(비우면 fullname) |
@@ -104,7 +104,7 @@ helm upgrade nexus-server int2nexus/nexus-server -n <namespace> \
 
 설정으로 지정하는 관리 계정이다. 이메일은 `auth.superuserEmail`, 비밀번호는 시크릿의 `NEXUS__AUTH__SUPERUSER_PASSWORD`(8자 이상)에 넣는다.
 
-**관리자는 둘 이상 둘 수 있다.** 관리 권한의 출처가 둘이기 때문이다 — 설정의 superuser(이 계정)와 `users.role = admin`. 후자는 superuser가 `POST /api/v1/admin/users/role`로 부여한다. `admin`은 마이그레이션이 백필하지 않으므로 **최초 한 명을 만들려면 이 설정이 필요하고**, 한 명이라도 생긴 뒤에는 설정을 비워도 그 계정들이 관리 권한을 유지한다. 감사 로그는 없다.
+**관리자는 둘 이상 둘 수 있다.** 관리 권한의 출처가 둘이기 때문이다 — 설정의 superuser(이 계정)와 `users.role = admin`. 후자는 superuser나 다른 `admin` 계정이 `POST /api/v1/admin/users/role`(또는 승인 시 `users/approve`)로 부여한다. `admin`은 마이그레이션이 백필하지 않으므로 **최초 한 명을 만들려면 이 설정이 필요하고**, 한 명이라도 생긴 뒤에는 설정을 비워도 그 계정들이 관리 권한을 유지한다. 감사 로그는 없다.
 
 **CVAT과 달리 반쪽 설정은 조용히 꺼지지 않는다 — 서버가 기동에 실패한다.** 이메일만 있고 비밀번호가 없어도(공백만 있는 경우 포함), 비밀번호만 있고 이메일이 없어도 마찬가지다. 운영자가 켰다고 믿는데 실제로는 꺼져 있는 상태가 가장 나쁘고, 그 사실이 정작 필요한 순간(누군가 잠겼을 때)에야 드러나기 때문이다. **차트는 이 짝을 검사할 수 없다** — 비밀번호는 Secret에서 `envFrom`으로 들어와 템플릿에 보이지 않는다. 그래서 `helm upgrade`는 조용히 성공하고 Pod가 CrashLoop로 드러나며, 어느 쪽이 빠졌는지는 `kubectl logs`에 적힌다. 끌 때는 `auth.superuserEmail`과 시크릿 키를 **함께** 비운다.
 
@@ -122,7 +122,7 @@ helm upgrade nexus-server int2nexus/nexus-server -n <namespace> \
 
 | 경로 | 용도 |
 |---|---|
-| `GET /api/v1/admin/users` | 회원 목록. `?email=`(부분검색)·`?role=`로 좁히고 `?cursor=<마지막 user_id>`·`?limit=`(기본 100, 최대 1000)으로 넘긴다. `is_superuser`가 `true`인 행은 위 403 제한이 걸리는 계정이다 |
+| `GET /api/v1/admin/users` | 회원 목록. `?email=`(부분검색)·`?role=`·`?kind=`(`human`/`robot`)·`?approved=`로 좁히고 `?cursor=<마지막 user_id>`·`?limit=`(기본 100, 최대 1000)으로 넘긴다. `is_superuser`가 `true`인 행은 위 403 제한이 걸리는 계정이다 |
 | `POST /api/v1/admin/users` | 사람 계정 생성(만드는 순간 승인됨) |
 | `POST /api/v1/admin/users/role` | 역할 변경 |
 | `POST /api/v1/admin/users/active` | 계정 정지·해제 |
@@ -186,11 +186,11 @@ requests.post(f"{base}/api/v1/admin/datasets/transfer-owner",
 
 | values 키 | 기본값 | 설명 |
 |---|---|---|
-| `jwt.ttlHours` | 빈 값 (서버 기본 **24**) | 발급 토큰의 수명(시간). 허용 범위 **1~8760**. 이 서버는 토큰을 무효화할 수 없으므로 이 값이 곧 탈취·비밀번호 변경·계정 삭제 이후에도 토큰이 살아있는 최대 시간이다. **범위를 벗어난 값(`0` 포함)을 주면 서버가 기동에 실패한다**(DB 연결보다 먼저 검사). 줄이면 노출 시간은 줄지만 `POST /api/v1/auth/refresh` 호출이 그만큼 잦아진다. |
+| `jwt.ttlHours` | 빈 값 (서버 기본 **24**) | 발급 토큰의 수명(시간). 허용 범위 **1~8760**. 토큰 자체는 무효화할 수 없으므로 이 값이 곧 탈취·비밀번호 변경 이후에도 토큰이 살아있는 최대 시간이다(계정 삭제·정지·역할 회수는 `auth.revocationCacheTtlSecs` 안에 반영된다). **범위를 벗어난 값(`0` 포함)을 주면 서버가 기동에 실패한다**(DB 연결보다 먼저 검사). 줄이면 노출 시간은 줄지만 `POST /api/v1/auth/refresh` 호출이 그만큼 잦아진다. |
 | `auth.registrationEnabled` | `true` | `false`로 하면 `POST /api/v1/auth/register`만 403이 되고, 로그인·토큰 갱신·기존 계정은 영향을 받지 않는다. 가입을 닫은 뒤에도 관리자는 사람 계정(`POST /api/v1/admin/users`)과 로봇 계정(`POST /api/v1/admin/robots`)을 만들 수 있다 — 둘 다 이 값을 보지 않는다. |
 | `auth.docsEnabled` | `true` | `false`로 하면 `/api-docs/openapi.json`, `/swagger-ui`, `/swagger-ui/` 세 경로가 **404**가 된다(라우트 자체가 등록되지 않는다 — 403이 아니다). 스펙은 이미 전 경로가 인증 뒤에 있으므로, 이걸로 감추는 것은 API 경로 목록뿐이다. |
-| `auth.approvalRequired` | `false` | `true`로 하면 가입은 열어 둔 채 **승인 전까지 아무것도 할 수 없다.** 가입 요청은 계정을 만들되 **토큰을 주지 않고** `202`와 `{"status": "pending"}`을 반환하며, 승인 전에는 로그인·토큰 갱신이 `403`이다(본문 `pending_approval`). 승인은 `POST /api/v1/admin/users/approve`(본문에 `email`·`role` 필수), 대기 목록은 `GET /api/v1/admin/users/pending`. **켜기 전에 가입 화면이 `202`를 처리해야 하고**, 승인 엔드포인트가 관리자 전용이라 `auth.superuserEmail`도 함께 설정해야 한다. 켜기 전에 가입한 계정은 영향받지 않는다. |
-| `auth.oidc.issuers` | `[]` (기능 꺼짐) | 외부 IdP가 발급한 토큰을 인증 자격증명으로 받을 발급자 목록. 항목마다 `issuer`(필수, `https://`, 토큰의 `iss`와 같아야 한다) · `audience`(필수, 토큰 `aud` **안에 있으면** 통과하는 포함 검사) · `exchange`(기본 `false`, `POST /api/v1/auth/oidc/exchange`를 이 발급자에게 여는 스위치 — 자동 회전하는 토큰에는 켜지 말 것) · `jwksUri`(선택, 발급자와 JWKS 호스트가 다를 때) · `jwksAuth`(선택, `serviceaccount` 하나만 — 파드 자신의 SA 토큰을 실어 JWKS를 읽는다. `serviceAccount.automountToken: true`가 필요하다). **`audience`가 비었거나 `issuer`가 비-https·중복이면 기동에 실패한다.** 목록이 비면 기능이 꺼질 뿐 기동은 정상이다. **발급자만 설정하면 아무도 인증되지 않는다** — 신원 `(issuer, subject)` → 계정 매핑을 `POST /api/v1/admin/oidc-identities`로 관리자가 등록해야 하고 자동 생성은 없다. superuser와 `role = admin` 계정에는 신원을 붙일 수 없다. 이 갈래로 온 요청은 `POST /api/v1/auth/refresh`가 `403`이다. |
+| `auth.approvalRequired` | `false` | `true`로 하면 가입은 열어 둔 채 **승인 전까지 아무것도 할 수 없다.** 가입 요청은 계정을 만들되 **토큰을 주지 않고** `202`와 `{"status": "pending"}`을 반환하며, 승인 전에는 로그인·토큰 갱신이 `403`이다(본문 `pending_approval`). 승인은 `POST /api/v1/admin/users/approve`(본문에 `email`·`role` 필수), 대기 목록은 `GET /api/v1/admin/users/pending`. **켜기 전에 가입 화면이 `202`를 처리해야 하고**, 승인 엔드포인트가 관리자 전용이라 관리자(superuser 또는 `admin` 계정)가 있어야 한다. 켜기 전에 가입한 계정은 영향받지 않는다. |
+| `auth.oidc.issuers` | `[]` (기능 꺼짐) | 외부 IdP가 발급한 토큰을 인증 자격증명으로 받을 발급자 목록. 항목마다 `issuer`(필수, `https://`, 토큰의 `iss`와 같아야 한다) · `audience`(필수, 토큰 `aud` **안에 있으면** 통과하는 포함 검사) · `exchange`(기본 `false`, `POST /api/v1/auth/oidc/exchange`를 이 발급자에게 여는 스위치 — 자동 회전하는 토큰에는 켜지 말 것) · `jwksUri`(선택, 발급자와 JWKS 호스트가 다를 때) · `jwksAuth`(선택, `serviceaccount` 하나만 — 파드 자신의 SA 토큰을 실어 JWKS를 읽는다. `serviceAccount.automountToken: true`가 필요하다). **`audience`가 비었거나, `issuer`가 비-https·중복이거나, `jwksUri`가 비-https이거나, `jwksAuth`가 `serviceaccount`가 아니면 기동에 실패한다.** 목록이 비면 기능이 꺼질 뿐 기동은 정상이다. **발급자만 설정하면 아무도 인증되지 않는다** — 신원 `(issuer, subject)` → 계정 매핑을 `POST /api/v1/admin/oidc-identities`로 관리자가 등록해야 하고 자동 생성은 없다. superuser와 `role = admin` 계정에는 신원을 붙일 수 없다. 이 갈래로 온 요청은 `POST /api/v1/auth/refresh`가 `403`이다. |
 | `auth.revocationCacheTtlSecs` | 빈 값 (서버 기본 **5**초) | 인증이 사용자 행(역할·승인·활성 상태)을 읽고 캐시하는 시간. **이 값이 곧 권한 회수·계정 정지·계정 삭제가 듣기까지의 상한이다.** `0`이면 매 요청 조회가 되어 즉시 반영되지만 적재 처리량이 20~33% 떨어진다(측정치). 조회 자체를 끄는 옵션은 없다. |
 
 ```bash
@@ -245,7 +245,7 @@ helm upgrade --install nexus-server int2nexus/nexus-server -n <namespace> \
 
 | values 키 | 기본값 | 설명 |
 |---|---|---|
-| `cvat.baseUrl` | `""` | CVAT 주소. **비우면 연동이 꺼진다**(`NEXUS__CVAT__*` env 자체가 렌더되지 않는다) |
+| `cvat.baseUrl` | `""` | CVAT 주소. **비우면 연동이 꺼진다**. 단 시크릿에 `NEXUS__CVAT__PASSWORD`만 넣어 두면 기동 로그가 「설정 없음」이 아니라 「설정이 불완전」 경고(`missing=base_url, user`)가 된다 — 동작은 같다 |
 | `cvat.user` | `""` | CVAT 서비스 계정 |
 | `cvat.organization` | `""` | CVAT organization slug (선택) |
 | `cvat.projectNamePrefix` | `nexus` | 생성되는 CVAT project 이름 접두사 |
@@ -302,7 +302,7 @@ INFO  [cvat] 설정 없음 — annotation session 엔드포인트는 503을 반�
 | 설정됨, CVAT 다운 | 정상 | 정상 | 세션이 `failed`가 된다 | 정상 |
 | 정상 연결 | 정상 | 정상 | 정상 | 정상 |
 
-**목록·조회·`close`·`delete`는 CVAT 없이도 동작한다.** CVAT을 호출하지 않거나(목록·조회), 호출에 실패해도 진행하기 때문이다(`delete`는 CVAT project 삭제를 건너뛰고 세션 행만 지운다). 이미 만들어진 세션을 CVAT이 죽은 뒤에도 정리할 수 있어야 하기 때문이다 — 그러지 않으면 샘플이 영구히 잠긴다.
+**목록·조회·`close`·`delete`는 CVAT 없이도 동작한다.** CVAT을 호출하지 않거나(목록), 호출에 실패해도 진행하기 때문이다(조회·`close`는 미반영 편집 여부를 「모름」으로 두고, `delete`는 CVAT project 삭제를 건너뛰고 세션 행만 지운다). 이미 만들어진 세션을 CVAT이 죽은 뒤에도 정리할 수 있어야 하기 때문이다 — 그러지 않으면 샘플이 영구히 잠긴다.
 
 nexus는 기동 시점에 CVAT을 호출하지 않는다. 따라서 운영 중 CVAT이 내려가도 영향은 세션 생성·회수에만 국한된다.
 
@@ -367,7 +367,7 @@ requests.get(f"{base}/api/v1/admin/config-effective", headers=h).json()
 helm upgrade ... --set server.port=9000
 ```
 
-컨테이너 포트, 앱이 듣는 포트(`NEXUS__SERVER__PORT`), Service의 `targetPort`, 두 프로브가 모두 이 값을 따라간다. 뒤의 셋은 숫자가 아니라 **컨테이너 포트 이름 `http`**를 가리키기 때문이다.
+컨테이너 포트, 앱이 듣는 포트(`NEXUS__SERVER__PORT`), Service의 `targetPort`, 세 프로브(startup·liveness·readiness)가 모두 이 값을 따라간다. 뒤의 넷은 숫자가 아니라 **컨테이너 포트 이름 `http`**를 가리키기 때문이다.
 
 `values-xxx.yaml`에서 프로브나 `service.targetPort`를 직접 override할 때 숫자를 박지 말 것 — `server.port`와 어긋나면 앱은 새 포트에서 도는데 kubelet은 옛 포트를 찔러 **Pod가 영영 Ready가 되지 않는다.** 컨테이너 로그에는 아무 이상이 없어 원인을 찾기 어렵다.
 

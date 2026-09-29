@@ -17,7 +17,8 @@ SDK 만 바뀌었을 때 차트를 발행하지 않기 위해서입니다. 서�
 ```markdown
 ## <version>
 
-image: `int2jieun/nexus-server:<tag>` (변경 없음이면 그렇게 적기)
+image: `int2jieun/nexus-server:<이전 tag>` → `<새 tag>` (변경 없음이면 그렇게 적기)
+digest: `sha256:<새 이미지의 digest>`
 
 **동작 변경** — 없음
 **마이그레이션** — 없음
@@ -93,14 +94,16 @@ digest: `sha256:2e71e6a68d2e410dbefdad5d1c96f4270bb99451427c5678eda64fdf02085d5a
 1. **웹에서 데이터셋을 통째 복제하는 비동기 job이 생깁니다.** `POST /datasets/{id}/versions/{version}/clone-jobs`
    가 그 (dataset, version)을 **새 dataset**으로 전량 복제하는 job을 만들고 즉시 `201` 을 반환합니다
    (복사는 서버 백그라운드 — 대규모에서 동기 응답은 타임아웃이라 CVAT 세션과 같은 구조입니다).
+   본문은 `{"target_name": ..., "target_version": ...}`(둘 다 필수)이고, 대상 이름의 dataset 이 이미
+   있으면 `409`, 빈 값은 `400`, 원본이 없으면 `404` 입니다. 이미 끝난 job 을 취소하면 `409` 입니다.
    `GET /clone-jobs/{job_id}` 로 상태(`running`/`succeeded`/`failed`/`cancelling`/`cancelled`)와
    진행률(`copied_count`/`total_count`)을 폴링하고, `DELETE /clone-jobs/{job_id}` 로 취소(협조적 —
    다음 청크 경계에서 멈춤)합니다. `GET /clone-jobs` 는 기본으로 진행 중(`running`·`cancelling`) job 만
    돌려주고, `?status=all`(또는 특정 상태)로 넓힙니다(최신순, 기본 50·최대 200건, `cursor` 페이지). 대상은 원본
    `tags`/`description` 을 복사하고 **항상 draft**로 시작하며, asset 참조(bucket/key/hash)는 재사용해
-   CAS 재업로드가 없습니다(복사되는 것은 sample/instance 행뿐). 실패·취소, 그리고 재시작으로 job이
+   CAS 재업로드가 없습니다(복사되는 것은 sample·sample asset·instance 행뿐이고 CAS 객체는 그대로 참조). 실패·취소, 그리고 재시작으로 job이
    중단된 경우 만들던 대상 dataset을 롤백합니다. 단 대상이 **job 이 만든 모양 그대로(draft 버전
-   하나)일 때만** 지웁니다 — 그 사이 누가 seal 했거나 버전을 붙였으면 지우지 않고 남깁니다. 롤백을
+   하나, 또는 아직 버전이 없을 때)일 때만** 지웁니다 — 그 사이 누가 seal 했거나 버전을 붙였으면 지우지 않고 남깁니다. 롤백을
    거부했거나 DB 오류로 실패하면 대상이 남고 그 사유가 job 의 `error` 에 적힙니다.
 
    중단된 job 은 주기 태스크가 정리합니다(기동 직후 한 번, 이후 5분마다 — **기동을 기다리게 하지
@@ -117,8 +120,8 @@ digest: `sha256:2e71e6a68d2e410dbefdad5d1c96f4270bb99451427c5678eda64fdf02085d5a
    `?confirm=<버전>` 과 `?confirm_dataset_name=<데이터셋명>` — 이 모두 맞을 때 지웁니다. **되돌릴 수
    없습니다.** admin 이 아니면 `409`, admin 이 데이터셋명을 빠뜨리거나 틀리면 `400` 입니다.
    `editor`·`viewer`·로봇은 종전대로 sealed 버전을 지울 수 없습니다. `delete_cas=true` 를 함께 주면
-   그 버전의 manifest 두 개(`manifests/{dataset_id}/{버전}.json`,
-   `annotations/{dataset_id}/{버전}.manifest.json`)를 지우고, 샤드 NDJSON 본문(`annotations/shards/`)은
+   그 버전의 manifest(`manifests/{dataset_id}/{버전}.json` — 버전의 `/` 는 `_` — 와 seal 때 기록된 샤드
+   manifest)를 지우고(실패하면 로그만 남기는 best-effort), 샤드 NDJSON 본문(`annotations/shards/`)은
    다른 버전과 공유될 수 있어 모두 남깁니다.
 
    **응답 코드가 하나 바뀝니다** — sealed 버전에 `confirm` 없이(또는 틀린 `confirm` 으로) 삭제를
@@ -133,7 +136,8 @@ digest: `sha256:2e71e6a68d2e410dbefdad5d1c96f4270bb99451427c5678eda64fdf02085d5a
    `{"annotation_data": {...}}` 이고, **보낸 그룹만** 통째 교체하며 보내지 않은 그룹은 그대로 둡니다.
    `meta` 는 top-level 키 단위로 합치고 값이 `null` 인 키는 지웁니다(중첩 객체는 합치지 않고 통째로
    바꿉니다). 권한·sealed `409` 는 `PUT` 과 같고, 보낸 그룹의 결과로 샘플이 비는데 공유 원본이 있으면
-   `PATCH` 도 아래와 같은 `409` 입니다. 같은 샘플에 대한 `PATCH`·`PUT`·CVAT 반영은
+   `PATCH` 도 아래와 같은 `409` 입니다. `PATCH` 는 그룹 값이 배열이 아니거나 `meta` 가 객체가 아니면
+   `400`, 저장된 `meta` 가 객체가 아니면 `409`(그때는 `PUT` 으로 통째 교체합니다). 같은 샘플에 대한 `PATCH`·`PUT`·CVAT 반영은
    서버가 한 트랜잭션씩 차례로 적용하므로, 두 곳에서 서로 **다른** 그룹을 `PATCH` 해도 서로 지우지
    않습니다(같은 그룹이면 나중 저장이 이깁니다).
 
@@ -177,10 +181,11 @@ digest: `sha256:2e71e6a68d2e410dbefdad5d1c96f4270bb99451427c5678eda64fdf02085d5a
 
 **마이그레이션** — **025 를 추가합니다.** `clone_jobs` 표를 새로 만듭니다.
 
-- **영향받는 테이블** — `clone_jobs`(신설) · `users`(락만 잡습니다). `clone_jobs` 가 `users` 를 FK 로
+- **영향받는 테이블** — `clone_jobs`(신설, 인덱스 2개 포함) · `users`(락만 잡습니다). `clone_jobs` 가 `users` 를 FK 로
   참조하므로 CREATE TABLE 이 `users` 에 락을 잡습니다. `019`~`024` 와 같이 `lock_timeout` 3 초로
   끊습니다 — 못 잡으면 마이그레이션이 실패해 롤아웃만 멈추므로 그대로 다시 올리면 됩니다.
-- **예상 소요시간** — 밀리초 수준입니다. 빈 표를 새로 만드는 것이라 기존 행 수에 걸리지 않습니다.
+- **예상 소요시간** — 밀리초 수준입니다. 빈 표를 새로 만드는 것이라 기존 행 수에 걸리지 않습니다. 단
+  `users` 락을 최대 3 초 기다릴 수 있고, 넘으면 위와 같이 실패합니다.
 - **롤백** — **이 버전은 마이그레이션 025 를 추가하며, 이미지 `0.1.16` 이하로 롤백할 수 없습니다.**
   롤백 가능한 하한은 `0.1.18`(차트 `0.3.14`)입니다 — 같은 마이그레이션 집합을 가진 더 낮은 이미지
   `0.1.17` 은 회수했습니다. sqlx 가 기동 시 적용 이력과 임베드된 마이그레이션 집합을
@@ -193,10 +198,10 @@ digest: `sha256:2e71e6a68d2e410dbefdad5d1c96f4270bb99451427c5678eda64fdf02085d5a
 **호환성** — SDK 에서 그룹 단위 부분 저장(`PATCH`)과 서버 clone job 을 쓰려면 SDK `0.1.16` 이상이
 필요합니다. 상세는 [SDK 변경 이력](https://int2nexus.github.io/cas-server/sdk/changelog.html).
 
-**운영 조치** — sealed 버전 삭제의 `delete_cas=true` 경로는 `<defaultBucket>-manifests` 버킷의
-`manifests/`·`annotations/` 접두사에 **DeleteObject** 를 합니다. 데이터 평면 CAS 키 정책은 이미 `DeleteObject` 를 포함하고 `annotations/`·`manifests/` 에
-deny 를 걸지 않도록 안내돼 있으므로(`values.yaml` 의 `cas` 주석) 별도 조치는 없습니다 — 그 접두사에
-deny 를 새로 추가하지만 않으면 됩니다.
+**주의** — sealed 버전 삭제의 `delete_cas=true` 경로는 `<defaultBucket>-manifests` 버킷의
+`manifests/`·`annotations/` 접두사에 **DeleteObject** 를 합니다. 데이터 평면 CAS 키 정책은 이미
+`DeleteObject` 를 포함하도록 안내돼 있으므로(`values.yaml` 의 `cas` 주석) 따로 할 일은 없습니다 — 그
+두 접두사에 deny 를 새로 걸지만 않으면 됩니다.
 
 ## 0.3.13
 
