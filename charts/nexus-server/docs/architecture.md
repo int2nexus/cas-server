@@ -114,7 +114,7 @@ Annotation Instance는 Sample에 속하며, Dataset Version별 상태로 관리�
 
 ### 3.2 Dataset
 Dataset은 하나의 ML 프로젝트를 구성하는 최상위 관리 단위이다.  
-Dataset은 Sample과 Dataset Version을 포함하며, 접근 권한과 관리 범위를 정의한다.  
+Dataset은 Sample과 Dataset Version을 포함하는 관리 범위이다. 접근 권한은 Dataset 별로 두지 않고 계정 역할로 정한다(10장).  
 하나의 Sample은 정확히 하나의 Dataset에만 속한다.
 
 ### 3.3 DatasetVersion
@@ -158,6 +158,7 @@ stateDiagram-v2
     Draft --> Sealed : Seal
 
     Sealed --> Draft : Fork
+    Draft --> Draft : Fork
 ```
 ### 4.2 Draft Version
 자유롭게 수정 가능한 작업 중 상태.  
@@ -171,7 +172,7 @@ stateDiagram-v2
 ### 4.3 Seal
 Seal은 Draft를 변경 불가능한 DatasetVersion으로 확정하는 과정이다.  
 Seal이 완료되면
-- Version 내용은 변경되지 않는다.
+- 그 Version 의 구성과 Annotation 을 바꾸는 요청이 409 로 거부된다. 그 Version 에 속한 Sample 자체의 삭제도 409 다.
 - Snapshot(Manifest)이 생성된다.
 - 이후 학습과 평가의 기준이 된다.  
 
@@ -180,7 +181,7 @@ Seal 과정에서 생성되는 Snapshot 구조는 7장에서 설명한다.
 ### 4.4 Fork
 Sealed Version은 직접 수정할 수 없다.  
 기존 Version을 변경하려면 새로운 Draft Version을 생성(Fork)하여 작업한다.  
-새 Draft는 부모 Version의 Sample 구성을 그대로 이어받으며, 이후 필요한 Sample과 Annotation만 변경한다.  
+새 Draft는 부모 Version의 Sample 구성을 그대로(또는 지정한 Sample만) 이어받으며, 이후 필요한 Sample과 Annotation만 변경한다.  
 이를 통해 이전 Version은 그대로 유지되며 새로운 Version만 변경된다.
  
 ### 4.5 버전 불변성
@@ -191,9 +192,13 @@ Seal된 Version은 변경되지 않는다.
 새로운 데이터셋을 만들기 위해서는 기존 Version을 수정하는 대신 새로운 Draft Version을 생성한다.
 
 ### 4.6 삭제와 저장소 정리
-Draft Version 은 언제든 삭제할 수 있다. **Sealed Version 은 예외 없이 삭제할 수 없다** — 삭제 요청은 409로 거부되며, Dataset 의 마지막 Version 이어서 Dataset 까지 함께 사라지는 경우에도 마찬가지다.  
-마지막 Draft Version 이 삭제되고, 해당 Dataset에 남은 Version 이 없다면 Dataset 도 함께 삭제된다.  
-이때 삭제 요청에 `delete_cas=true`를 명시적으로 지정한 경우에만, 더 이상 어디에서도 참조되지 않는 원본 파일에 대해 CAS에 삭제 요청을 보내 CAS 내부 GC 로직에 의해 정리될 수 있도록 한다. `delete_cas`는 기본값이 `false`(보존)이므로, 별도로 지정하지 않으면 CAS 객체는 그대로 남는다.
+Draft Version 은 `editor` 이상의 사람 계정이 `?confirm=<버전>` 을 정확히 붙여 삭제할 수 있다(로봇 계정은 403). **Sealed Version 은 기본적으로 삭제할 수 없다** — `confirm` 을 맞게 준 요청도 관리자가 아니면 409로 거부되며(`confirm` 이 없거나 틀리면 역할과 무관하게 400), Dataset 의 마지막 Version 이어서 Dataset 까지 함께 사라지는 경우에도 마찬가지다.  
+**단 관리자(`role=admin`인 사람 계정 — 설정 superuser 는 기동 시 `admin` 이 부여된다)는 Sealed Version 을 삭제할 수 있다** — `DELETE /datasets/{id}/versions/{v}` 에 쿼리 파라미터 둘, `?confirm=<버전>` 과 `?confirm_dataset_name=<데이터셋명>` 을 정확히(비어 있지 않게) 함께 줄 때만이다. 하나라도 틀리면 지우지 않는다. **되돌릴 수 없다.** `editor`·`viewer`·로봇은 지울 수 없다. 재현성 보호의 축은 여전히 Seal 이고(§10.3), 관리자에게만 복구(break-glass) 경로를 연 것이다.  
+마지막 Draft Version 이 삭제되고, 해당 Dataset에 남은 Version 이 없다면 Dataset 도 함께 삭제된다(관리자가 마지막 Sealed Version 을 위 절차로 지우는 경우도 같다).  
+이때 삭제 요청에 `delete_cas=true`를 명시적으로 지정한 경우에만, 더 이상 어디에서도 참조되지 않는 원본 파일에 대해 CAS에 삭제 요청을 보내 CAS 내부 GC 로직에 의해 정리될 수 있도록 한다. `delete_cas`는 기본값이 `false`(보존)이므로, 별도로 지정하지 않으면 CAS 객체는 그대로 남는다. **Sealed Version 을 지울 때 `delete_cas=true`면 그 버전의 manifest 는 지우되, 샤드 NDJSON 본문(annotation 실데이터)은 내용 주소로 다른 버전과 공유될 수 있으므로 지우지 않는다.**
+
+### 4.7 Clone (비동기 복제)
+Fork 가 같은 Dataset 안에서 새 Version 을 만드는 것이라면, Clone 은 (Dataset, Version) 을 **새 Dataset** 으로 통째 복제한다. `POST /datasets/{id}/versions/{version}/clone-jobs` 가 job 을 만들고 즉시 201 을 반환하며, 실제 복사는 백그라운드에서 진행된다 — 대규모 Dataset 을 동기로 복사하면 프록시 타임아웃에 걸리기 때문이다(CVAT 세션과 같은 구조). 진행 상태는 `GET /clone-jobs/{job_id}` 로 폴링하고(`copied_count`/`total_count`), `DELETE /clone-jobs/{job_id}` 로 협조적으로 취소한다(다음 청크 경계에서 멈춘다). 대상은 원본 tags/description 을 복사하고 항상 Draft 로 시작하며, Asset 참조(bucket/key/hash)는 재사용하므로 CAS 재업로드 없이 Sample·Sample Asset·Instance 행만 복제된다. 실패·취소, 그리고 재시작으로 중단된 job 모두 만들던 대상 Dataset 을 롤백한다. 중단된 job(진행이 10분 넘게 멈춘 job)의 정리는 주기 태스크가 하며(기동 직후 한 번, 이후 5분마다) 서버 기동을 기다리게 하지 않는다 — 대형 대상의 롤백이 startupProbe 예산을 먹지 않게 하기 위해서다. 롤백은 대상이 **job 이 만든 모양 그대로(Draft Version 하나, 또는 아직 Version 없음)일 때만** 한다 — 복사 중에도 대상은 보통의 Draft Dataset 이라, 그 사이 누가 Seal 했거나 Version 을 붙였으면 지우지 않고 남긴다(Sealed 보호를 우회하지 않기 위해서다). 롤백을 거부했거나 실패하면 그 사유를 job 에 기록한다. 서버 부하 방어를 위해 동시 실행 job 수에 전역 상한을 둔다(초과 시 409 가 아니라 429). 생성·취소는 `editor` 이상, 조회는 로그인한 사용자면 된다.
 
 ## 5. Annotation Versioning
 ### 5.1 개요
@@ -202,8 +207,8 @@ Sample은 Version 간에 공유되며, Annotation만 Version 별로 독립적으
 이러한 구조를 통해 Version 간 중복 저장을 최소화하면서도, 각 Version의 독립성과 재현성을 유지한다.
 
 ### 5.2 Copy-on-Write
-새 Draft Version은 부모 Version의 Annotation을 그대로 참조하며, 실제 수정이 발생하는 순간 해당 Sample의 새로운 Annotation을 생성한다.  
-변경되지 않은 Annotation은 부모 Version과 공유되고, 수정된 Annotation만 새로운 Version에 저장된다.
+Ingest 로 적재된 Annotation 은 모든 Version 이 공유하는 공유(base) Instance 이다. Version 에서 Annotation 을 수정하는 순간 그 Sample 의 Version 전용 Instance 가 생기고, 그 Version 에서는 전용 Instance 가 공유 Instance 를 가린다.  
+Fork 시 부모 Version 의 전용 Instance 는 새 Version 으로 복사되고, 공유 Instance 는 복사 없이 계속 공유된다. 수정되지 않은 Sample 은 저장 공간을 더 쓰지 않는다.
 
 ```
 Version A
@@ -236,6 +241,18 @@ flowchart TD
     B -->|아니오| D["공유 Instance 사용"]
 ```
 
+### 5.3.1 Annotation 쓰기 — 통째 교체(PUT)와 부분 저장(PATCH)
+Annotation 쓰기에는 두 가지가 있다.
+
+- **통째 교체(`PUT .../samples/{sample_id}/annotations`)** — 보낸 그룹들로 이 Version 의 그 Sample Annotation 전체를 바꾼다. 보내지 않은 그룹은 사라지고, `meta` 를 보냈으면 그 값으로 통째로 바뀐다(보내지 않으면 그대로). 단 **그룹을 하나도 보내지 않으면 Instance 는 건드리지 않는다.**
+- **부분 저장(`PATCH` 같은 경로)** — 보낸 그룹만 통째로 바꾸고 나머지 그룹은 그대로 둔다. `meta` 는 top-level 키 단위로 합친다(값이 `null` 인 키는 지운다).
+
+CoW 는 Sample 단위다 — 이 Version 전용 Instance 가 하나라도 있으면 그 Sample 의 공유 Instance 는 이 Version 에서 모두 가려진다(§5.3). 그래서 부분 저장이 그룹 하나만 바꿀 때도, 보내지 않은 그룹의 현재 Instance 를 이 Version 전용으로 함께 옮겨 적는다(옮겨 적지 않으면 그 그룹이 이 Version 에서 사라진다).
+
+같은 이유로 **「이 Version 에서 비어 있음」을 표현할 수 없다** — 전용 Instance 가 0개가 되면 공유 Instance 가 다시 보인다. 그래서 그룹을 보냈는데 결과가 비고 그 Sample 에 공유 Instance(적재한 GT)가 있으면 `409` 로 거절한다(비운 줄 알았는데 원본이 되살아나는 거짓 성공 대신). 이 Version 에서 그 Sample 을 비우려면 Version 에서 unlink 한다.
+
+한 Sample 에 대한 쓰기(PUT·PATCH·CVAT 반영)는 그 Sample 행을 잠그고 한 트랜잭션으로 적용되므로 차례로 반영된다. 두 곳에서 같은 Sample 의 서로 **다른** 그룹을 부분 저장해도 서로 지우지 않는다. 단 이 보장은 부분 저장끼리만이다 — PUT·CVAT 반영은 그 Sample 의 Annotation 전체를 다시 쓰므로 그 사이의 부분 저장 결과를 덮을 수 있다.
+
 ### 5.4 Sample은 CoW를 사용하지 않는다
 Copy-on-Write는 Annotation에만 적용된다.  
 Fork 시 새로운 Version의 Sample 멤버십이 생성되며, 각 멤버십은 동일한 Sample을 참조한다.   
@@ -261,10 +278,13 @@ sequenceDiagram
     participant CAS as CAS
 
     U->>NX: 세션 생성 (sample_ids)
+    NX-->>U: 세션 (status=creating)
+    Note over NX: 준비는 백그라운드
     NX->>CV: Project · Task 생성 (라벨 정의)
     NX->>CV: 이미지 URL 목록 전달
     CV->>CAS: 이미지 직접 다운로드
     NX->>CV: Annotation 내보내기
+    U->>NX: 상태 조회 (open 이 될 때까지)
     NX-->>U: 세션 (status=open, CVAT 주소)
 
     Note over CV: 작업자가 편집
@@ -292,9 +312,9 @@ CVAT은 2D 이미지 편집기이므로, 왕복이 무손실인 컴포넌트만 
 | 구분 | 컴포넌트 | 처리 |
 |---|---|---|
 | 편집 대상 | `bounding_box`, `polygon`, `polyline`, `keypoint_2d` | CVAT으로 내보내고 편집 결과를 병합한다 |
-| 편집 제외 | `cuboid_3d`, `keypoint_3d`, classification, scalar, vector | 내보내지 않으며 **원본이 그대로 보존된다** |
+| 편집 제외 | 그 밖의 모든 컴포넌트(`cuboid_3d`, `keypoint_3d`, classification 등) | 내보내지 않으며 **원본이 그대로 보존된다** |
 
-`keypoint_2d`는 CVAT의 skeleton 라벨로 나간다. 관절 **이름**과 **연결선**은 서버가 만들어 내는 값이 아니라 GT의 `meta.keypoint_info`에서 온다 — 컴포넌트 키로 색인된 `{labels, edges}`다. `edges`의 원소는 두 점의 쌍이 아니라 여러 점을 잇는 **경로**이며, 서버가 그것을 연결선 쌍으로 펴서 skeleton SVG에 넣는다(서버 0.1.10). 이 값이 없거나 이름 배열만 있는 옛 모양이면 연결선 없이 점만 그려진다. 관절 수 밖을 가리키는 인덱스는 그 선만 건너뛴다 — 그리면 CVAT이 project 생성을 거절해 세션이 통째로 실패하고 사유가 드러나지 않는다.
+`keypoint_2d`는 CVAT의 skeleton 라벨로 나간다. 관절 **이름**과 **연결선**은 서버가 만들어 내는 값이 아니라 GT의 `meta.keypoint_info`에서 온다 — 컴포넌트 키로 색인된 `{labels, edges}`다. `edges`의 원소는 두 점의 쌍이 아니라 여러 점을 잇는 **경로**이며, 서버가 그것을 연결선 쌍으로 펴서 skeleton SVG에 넣는다. 이 값이 없거나 이름 배열만 있는 옛 모양이면 연결선 없이 점만 그려진다. 관절 수 밖을 가리키는 인덱스는 그 선만 건너뛴다 — 그리면 CVAT이 project 생성을 거절해 세션이 통째로 실패하고 사유가 드러나지 않는다.
 
 편집 대상이 아닌 컴포넌트는 병합 과정에서 변경되지 않는다. 3D 정보나 분류 값을 가진 인스턴스의 2D 박스만 수정하는 경우에도 나머지 정보는 유지된다.
 
@@ -311,11 +331,11 @@ CVAT Shape ID는 라벨 변경 후에도 유지되므로, 속성이 비어 있�
 이 원칙이 없으면 편집하지 않은 데이터가 회수 과정에서 소실된다.
 
 #### 5.5.5 Sample 잠금
-하나의 Sample은 동시에 하나의 활성 세션에만 속할 수 있다.
+같은 Version 안에서 하나의 Sample은 동시에 하나의 활성 세션(`creating`·`open`)에만 속할 수 있다.
 두 세션이 같은 Sample을 편집하면 나중에 회수한 결과가 앞의 결과를 덮어쓰기 때문이다.
 이미 다른 활성 세션이 점유한 Sample로 세션을 생성하면 요청이 거부되며, 어느 세션이 점유 중인지 함께 반환된다.
 
-잠금은 세션을 종료(`close`)하거나 삭제할 때 해제된다.
+잠금은 세션을 종료(`close`)하거나 삭제할 때, 또는 세션이 `failed`가 되면 해제된다.
 
 | 동작 | Sample 잠금 | CVAT Project | 수행 가능한 사용자 | 용도 |
 |---|---|---|---|---|
@@ -324,7 +344,7 @@ CVAT Shape ID는 라벨 변경 후에도 유지되므로, 속성이 비어 있�
 
 종료 수단이 삭제뿐이면 결과물 소실이 우려되어 아무도 세션을 정리하지 않게 되고, Sample이 영구히 잠긴다. 두 가지를 분리한 이유이다.
 
-**`delete`만 로봇 계정을 막는다**(차트 0.3.8~). 사라지는 것에 아직 nexus로 들어오지 않은 작업자 편집이 섞여 있는데, `sealed`는 이것을 지켜 주지 않고(세션은 seal의 대상이 아니다) nexus 밖의 상태라 데이터베이스 백업에도 없다. 로봇 토큰은 최장 365일 살아서 사람 토큰(최대 `jwt.ttlHours`, 기본 24시간)과 유출 반경이 다르다. `close`는 로봇도 부를 수 있으므로 잠금이 영구히 남지는 않는다.
+**`delete`만 로봇 계정을 막는다.** 사라지는 것에 아직 nexus로 들어오지 않은 작업자 편집이 섞여 있는데, `sealed`는 이것을 지켜 주지 않고(세션은 seal의 대상이 아니다) nexus 밖의 상태라 데이터베이스 백업에도 없다. 로봇 토큰은 최장 365일 살아서 사람 토큰(최대 `jwt.ttlHours`, 기본 24시간)과 유출 반경이 다르다. `close`는 로봇도 부를 수 있으므로 잠금이 영구히 남지는 않는다.
 
 #### 5.5.6 회수 시점
 세션 상태는 생명주기만을 나타내며, 편집 결과의 회수 여부는 상태로 표현하지 않는다.
@@ -333,6 +353,10 @@ CVAT Shape ID는 라벨 변경 후에도 유지되므로, 속성이 비어 있�
 
 회수(`import`)는 여러 번 호출해도 안전하다. 편집이 없으면 아무것도 변경되지 않는다.
 
+회수는 Sample 의 `meta` 를 쓰지 않는다. CVAT 은 `meta` 를 편집하지 않으므로, 회수가 `meta` 를 되쓰면 그 사이 다른 경로에서 고친 값을 옛 값으로 덮을 수 있기 때문이다.
+
+작업자가 한 프레임의 도형을 전부 지웠는데 그 Sample 에 공유 Instance 가 있으면 그 Sample 의 반영은 §5.3.1 의 `409` 에 걸린다. 이 경우 **마지막 회수 시각을 전진시키지 않는다** — 전진시키면 반영되지 않은 편집이 반영된 것처럼 보여 `close` 의 미반영 가드를 통과한다. 그래서 `close` 는 `force` 없이 막히고, 빠져나가는 길은 도형을 다시 그리거나, 그 Sample 을 Version 에서 unlink 하거나, 편집을 버리고 `force` 로 닫는 것이다.
+
 ## 6. 스냅샷과 Manifest 구조
 Seal은 Draft 상태의 DatasetVersion을 변경할 수 없는 Snapshot으로 확정하는 과정이다.  
 Snapshot은 Seal 시점의 Sample과 Annotation 상태를 고정하며, 이후에는 Annotation의 변경 이력이나 Copy-on-Write 구조를 다시 해석하지 않고도 동일한 데이터셋을 재현할 수 있도록 한다.  
@@ -340,7 +364,7 @@ Nexus는 Snapshot을 여러 개의 Shard와 이를 연결하는 Manifest로 구�
 
 ### 6.1 Annotation Snapshot
 Seal이 수행되면 Nexus는 해당 DatasetVersion에서 유효한 Annotation을 계산하여 하나의 완전한 상태로 확정한다.  
-확정된 Annotation은 NDJSON 형식의 Snapshot으로 생성되며, 대규모 Dataset을 효율적으로 처리할 수 있도록 여러 개의 Shard로 분할하여 저장한다.  
+확정된 Annotation과 각 Sample의 그 시점 `meta` 사본은 NDJSON 형식의 Snapshot으로 생성되며, 대규모 Dataset을 효율적으로 처리할 수 있도록 여러 개의 Shard로 분할하여 저장한다.  
 Snapshot은 DatasetVersion의 논리적 상태를 외부 저장소에 고정한 결과물이다.  
 따라서 Seal 이후에는 PostgreSQL의 Annotation 관계를 다시 해석하지 않고도 해당 Version의 데이터를 독립적으로 읽을 수 있다.
 
@@ -362,8 +386,8 @@ Snapshot이 여러 개의 Shard로 나뉘면, 하나의 DatasetVersion이 어떤
 flowchart TD
 
     DV["DatasetVersion(PostgreSQL)
-manifest_hash_hex
-shard_manifest_key/hash"]
+Main Manifest 해시
+Shard Manifest 위치·해시"]
 
     MM["Main Manifest(CAS)"]
 
@@ -451,7 +475,8 @@ Ingest가 완료되면 Sample은 DatasetVersion에 포함되고 이후 검색과
 
 ### 7.3 수정 
 Annotation 수정은 Draft Version에서만 가능하다.  
-수정된 Annotation은 Copy-on-Write 방식으로 관리되므로, 기존 Version에는 영향을 주지 않고 현재 Draft에만 변경 사항이 반영된다.
+수정된 Annotation은 Copy-on-Write 방식으로 관리되므로, 기존 Version에는 영향을 주지 않고 현재 Draft에만 변경 사항이 반영된다.  
+수정은 통째 교체(PUT)와 그룹 단위 부분 저장(PATCH) 두 가지다(§5.3.1).
 
 ### 7.4 Seal
 Seal은 Draft Version을 변경할 수 없는 Snapshot으로 확정하는 과정이다.  
@@ -503,7 +528,7 @@ DatasetVersion  Sample
 
 ### 8.2 Annotation Versioning
 Annotation은 instances 테이블에서 관리된다.  
-공유 Annotation과 Version별 Annotation을 하나의 데이터 모델로 관리하며, 이를 통해 Copy-on-Write 구조를 구현한다. 각 DatasetVersion은 자신의 Annotation을 우선 사용하고, 변경되지 않은 Annotation은 부모 Version과 공유한다.
+공유 Annotation과 Version별 Annotation을 하나의 데이터 모델로 관리하며, 이를 통해 Copy-on-Write 구조를 구현한다. 각 DatasetVersion은 자신의 전용 Instance 를 우선 사용하고, 전용 Instance 가 없는 Sample 은 공유(base) Instance 를 쓴다. Fork 는 부모의 전용 Instance 를 복사하므로 자식이 부모를 참조하지 않는다.
 
 ### 8.3 Annotation Schema
 Explorer에서 사용하는 Annotation Schema는 별도의 관측 테이블에 관리된다.  
@@ -526,7 +551,7 @@ Catalog 계층 (비즈니스 로직)
 Store 계층 (PostgreSQL 쿼리 / CAS 클라이언트)
 ```
 
-각 계층은 바로 아래 계층에만 의존하며 역할은 다음과 같다.
+계층의 역할은 다음과 같다(인증·관리 등 일부 API 핸들러는 규칙 없는 단순 조회라 Store를 직접 부른다).
 - API 계층은 HTTP 요청과 응답을 처리
 - Catalog 계층은 Dataset, Version, Annotation 등 핵심 비즈니스 규칙을 관리
 - Store 계층은 PostgreSQL과 CAS에 대한 데이터 입출력 담당  
@@ -567,32 +592,32 @@ API는 다음과 같은 원칙을 따른다.
 - Batch 중심  
 대량 데이터 처리를 위해 Batch API를 제공하며, 각 요청은 독립적으로 처리되어 일부 실패가 전체 작업에 영향을 주지 않도록 한다.
 - 전면 인증  
-조회를 포함한 모든 엔드포인트가 인증을 요구한다. 예외는 회원 가입·로그인·프로브 두 경로·OpenAPI 문서와 Swagger UI 셸뿐이다(문서 경로는 설정으로 끌 수 있다). 데이터 변경 권한은 인증 위에 계정 역할(`admin`/`editor`/`viewer`)로 결정한다. 담당자(`owner_user_id`)는 인가에 관여하지 않는다 — 목록 필터와 인수 대기 관리에 쓰이는 값이다.
+조회를 포함한 모든 엔드포인트가 인증을 요구한다. 예외는 회원 가입·로그인·프로브 두 경로·OpenAPI 문서와 Swagger UI 셸뿐이다(문서 경로는 설정으로 끌 수 있다). 데이터 변경 권한은 인증 위에 계정 역할(`admin`/`editor`/`viewer`)로 결정한다. 담당자(`owner_user_id`)는 담당자 이관을 빼면 인가에 관여하지 않는다 — 목록 필터와 인수 대기 관리에 쓰이는 값이다.
 - 일관된 오류 모델  
 HTTP 상태 코드와 함께 구체적인 오류 정보를 제공한다.
 
 ## 10. 권한과 불변성 정책
-Nexus는 계정 역할로 무엇을 할 수 있는지를 정한다. 담당자는 인가에 관여하지 않는다(서버 0.1.9).  
+Nexus는 계정 역할로 무엇을 할 수 있는지를 정한다. 담당자는 담당자 이관을 빼면 인가에 관여하지 않는다.  
 여기에 Version 불변성을 조합하여 데이터의 안정성과 재현성을 보장한다.
 
 ### 10.1 인증
 Nexus는 자체 발급하는 JWT(HS256) 기반 인증을 사용한다.  
-사용자는 로그인 후 Access Token을 발급받으며, 이후의 요청은 JWT를 통해 사용자 신원을 확인한다. 현재는 자체 인증을 제공하지만, 인증 방식은 Catalog 계층과 분리되어 있어 향후 OAuth2나 OpenID Connect와 같은 외부 인증 시스템으로도 확장할 수 있다.  
-**조회를 포함한 모든 엔드포인트가 토큰을 요구한다.** 예외는 회원 가입, 로그인, 프로브 두 경로(`/_internal/live`, `/_internal/health`), OpenAPI 문서(`/api-docs/openapi.json`), 그리고 Swagger UI 정적 셸(`/swagger-ui`, `/swagger-ui/`) 일곱 가지뿐이다. `/_internal/metrics`는 예외가 아니다 — 별도 bearer 토큰을 받고, 설정하지 않으면 경로 자체가 없다. 문서 세 경로는 설정으로 끌 수 있으며, 끄면 등록 자체가 되지 않아 404가 된다. 토큰이 없거나 만료되었으면 401을 반환한다.
+사용자는 로그인 후 Access Token을 발급받으며, 이후의 요청은 JWT를 통해 사용자 신원을 확인한다. 자체 발급 JWT 외에 로봇 계정 토큰과 외부 IdP 가 발급한 OIDC 토큰도 받는다(아래). 인증 방식은 Catalog 계층과 분리되어 있어, 어느 경로로 오든 계정 판정은 한 곳을 지난다.  
+**조회를 포함한 모든 엔드포인트가 토큰을 요구한다.** 예외는 회원 가입, 로그인, 프로브 두 경로(`/_internal/live`, `/_internal/health`), OpenAPI 문서(`/api-docs/openapi.json`), 그리고 Swagger UI 정적 셸(`/swagger-ui`, `/swagger-ui/`) 일곱 가지뿐이다. `/_internal/metrics`는 예외가 아니다 — 별도 bearer 토큰을 받고, 설정하지 않으면 404를 반환한다. 문서 세 경로는 설정으로 끌 수 있으며, 끄면 등록 자체가 되지 않아 404가 된다. 토큰이 없거나 만료되었으면 401을 반환한다.
 
-**역할은 토큰에 담지 않는다.** 인증 단계에서 사용자 행(역할·승인 상태·활성 상태)을 읽고 그 결과를 짧게 캐시한다. 토큰에 담으면 역할을 낮춰도 토큰 만료까지 반영되지 않기 때문이다. 이 캐시 수명(`auth.revocationCacheTtlSecs`, 기본 5초)이 곧 **권한 회수·계정 정지·계정 삭제가 듣기까지의 상한**이다. 매 요청 조회로 두면 적재 처리량이 20~33% 줄어드는 것이 측정되어 캐시를 기본으로 두었다.
+**역할은 토큰에 담지 않는다.** 인증 단계에서 사용자 행(역할·승인 상태·활성 상태)을 읽고 그 결과를 짧게 캐시한다. 토큰에 담으면 역할을 낮춰도 토큰 만료까지 반영되지 않기 때문이다. 이 캐시 수명(`auth.revocationCacheTtlSecs`, 기본 5초)이 곧 **권한 회수·계정 정지·계정 삭제가 듣기까지의 상한**이다. 매 요청 조회로 두면 적재 처리량이 눈에 띄게 줄어 캐시를 기본으로 두었다.
 
-**인증 경로는 셋이다**(둘까지는 서버 0.1.10, 셋째는 0.1.11). 사람은 위의 JWT, 사람 없는 워크로드는 **로봇 계정에 붙는 장수명 토큰**(`nxr_` 접두사)을 같은 `Authorization: Bearer` 헤더로 제시한다. 로봇을 별도 표가 아니라 `users` 행으로 둔 것은 `datasets.created_by`가 `users`를 참조하기 때문이다 — 「로봇이 만든 dataset에 로봇이 남는다」를 지키려면 여기여야 한다. 사람과 로봇은 `users.kind`로 갈리며, 이메일 도메인으로 판정하지 않는다(이 서버에는 이메일 정규화가 없어 도메인 비교가 대소문자·후행 점·하위 도메인에 뚫린다).
+**인증 경로는 셋이다.** 사람은 위의 JWT, 사람 없는 워크로드는 **로봇 계정에 붙는 장수명 토큰**(`nxr_` 접두사)을 같은 `Authorization: Bearer` 헤더로 제시한다. 로봇을 별도 표가 아니라 `users` 행으로 둔 것은 `datasets.created_by`가 `users`를 참조하기 때문이다 — 「로봇이 만든 dataset에 로봇이 남는다」를 지키려면 여기여야 한다. 사람과 로봇은 `users.kind`로 갈리며, 이메일 도메인으로 판정하지 않는다(이 서버에는 이메일 정규화가 없어 도메인 비교가 대소문자·후행 점·하위 도메인에 뚫린다).
 
 **갈리는 것은 `user_id`를 얻는 방법뿐이고 계정 판정은 한 곳을 지난다.** 정지·미승인·역할을 두 벌로 판정하면 같은 상태가 주체에 따라 다른 답을 준다(정지가 403 대 401, 미승인이 강등 대 거부). 그래서 위 캐시와 그 수명도 로봇에 그대로 적용된다 — **폐기는 캐시 수명만큼 늦게 듣고, 만료는 늦지 않는다**(만료 비교는 캐시와 무관하게 매 요청 계산한다). 발급 시 만료가 필수이고(1~365일) 계정 하나에 토큰 여럿을 둘 수 있어, 새 토큰을 배포한 뒤 옛 토큰을 폐기하는 방식으로 중단 없이 회전한다. 로봇 토큰으로는 토큰 갱신이 되지 않는다 — 열어 두면 장수명 토큰으로 단수명 JWT를 계속 받아 만료 강제가 우회된다.
 
-**셋째는 외부 IdP가 발급한 OIDC 토큰이다**(서버 0.1.11, `auth.oidc.issuers`가 비면 꺼져 있다). 같은 `Authorization: Bearer` 자리에 온다. 갈래를 고르는 순서는 **`nxr_` 접두사면 로봇 토큰, 아니면 `iss`가 등록된 발급자와 맞으면 OIDC, 그 밖은 이 서버의 JWT**다 — 서명 알고리즘으로 가르지 않는다(그랬다면 `alg: none`을 단 토큰이 이 서버의 검사 밖으로 빠진다). **고르는 것이 권한을 주지는 않는다.** `iss`는 서명을 보기 전에 읽는 값이므로 잘못 고르더라도 그쪽 검증에서 떨어진다. 입구가 둘인데, 갈리는 기준은 **누가 토큰을 갈아 끼우는가**다. 쿠버네티스는 kubelet이 SA 토큰 파일을 주기적으로 갈아 끼우므로 매 요청 직접 제시하면 되고, 갈아 끼울 주체가 없는 환경은 `POST /api/v1/auth/oidc/exchange`로 한 번 이 서버의 JWT와 바꾼다(발급자마다 `exchange`로 연다).
+**셋째는 외부 IdP가 발급한 OIDC 토큰이다**(`auth.oidc.issuers`가 비면 꺼져 있다). 같은 `Authorization: Bearer` 자리에 온다. 갈래를 고르는 순서는 **`nxr_` 접두사면 로봇 토큰, 아니면 `iss`가 등록된 발급자와 맞으면 OIDC, 그 밖은 이 서버의 JWT**다 — 서명 알고리즘으로 가르지 않는다(그랬다면 `alg: none`을 단 토큰이 이 서버의 검사 밖으로 빠진다). **고르는 것이 권한을 주지는 않는다.** `iss`는 서명을 보기 전에 읽는 값이므로 잘못 고르더라도 그쪽 검증에서 떨어진다. 입구가 둘인데, 갈리는 기준은 **누가 토큰을 갈아 끼우는가**다. 쿠버네티스는 kubelet이 SA 토큰 파일을 주기적으로 갈아 끼우므로 매 요청 직접 제시하면 되고, 갈아 끼울 주체가 없는 환경은 `POST /api/v1/auth/oidc/exchange`로 한 번 이 서버의 JWT와 바꾼다(발급자마다 `exchange`로 연다).
 
 **신원은 관리자가 명시 등록한다 — 자동 생성은 없다**(`POST /api/v1/admin/oidc-identities`가 `(issuer, subject)`를 계정에 붙인다). 자동 생성을 열면 「그 네임스페이스에 파드를 띄울 수 있다」가 그대로 이 서버의 쓰기 권한이 되고, 매핑을 지워도 다음 요청에 다시 생겨 **회수가 성립하지 않는다.** 같은 이유로 superuser와 `role = admin` 계정에는 신원을 붙일 수 없다 — 등록할 때와 인증할 때 **두 자리에서** 막는다(관리 권한의 출처가 둘이라, 한쪽만 막으면 「먼저 붙여 두고 나중에 그 주소를 superuser로 지정」이 통과한다).
 
 **이 갈래로 온 요청은 토큰 갱신·비밀번호 변경·계정 삭제가 403이다.** 갱신을 막는 것은 만료 강제의 축이고(열어 두면 1시간짜리 SA 토큰이 `jwt.ttlHours`짜리 JWT로 바뀌어 자동 회전이 사라진다), 뒤의 둘은 **이번 요청이 비밀번호를 증명하지 않았다**는 것이 근거다 — realm을 쥔 쪽이 계정의 비밀번호를 바꾸거나 계정을 지울 수 있으면 IdP 침해가 계정 탈취로 번진다. 계정 종(`users.kind`)으로는 막지 못한다. 사람 계정에 붙은 OIDC 신원은 `kind: human`이라 로봇 가드에 걸리지 않기 때문이고, 자격증명의 출처와 계정의 종은 서로 다른 축이다.
 
-Token 자체는 발급 후 만료까지 무효화할 수 없다. 만료 시점은 배포마다 `jwt.ttlHours` 값(기본 24시간, 허용 범위 1~8760시간 — [설치 가이드](usage.md#인증-관련-설정-차트-030) 참조)으로 정해진다. 다만 위 조회 때문에 **삭제·정지된 계정의 토큰은 캐시 수명 안에 막힌다.** 비밀번호 변경은 기존 토큰에 영향을 주지 않는다.
+Token 자체는 발급 후 만료까지 무효화할 수 없다. 만료 시점은 배포마다 `jwt.ttlHours` 값(기본 24시간, 허용 범위 1~8760시간 — [설치 가이드](../README.md#인증-설정) 참조)으로 정해진다. 다만 위 조회 때문에 **삭제·정지된 계정의 토큰은 캐시 수명 안에 막힌다.** 비밀번호 변경은 기존 토큰에 영향을 주지 않는다.
 
 ### 10.2 인가 — 역할과 담당자
 권한은 세 필드로 나뉜다. 하나가 세 가지 일을 겸하면 하나를 만족시킬 때 다른 하나가 깨지기 때문이다.
@@ -603,21 +628,21 @@ Token 자체는 발급 후 만료까지 무효화할 수 없다. 만료 시점�
 |`datasets.owner_user_id`|담당자|이관 가능|아니오|
 |`users.role`|`admin` / `editor` / `viewer`|관리자 부여|예|
 
-여기에 **되돌릴 수 없는 삭제에만** 걸리는 조건이 하나 더 있다(서버 0.1.10~). 축이 넷이 된 것은 아니다 — 아래 `users.kind`는 "무엇을 할 수 있는가"를 정하지 않고 **삭제 하나만** 빼는 값이다.
+여기에 **되돌릴 수 없는 삭제에만** 걸리는 조건이 하나 더 있다. 축이 넷이 된 것은 아니다 — 아래 `users.kind`는 "무엇을 할 수 있는가"를 정하지 않고 **삭제 하나만** 빼는 값이다.
 
 |필드|뜻|변경|인가에 관여|
 |---|---|---|---|
 |`users.kind`|`human` / `robot`|불변|**삭제만** (로봇은 지우지 못한다)|
 
-**쓰기는 역할이 가른다.** Ingest, Sample 추가, Annotation 수정, Seal, 이름 변경, 태그, Fork, Subset 조작은 `editor` 이상이면 **다른 사람이 담당인 Dataset에도** 수행할 수 있다. `viewer`는 어디에도 쓸 수 없다. 조회는 역할과 무관하게 인증만 통과하면 된다.
+**쓰기는 역할이 가른다.** Ingest, Sample 추가, Annotation 수정, Seal, 이름 변경, 태그, Fork, Subset 조작은 `editor` 이상이면 **다른 사람이 담당인 Dataset에도** 수행할 수 있다. `viewer`는 카탈로그에 쓸 수 없다(개인 즐겨찾기만 예외). 조회는 역할과 무관하게 인증만 통과하면 된다.
 
-**로봇 계정의 권한에는 상한이 둘 있다**(서버 0.1.10). 역할은 `editor`까지이고, dataset·Version·Sample 삭제는 되지 않는다 — **CVAT 세션 삭제와 저장된 explorer 필터(subset) 삭제도 서버 0.1.11에서 여기 더해졌다**(판정은 `role::require_delete` 하나를 지난다). 관리 엔드포인트가 `users.role = admin`으로도 열리므로 `admin` 로봇의 장수명 토큰은 그대로 관리 평면 전권이 되고, 사람 토큰이 최대 `jwt.ttlHours`인 데 비해 로봇 토큰은 최장 365일이라 그 값 하나로 sealed가 아닌 모든 dataset을 지울 수 있는 것은 장수명 자격증명에 붙일 권한이 아니다. 적재·수정·seal·이름 변경·fork는 사람과 같다.
+**로봇 계정의 권한에는 상한이 둘 있다.** 역할은 `editor`까지이고, dataset·Version·Sample 삭제는 되지 않는다 — CVAT 세션과 저장된 explorer 필터(subset)도 지울 수 없다(모든 삭제 경로가 같은 판정을 쓴다). 관리 엔드포인트가 `users.role = admin`으로도 열리므로 `admin` 로봇의 장수명 토큰은 그대로 관리 평면 전권이 되고, 사람 토큰이 최대 `jwt.ttlHours`인 데 비해 로봇 토큰은 최장 365일이라 그 값 하나로 sealed가 아닌 모든 dataset을 지울 수 있는 것은 장수명 자격증명에 붙일 권한이 아니다. 적재·수정·seal·이름 변경·fork는 사람과 같다.
 
-**삭제도 역할만 본다**(서버 0.1.9). Version·Sample 삭제는 `editor` 이상이면 담당자와 무관하게 된다. Dataset을 직접 지우는 엔드포인트는 없고, 마지막 Version을 지우면 Dataset이 함께 사라진다.
+**삭제도 역할만 본다.** Version·Sample 삭제는 `editor` 이상의 사람 계정이면 담당자와 무관하게 된다(Sealed Version 과 그에 속한 Sample 은 409 — §4.6, §10.3). Dataset을 직접 지우는 엔드포인트는 없고, 마지막 Version을 지우면 Dataset이 함께 사라진다.
 
-0.1.7~0.1.8은 여기에 담당자 검사를 더 두었으나 되돌렸다. 쓰기(적재·수정·seal·이름 변경·fork)가 이미 `editor` 이상이면 남의 Dataset에도 되는 상태에서 **삭제 한 경로만 막는 것은 가드가 되지 못하고**, 가드가 있다고 믿게 만들 뿐이다. 담당자를 「목록 필터의 기준」으로 두려던 설계와도 어긋났다.
+쓰기(적재·수정·seal·이름 변경·fork)가 이미 `editor` 이상이면 남의 Dataset에도 되는 상태에서 **삭제 한 경로만 담당자로 막는 것은 가드가 되지 못하고**, 가드가 있다고 믿게 만들 뿐이다.
 
-`viewer`로 강등하면 삭제가 막히는 것은 그대로다 — 판정에 남은 것이 역할 하나이므로 이제 그것이 전부다. **되돌릴 수 없는 데이터를 지키는 것은 소유권이 아니라 seal이다**(sealed 버전은 누구도 지울 수 없다).
+`viewer`로 강등하면 삭제가 막히는 것은 그대로다 — 판정은 역할 하나뿐이다. **되돌릴 수 없는 데이터를 지키는 것은 소유권이 아니라 seal이다**(sealed 버전은 관리자(사람 계정) 외에는 누구도 지울 수 없고, 관리자도 버전·데이터셋명 이중 확인을 거쳐야 한다 — §4.6).
 
 **담당자가 비어 있어도 `editor` 이상이면 지울 수 있다.** 판정에 담당자가 들어가지 않으므로 담당자 유무가 권한을 바꾸지 않는다. 그래서 담당자가 없는 상태는 위험이 아니라 **인수 대기**라는 정상 상태이고, `GET /datasets?unowned=true`로 목록을 만든다.
 
@@ -632,22 +657,22 @@ Token 자체는 발급 후 만료까지 무효화할 수 없다. 만료 시점�
 
 **담당자 이관은 담당자 본인이 한다**(`PUT /api/v1/datasets/{dataset_id}/owner`). 관리 경로가 필요한 경우는 둘이다 — 담당자가 없는 Dataset의 인수(`PUT /api/v1/admin/datasets/{dataset_id}/owner`)와, 이미 떠난 사람의 담당분을 한 번에 넘기는 일괄 이관(`POST /api/v1/admin/datasets/transfer-owner`)이다.
 
-**관리 권한의 출처는 둘이다.** 설정으로 지정한 superuser(판정이 설정값 비교라 재배포로 즉시 회수된다)와 `users.role = admin`(운영 중 부여·회수하며 캐시 수명만큼 늦게 듣는다)이다. 후자가 관리자를 둘 이상 두는 수단이고, 전자는 그 최초 한 명을 만드는 부트스트랩이자 모든 `admin`을 잃었을 때의 복구 수단이다.
+**관리 권한의 출처는 둘이다.** 설정으로 지정한 superuser와 `users.role = admin`(운영 중 부여·회수)이다. 서버는 기동 시 superuser 계정에도 `role = admin`을 부여하므로, 설정에서 이메일을 바꿔도 이전 계정은 `admin`으로 남는다 — 회수는 역할 변경으로 한다. 후자가 관리자를 둘 이상 두는 수단이고, 전자는 그 최초 한 명을 만드는 부트스트랩이자 모든 `admin`을 잃었을 때의 복구 수단이다.
 
 **가입 승인 게이트는 선택이다**(`auth.approvalRequired`, 기본 꺼짐). 켜면 가입은 열려 있되 승인 전까지 아무것도 할 수 없다 — 가입 요청은 계정을 만들되 토큰을 주지 않고 `202`를 반환하며, 승인 전에는 로그인·토큰 갱신이 `403`이다. 승인은 역할 부여와 한 번에 이뤄진다(`POST /api/v1/admin/users/approve`가 역할을 필수로 받는다). "승인은 됐는데 역할이 정해지지 않은" 중간 상태를 만들지 않기 위해서다.
 
 ### 10.3 Version 불변성
 DatasetVersion의 변경 가능 여부는 권한과 별개로 Version 상태에 의해 결정된다.  
-Draft 상태에서는 Sample과 Annotation을 수정할 수 있지만, Seal 이후에는 모든 변경이 차단된다.  
+Draft 상태에서는 Sample과 Annotation을 수정할 수 있지만, Seal 이후에는 그 Version 에 대한 Sample 추가·unlink·Annotation 수정이 409 로 차단된다(버전 삭제의 관리자 예외는 §4.6). Sealed Version 에 하나라도 속한 Sample 은 Sample 자체의 삭제(`DELETE /samples/{sample_id}`)도 409 다. 지우도록 두면 Sealed Version 의 API 조회는 바뀌는데 CAS 스냅샷(SDK `to_df()` 가 읽는 것)은 그대로인 불일치가 생기기 때문이다.  
 즉, 역할은 누가 변경할 수 있는지를 결정하고, Version 상태는 변경이 가능한지를 결정한다. 두 정책은 서로 독립적으로 동작한다.
 
-**Seal이 고정하는 것은 Version의 구성과 Annotation이다.** Sample의 `meta`는 그 대상이 아니다 — Seal은 Instance를 NDJSON 스냅샷으로 CAS에 박제하고 해시로 고정하지만 `samples.meta`는 스냅샷에 포함되지 않으며, Sealed Version의 `meta` 조회는 언제나 살아 있는 행을 읽는다. `meta`가 Sample 단위로 하나뿐이고 Version별로 분기되지 않기 때문이다(Annotation만 CoW로 격리된다).
+**Seal이 고정하는 것은 Version의 구성과 Annotation, 그리고 그 시점 `meta`의 사본이다.** Seal은 Instance와 함께 각 Sample의 `meta`를 NDJSON 스냅샷에 기록해 CAS에 박제하고 해시로 고정한다. 그러나 DB의 `samples.meta`는 Sample 단위로 하나뿐이고 Version별로 분기되지 않는 살아 있는 값이라(Annotation만 CoW로 격리된다), API 조회(Explorer·Sample 조회)는 Sealed Version이어도 언제나 현재 값을 읽는다.
 
-이 성질을 이용하는 경로가 둘 있다. 둘 다 **Sealed Version에 속한 Sample에도 적용되며 Seal 여부를 검사하지 않는다.** Seal이 박제하는 것은 Instance이고 `meta`는 얼리지 않기 때문이다 — 잘못 기록된 `meta`는 얼려서 지킬 재현성이 아니라 결함이고, Sealed로 걸러 버리면 정작 학습이 읽는 Version만 영영 고치지 못한다.
+**Seal 여부와 무관하게** `meta`를 고치는 경로가 둘 있다(Draft에서는 Annotation PUT/PATCH의 `meta`로도 고치며, `meta`는 Version 격리가 없어 그 값이 Sealed Version의 API 조회에도 보인다). 둘 다 **Sealed Version에 속한 Sample에도 적용되며 Seal 여부를 검사하지 않는다** — 잘못 기록된 `meta`는 얼려서 지킬 재현성이 아니라 결함이기 때문이다. **다만 이렇게 고친 `meta`는 API 조회에만 반영되고, 이미 Seal된 Version의 스냅샷(SDK `to_df()`가 읽는 것)에는 반영되지 않는다.** 학습 입력까지 고치려면 Fork한 뒤 다시 Seal한다.
 
-**⑴ 이미지 크기 보정(`PATCH /samples/dimensions`)** — 기본은 빈칸 채우기다. 축별로 값이 없거나 `null`이거나 0 이하일 때만 쓰고, 이미 기록된 값과 숫자가 아닌 값은 거부한다. 보정 대상인 `0`은 측정된 값이 아니라 구 SDK가 크기를 모를 때 자리를 채우려고 넣은 값이다. **요청 단위 `overwrite`를 주면 그 단조 규칙을 건너뛰고 기록된 값도 교체한다**(서버 0.1.10) — Ingest 당시의 **선언값 자체가 틀린** 경우가 있고, 그런 값은 「기록됨」이라 채우기 모드로는 구조적으로 닿지 않기 때문이다. 그 모드가 쓰는 값은 CAS 객체 헤더에서 읽은 실측값이라 실측이 선언을 이긴다. 채우기 모드의 안전망이 「정보를 지우는 경로가 없다」였다면 이 모드의 안전망은 **`dry_run`이 개수가 아니라 변경 목록(`from` → `to`)을 내놓는 것**이다.
+**⑴ 이미지 크기 보정(`PATCH /samples/dimensions`)** — 기본은 빈칸 채우기다. 축별로 값이 없거나 `null`이거나 0 이하일 때만 쓰고, 기록된 축(숫자가 아닌 값 포함)은 건드리지 않는다. 두 축이 모두 기록돼 있으면 그 항목을 거부한다. 보정 대상인 `0`은 측정된 값이 아니라 구 SDK가 크기를 모를 때 자리를 채우려고 넣은 값이다. **요청 단위 `overwrite`를 주면 그 단조 규칙을 건너뛰고 기록된 값도 교체한다** — Ingest 당시의 **선언값 자체가 틀린** 경우가 있고, 그런 값은 「기록됨」이라 채우기 모드로는 구조적으로 닿지 않기 때문이다. 서버는 요청 값을 그대로 쓴다. 실측(CAS 객체 헤더 읽기)과 변경 목록 미리보기(`from` → `to`)는 SDK `ds.backfill_dims(overwrite=True, dry_run=True)`가 제공한다 — 채우기 모드의 안전망이 「정보를 지우는 경로가 없다」였다면 이 모드의 안전망은 실측값과 그 미리보기다.
 
-**⑵ 골격 정의 심기(`PATCH .../samples/keypoint-info`)** — `meta.keypoint_info`를 컴포넌트 키 단위로 병합한다(서버 0.1.10). CVAT skeleton이 읽는 정적 정의이고 Version별로 다를 것이 아니므로, 여기서도 Version은 대상을 고르는 데만 쓰인다.
+**⑵ 골격 정의 심기(`PATCH .../samples/keypoint-info`)** — `meta.keypoint_info`를 컴포넌트 키 단위로 병합한다. CVAT skeleton이 읽는 정적 정의이고 Version별로 다를 것이 아니므로, 여기서도 Version은 대상을 고르는 데만 쓰인다.
 
 두 경로 모두 `meta`가 JSON 객체가 아닌 행은 건드리지 않는다 — 빈 맵으로 취급해 덮으면 값을 고치는 것이 아니라 나머지 `meta`를 지우는 것이 된다.
 
@@ -659,7 +684,7 @@ Annotation 편집 세션에도 같은 정책이 적용된다. Sealed Version은 
 |---|---|---|
 |생성|`editor` 이상|Draft Version의 Sample을 잠그는 쓰기 작업이다|
 |종료(close), 결과 회수(import)|`editor` 이상|편집 결과를 Draft에 반영하는 쓰기다|
-|삭제(delete)|**사람** `editor` 이상 (서버 0.1.11~)|CVAT의 상태까지 함께 제거하고 회수하지 않은 작업 결과를 소실시킨다. 되돌릴 수 없고 `sealed`가 지켜 주지 않는 자리라 로봇 토큰에는 열지 않는다(5.5.5)|
+|삭제(delete)|**사람** `editor` 이상|CVAT의 상태까지 함께 제거하고 회수하지 않은 작업 결과를 소실시킨다. 되돌릴 수 없고 `sealed`가 지켜 주지 않는 자리라 로봇 토큰에는 열지 않는다(5.5.5)|
 
 종료와 삭제를 구분하는 것이 핵심이다. 종료는 잠금만 풀고 CVAT project를 보존하므로, 결과물 소실을 걱정하지 않고 잠금을 해제할 수 있다. 종료 수단이 삭제뿐이라면 아무도 세션을 정리하지 못해 Sample이 영구히 잠긴다.
 
@@ -693,11 +718,11 @@ Nexus는 단순한 기능 구현보다 일관된 데이터 모델과 운영 단�
 |CAS와 Nexus를 분리	| 파일 저장까지 포함한 단일 서비스 |	저장소와 메타데이터를 독립적으로 확장하기 위해 |
 |Sample은 하나의 Dataset에만 속함	|여러 Dataset에서 Sample 공유|	데이터 소유권과 수정 책임을 단순하게 유지하기 위해|
 |Sample 멤버십은 CoW를 적용하지 않음	|멤버십도 CoW 적용	|저장 공간보다 조회 단순성과 예측 가능성을 우선하기 위해|
-|Annotation은 Sample 단위로 교체|	Annotation Group 단위 수정|	조회, Version 비교, Snapshot 생성을 일관된 방식으로 유지하기 위해|
-|Seal은 되돌릴 수 없는 단방향 작업|Rollback 및 삭제 허용|	데이터 재현성을 최우선으로 보장하기 위해|
+|Annotation의 Version 격리(CoW)는 Sample 단위|	Group 단위 격리|	조회, Version 비교, Snapshot 생성을 일관된 방식으로 유지하기 위해. API는 그룹 단위 부분 저장(PATCH)을 제공하되 저장은 Sample 단위로 한다|
+|Seal은 되돌릴 수 없는 단방향 작업(Unseal 없음)|Rollback 허용|	데이터 재현성을 최우선으로 보장하기 위해. 삭제는 관리자에게만 이중 확인 절차로 연다(§4.6)|
 |Snapshot 조회는 Database 정보를 우선 사용|	CAS Manifest를 매번 조회	|조회 경로를 단순하게 유지하고 불필요한 CAS 접근을 줄이기 위해|
 |Asset 정보는 기본적으로 신뢰	|모든 Asset을 즉시 검증	|대량 Ingest 처리량을 우선하고, 필요한 경우에만 검증을 수행하기 위해|
-|인가 축을 셋으로 나누고 판정은 역할만|	소유권 단일 축, 또는 Dataset별 ACL|	한 필드가 출처·담당·인가를 겸하면 협업하려면 담당자를 비워야 하고, 비우는 순간 아무나 쓸 수 있게 된다. 만든 사람(`created_by`)·담당자(`owner_user_id`)·역할(`users.role`)로 나누고 **판정은 역할 하나만** 본다 — 쓰기가 이미 담당자와 무관한 상태에서 삭제만 담당자로 막는 것은 가드가 되지 못하고 가드가 있다고 믿게 만들 뿐이다(0.1.7~0.1.8에 그렇게 두었다가 0.1.9에서 되돌렸다). 되돌릴 수 없는 데이터를 지키는 것은 소유권이 아니라 Seal이다|
+|인가 축을 셋으로 나누고 판정은 역할만|	소유권 단일 축, 또는 Dataset별 ACL|	한 필드가 출처·담당·인가를 겸하면 협업하려면 담당자를 비워야 하고, 비우는 순간 아무나 쓸 수 있게 된다. 만든 사람(`created_by`)·담당자(`owner_user_id`)·역할(`users.role`)로 나누고 **판정은 역할 하나만** 본다 — 쓰기가 이미 담당자와 무관한 상태에서 삭제만 담당자로 막는 것은 가드가 되지 못하고 가드가 있다고 믿게 만들 뿐이다. 되돌릴 수 없는 데이터를 지키는 것은 소유권이 아니라 Seal이다|
 |CAS Garbage Collection은 트랜잭션 밖에서 병렬 처리	|트랜잭션 내 동기 처리, 또는 별도 큐|	DB 트랜잭션 범위를 최소화하고, 후보를 병렬로 처리해 응답 지연을 줄이기 위해(단, 응답은 GC 완료를 기다림)|
 |CAS 객체 삭제는 생략 시 보존|	생략 시 삭제|	실패 방향이 비대칭이기 때문 — 잘못된 보존은 되돌릴 수 있는 스토리지 비용이지만 잘못된 삭제는 바이트를 되돌릴 수 없이 파괴한다. 지우려면 `delete_cas=true`를 명시한다|
 |Batch 작업은 건별 독립 처리|	전체를 하나의 트랜잭션으로 처리	|일부 실패가 전체 작업에 영향을 주지 않도록 하기 위해|
@@ -718,6 +743,6 @@ Nexus의 구조는 다음 원칙을 기반으로 유지된다.
 - Snapshot은 변경되지 않는 불변 객체로 유지한다.
 - 파일 데이터는 nexus-server를 통과하지 않는다.
 - 측정된 병목에 대해서만 확장한다.
-- 권한은 역할이 가르고, 담당자는 목록과 인수 대기 관리에만 쓴다.
+- 권한은 역할이 가르고, 담당자는 목록·인수 대기 관리와 담당자 이관에만 쓴다.
 
 

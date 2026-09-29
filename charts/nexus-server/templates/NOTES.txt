@@ -1,7 +1,7 @@
 nexus-server 가 배포되었습니다.
 
 서비스: {{ include "nexus-server.fullname" . }} (port {{ .Values.service.port }} → {{ .Values.service.targetPort }})
-이미지: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+이미지: {{ .Values.image.repository }}{{ if .Values.image.digest }}@{{ .Values.image.digest }}{{ else }}:{{ .Values.image.tag }}{{ end }}
 
 전제:
   - 외부 PostgreSQL 접속 정보가 시크릿 NEXUS__DATABASE__URL 로 주입되어야 합니다.
@@ -15,5 +15,5 @@ nexus-server 가 배포되었습니다.
   curl localhost:8090/_internal/health
 
 문서:
-  아키텍처: https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.13/charts/nexus-server/docs/architecture.md
-  사용법:   https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.13/charts/nexus-server/docs/usage.md
+  아키텍처: https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.14/charts/nexus-server/docs/architecture.md
+  사용법:   https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.14/charts/nexus-server/docs/usage.md
