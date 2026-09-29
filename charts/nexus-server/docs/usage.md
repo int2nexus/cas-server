@@ -22,56 +22,12 @@ Draft 버전의 Sample을 CVAT으로 내보내 사람이 편집하고, 그 결�
 ### 1.3 전체 워크플로우
 ![기본적인 데이터 흐름](workflow.png)
 
+> 이 문서는 SDK 사용자를 위한 안내다. 서버 설치·설정·계정 관리·CVAT 연동 준비 등 운영자 작업은 [차트 README](../README.md)에 있다.
+
 ---
 
-## 2. 설치
-### 2.1 Nexus 서버 준비 (Helm)
-#### 전제
-- cas-server가 떠 있고, 그 접속 주소를 안다 (예: `http://cas-server:80`, 또는 외부 `https://cas.example.com`).
-- 외부 PostgreSQL 접속 정보(DSN). nexus는 DB를 직접 띄우지 않는다. DB 마이그레이션은 nexus 기동 시 자동 적용된다.
-- CAS 자격증명(SigV4 `key_id`/`secret`)과 JWT 시크릿.
-- nexus-server는 stateless(파일=CAS, 메타=Postgres)라 PVC가 없다.
-
-#### Helm repo 추가
-
-```bash
-helm repo add int2nexus https://int2nexus.github.io/cas-server
-helm repo update
-```
-nexus-server는 cas-server와 동일한 Helm repo를 사용한다.
-
-#### 시크릿 주입 (sealed-secret)
-
-차트는 Secret을 만들지 않고 외부 Secret을 envFrom으로 참조한다. 아래 4개의 키를 가진 Secret을 먼저 클러스터에 주입한다(kubeseal로 봉인). 나머지 셋은 그 기능을 쓸 때만 같은 Secret에 더한다 — CVAT 연동의 `NEXUS__CVAT__PASSWORD`([2.2](#22-cvat-연동-선택-차트-020)), superuser의 `NEXUS__AUTH__SUPERUSER_PASSWORD`([superuser](#superuser-차트-030-선택)), 지표의 `NEXUS__METRICS__TOKEN`(`NEXUS__CAS__ADMIN_SECRET`은 서버 0.1.13부터 쓰지 않는다):
-
-```bash
-kubectl create secret generic nexus-server -n <namespace> --dry-run=client -o yaml \
-  --from-literal=NEXUS__DATABASE__URL='postgres://user:pass@pg-host:5432/nexus' \
-  --from-literal=NEXUS__CAS__KEY_ID='<CAS key id>' \
-  --from-literal=NEXUS__CAS__SECRET='<CAS secret>' \
-  --from-literal=NEXUS__JWT__SECRET='<JWT 시크릿>' \
-  | kubeseal --format yaml > sealed-nexus-server.yaml
-kubectl apply -f sealed-nexus-server.yaml -n <namespace>
-```
-
-- `NEXUS__JWT__SECRET`은 직접 생성하는 임의의 비밀 키(로그인 JWT HS256 서명용)  
-예: `openssl rand -hex 32`. 값을 바꾸면 기존 발급 토큰이 모두 무효가 된다(재로그인 필요).
-- `NEXUS__CAS__KEY_ID`/`NEXUS__CAS__SECRET`은 CAS가 인정하는(write 권한 있는) 자격증명
-- `NEXUS__DATABASE__URL`은 외부 Postgres DSN.
-
-#### 설치
-
-```bash
-helm install nexus-server int2nexus/nexus-server -n <namespace> \
-  --set cas.baseUrl=<CAS 주소>      # http://cas-server:80 
-
-# 업데이트
-helm repo update
-helm upgrade nexus-server int2nexus/nexus-server -n <namespace> \
-  --set cas.baseUrl=<CAS 주소>      # http://cas-server:80 
-```
-
-#### Python SDK 설치
+## 2. 시작하기
+### 2.1 SDK 설치
 
 ```bash
 pip install --extra-index-url https://int2nexus.github.io/cas-server/sdk/simple/ int2nexus-sdk
@@ -82,9 +38,9 @@ pip install --upgrade --extra-index-url https://int2nexus.github.io/cas-server/s
 python -c "import importlib.metadata as m; print(m.version('int2nexus-sdk'))" 
 ```
 
-#### 연결 설정
+### 2.2 연결 설정
 
-`nx.connect`는 로그인 후 JWT를 받아 클라이언트를 초기화한다. 계정이 없으면 등록을 먼저 실행한다. (사람이 없는 워크로드는 로그인 대신 로봇 토큰을 쓴다 — [7](#7-에러-처리)의 「사람이 없는 워크로드는 로봇 토큰으로 붙는다」.)
+`nx.connect`는 로그인 후 JWT를 받아 클라이언트를 초기화한다. 계정이 없으면 등록을 먼저 실행한다. (사람이 없는 워크로드는 로그인 대신 로봇 토큰을 쓴다 — [2.3](#23-로봇-토큰으로-연결)의 「사람이 없는 워크로드는 로봇 토큰으로 붙는다」.)
 ```python
 # (최초 1회) 테스트 계정 등록 - 이미 있으면 409, 그대로 진행
 import requests
@@ -159,7 +115,31 @@ nx.connect()
 
 서버 `0.1.9`~`0.1.12`는 CAS 관리 자격증명이 구성된 배포에서 이 계정 앞으로 자격증명을 자동 발급했다. 그렇게 받은 키는 서버 0.1.13 이후 nexus로 폐기할 수 없으므로 올리기 전에 정리한다([CHANGELOG 0.3.10](../CHANGELOG.md)).
 
-#### 사내 프록시로 SSL 인증서 에러가 날 때 (SDK 0.1.1+)
+### 2.3 로봇 토큰으로 연결
+
+적재 잡·스케줄러·CI는 로그인할 수 없다. 관리자가 만든 **로봇 계정**의 장수명 토큰을 그대로 제시한다.
+
+```python
+nx.connect(nexus_url=..., robot_token="nxr_...")   # 또는 환경변수 NEXUS_ROBOT_TOKEN
+```
+
+- **계정 1 : 토큰 N이다.** 새 토큰을 발급하고 `last_used_at`으로 배포를 확인한 뒤 옛 토큰을 폐기하면 중단 없이 회전한다.
+- **로봇은 dataset·version·sample과 CVAT 세션, 저장된 explorer 필터(subset)를 지울 수 없다**(403). CVAT 세션과 subset은 차트 0.3.8에서 더해졌다. 적재·수정·seal·이름 변경·fork와 세션 생성·`close`·`import`는 된다.
+- **`refresh`가 403이다.** 로봇 토큰으로 24시간 JWT를 받아 만료 강제를 우회하는 경로를 막는다.
+- 폐기는 캐시 수명(기본 5초)만큼 늦게 듣고, **만료는 늦지 않는다.**
+
+### 2.4 CAS 임시 자격증명 (STS)
+
+cas 에 STS(`auth.oidc.issuers`)를 켠 배포는 장수명 CAS 키 대신 OIDC 토큰으로 임시 자격증명을 받는다. SDK 는 **명시 인자로만** 이 모드를 켜고 AWS 환경변수를 읽지 않는다.
+
+```python
+nx.connect(nexus_url="http://nexus-server", robot_token="nxr_...", cas_url="http://cas-server",
+           cas_sts=nx.CasSts(token_file="/var/run/secrets/tokens/cas"))   # 또는 token_provider=함수
+```
+
+토큰의 남은 수명은 **900초 이상**이어야 한다(projected 토큰 `expirationSeconds` 7200 이상 권장, Keycloak 은 realm 토큰 수명을 올린다). 남은 수명 600초 이하에서 스스로 갱신하고, 토큰 파일은 갱신마다 다시 읽는다. SDK 0.1.11 이하는 세션 토큰을 보내지 않아 STS 자격증명을 쓸 수 없다.
+
+### 2.5 사내 프록시로 SSL 인증서 에러가 날 때
 
 사내 보안 장비가 TLS를 검사하면 `nx.connect()`가 인증서 에러로 죽는다. 아래 중 하나를 사용한다.
 
@@ -175,7 +155,7 @@ nx.connect(verify=False)                          # 최후의 수단
 - 설정 파일의 `"verify"` 키에 적어두면 매번 넘기지 않아도 된다. 값은 `true`/`false` 또는 **CA 번들 경로**.
 - `verify=False`는 그 연결의 **중간자 공격 탐지를 포기**하는 것이다. 접속 시 한 번 경고가 뜬다.
 
-#### 계정 관리 (SDK 0.1.2+)
+### 2.6 내 계정 관리
 
 `nx.connect()`가 돌려주는 클라이언트로 본인 계정을 관리한다. 되돌릴 수 없는 작업이라 `nx.` 최상위 함수로는 노출하지 않는다.
 
@@ -185,261 +165,51 @@ client.change_password("현재비번", "새비번123")      # 현재 비밀번�
 result = client.delete_account("새비번123")          # 완전 삭제 — 되돌릴 수 없다
 ```
 
-- **비밀번호 변경은 새 로그인부터 적용된다.** 이미 발급된 토큰은 만료까지(기본 24시간, 배포마다 `jwt.ttlHours`로 다를 수 있다 — 아래 참조) 그대로 유효하다. 이 클라이언트 인스턴스는 계속 써도 된다.
+- **비밀번호 변경은 새 로그인부터 적용된다.** 이미 발급된 토큰은 만료까지(기본 24시간, 배포마다 `jwt.ttlHours`로 다를 수 있다 — [README 인증 설정](../README.md#인증-설정)) 그대로 유효하다. 이 클라이언트 인스턴스는 계속 써도 된다.
 - 설정 파일(`~/.int2nexus/settings.json`)에 비밀번호를 적어두었다면 **그 파일도 함께 고쳐야 한다** — 안 그러면 다음 `nx.connect()`가 실패한다.
-- **`delete_account`는 비활성화가 아니라 삭제다.** 이메일이 풀려 같은 주소로 다시 가입할 수 있다. 되돌릴 필요가 있다면 삭제 대신 관리자가 계정을 정지할 수 있다(차트 0.3.4+, [2.1 superuser](#superuser-차트-030-선택)).
+- **`delete_account`는 비활성화가 아니라 삭제다.** 이메일이 풀려 같은 주소로 다시 가입할 수 있다. 되돌릴 필요가 있다면 삭제 대신 관리자가 계정을 정지할 수 있다(차트 0.3.4+, [README 계정과 권한 관리](../README.md#계정과-권한-관리)).
 - **소유한 dataset이 남아 있어도 삭제된다**(차트 0.3.4 / 서버 0.1.7). 0.3.2가 넣었던 409 거부는 철회됐다 — 그 근거는 "담당자가 비면 누구나 수정·삭제할 수 있게 된다"였는데, 담당자가 비어도 권한이 생기지 않게 되면서 사라졌다. 담당하던 dataset은 삭제되지 않고 **담당자만 해제**되며, 그 상태는 `GET /datasets?unowned=true`로 관측된다.
 - 삭제 응답의 **`released_datasets`는 해제된 dataset 수다.** 0.3.2~0.3.3에서는 항상 `0`이었지만(삭제 자체가 거부되었으므로) 이제 다시 실제 개수가 온다.
 - 비밀번호가 틀리면 403이다.
-- 비밀번호를 잊어 로그인할 수 없는 계정은 본인이 처리할 수 없다 — 차트 0.3.0부터 관리자가 `POST /api/v1/admin/users/password-reset`으로 임시 비밀번호를 발급한다(아래 참조).
+- 비밀번호를 잊어 로그인할 수 없는 계정은 본인이 처리할 수 없다 — 차트 0.3.0부터 관리자가 `POST /api/v1/admin/users/password-reset`으로 임시 비밀번호를 발급한다([README 관리 API](../README.md#관리-api)).
 
-#### superuser (차트 0.3.0+, 선택)
-
-운영자가 `auth.superuserEmail`과 시크릿의 `NEXUS__AUTH__SUPERUSER_PASSWORD`로 지정한 관리 계정이다.
-
-**관리자는 둘 이상 둘 수 있다**(차트 0.3.4+). 관리 권한의 출처가 둘이기 때문이다 — 이 설정 계정과 `users.role = admin`. 후자는 이 계정이 `POST /api/v1/admin/users/role`로 부여한다. `admin`은 마이그레이션이 백필하지 않으므로 **최초 한 명을 만들려면 이 설정이 필요하고**, 한 명이라도 생긴 뒤에는 설정을 비워도 그 계정들이 관리 권한을 유지한다. 감사 로그는 없다.
-
+## 3. 데이터 적재
+### 3.1 전체 흐름 예제
+적재부터 학습 소비까지의 흐름(3장, 5.1, 7장)을 먼저 간략히 보인다.
 ```python
-import requests
-h = {"Authorization": f"Bearer {admin_token}"}   # superuser 또는 role=admin 계정의 토큰
+import nexus as nx
 
-# 0) 사람 계정 만들기 — 공개 가입을 닫아 둔 채 (차트 0.3.13 / 서버 0.1.16+)
-r = requests.post(f"{base}/api/v1/admin/users",
-                  json={"email": "새사람@example.com", "role": "editor", "issue_password": True}, headers=h)
-print(r.json().get("password"))   # issue_password=True 일 때만 응답에 실린다. 지금 전달할 것
+nx.connect()
 
-# 1) 비밀번호를 잊은 계정 풀어주기 — 임시 비밀번호가 응답에 한 번만 실려 온다
-r = requests.post(f"{base}/api/v1/admin/users/password-reset",
-                  json={"email": "잠긴사람@example.com"}, headers=h)
-print(r.json()["password"])   # 어디에도 저장되지 않는다. 지금 전달할 것
+# 1. dataset 생성
+ds = nx.Dataset.load_or_create("my-dataset", "v0")
 
-# 2) 회원 목록 — 역할을 바꿀 대상을 찾는다
-r = requests.get(f"{base}/api/v1/admin/users",
-                 params={"email": "kim", "limit": 100}, headers=h)
+# 2. 원본 파일 업로드
+refs = nx.upload(["img1.png"], bucket="my-bucket", prefix="incabin")
 
-# 3) 역할 변경 / 계정 정지·해제
-requests.post(f"{base}/api/v1/admin/users/role",
-              json={"email": "동료@example.com", "role": "admin"}, headers=h)
-requests.post(f"{base}/api/v1/admin/users/active",
-              json={"email": "떠난사람@example.com", "active": False}, headers=h)
+# 3. 샘플 생성 + 등록
+sample = nx.Sample(
+    image=refs["img1.png"],
+    annotation={"det": [{"id": "a", "label": "car"}]},   # meta를 생략하면 SDK가 filename·format_version을, ref에 크기가 있으면 width/height를 채운다
+    split="train",
+)
+ds.add(sample)
+results = ds.flush()
 
-# 4) 담당자 지정 — 담당자가 없는 dataset의 인수
-requests.put(f"{base}/api/v1/admin/datasets/{dataset_id}/owner",
-             json={"email": "새담당자@example.com"}, headers=h)
+# 4. 확인
+print(ds.list_samples())
 
-# 5) 담당 일괄 이관 — A가 담당하던 전부를 B에게
-requests.post(f"{base}/api/v1/admin/datasets/transfer-owner",
-              json={"from_email": "떠난사람@example.com", "to_email": "새담당자@example.com"}, headers=h)
+# 5. (필요하면) annotation 수정
+ds.patch_annotations(results[0].sample_id, {"det": [{"id": "a", "label": "truck"}]})
+
+# 6. 확정
+ds.seal()
+
+# 7. 학습 데이터로 사용
+df = ds.to_df()
 ```
 
-- **사람 계정 만들기(`POST /api/v1/admin/users`, 차트 0.3.13 / 서버 0.1.16+).** 공개 가입(`auth.registrationEnabled`)을 끈 배포에서도, 승인 대기(`auth.approvalRequired`)를 켠 배포에서도 만들 수 있고 **만든 계정은 만드는 순간 승인된다.** `role`은 `editor`/`viewer`만(`admin`은 `400` — 승격은 위 `users/role`). `issue_password: true`면 임시 비밀번호를 응답에 한 번만 싣고, 생략하면 **비밀번호로는 로그인할 수 없는 계정**이 된다(OIDC 신원을 붙여 쓸 사람용 — `admin/oidc-identities`로 매핑하고, 나중에 비밀번호가 필요하면 `users/password-reset`). 이미 있는 이메일·superuser 이메일은 `409`, 로봇 도메인 이메일은 `400`(로봇은 `admin/robots`).
-- **계정 정지는 삭제가 아니다.** 이메일을 계속 점유하므로 그 주소로 재가입할 수 없고, `active: true`로 해제하면 그대로 돌아온다. 정지하면 로그인이 `403 forbidden`이 되고, **이미 발급된 토큰도 캐시 수명(`auth.revocationCacheTtlSecs`, 기본 5초) 안에 막힌다.**
-- **설정 superuser 계정은 역할 변경·정지·비밀번호 재설정의 대상이 될 수 없다**(403). 유일한 부트스트랩 수단이 스스로 잠기는 것을 막기 위해서다. 호출하는 쪽이 superuser 본인이든 `role = admin`이든 같다 — **비밀번호 재설정 가드는 서버 0.1.10에서 채웠다.** 그전에는 `role = admin` 계정이 superuser의 비밀번호를 가져가 강등도 정지도 되지 않는 관리자가 될 수 있었다.
-- `GET /api/v1/admin/users`는 `?email=`(부분검색)·`?role=`로 좁히고 `?cursor=<마지막 user_id>`·`?limit=`(기본 100, 최대 1000)으로 페이지를 넘긴다. 각 행의 `is_superuser`가 `true`이면 위 제한이 걸리는 계정이다.
-
-- **임시 비밀번호는 응답에 한 번만 실려 온다.** 서버 어디에도 저장되지 않으니 그 자리에서 전달하고, 받은 사람은 곧바로 `client.change_password(...)`로 바꾼다.
-- **재설정해도 그 사람의 기존 토큰은 만료까지(기본 24시간, 배포마다 `jwt.ttlHours`로 다를 수 있다 — 아래 참조) 유효하다.** "잊어버림"을 푸는 도구지 "탈취 즉시 차단"이 아니다.
-- **담당자 이전은 인가를 옮기지 않는다**(서버 0.1.9). 이전 담당자도 계속 쓰고 지울 수 있다 — 역할이 `editor`이기 때문이다. 옮겨가는 것은 「다시 넘길 자격」 하나다.
-- 담당자가 없는 dataset은 `GET /datasets?unowned=true`로 조회한다. 담당자가 비어도 권한이 생기지 않으므로 위험한 상태가 아니라 **인수 대기**다. 그런 dataset도 `editor` 이상이면 지울 수 있다(서버 0.1.9 — 그 전에는 `admin` 전용이었다). 담당자가 있는 dataset을 넘기는 것은 담당자 본인이 한다([4.4](#44-dataset-담당자-이전-서버-016)).
-- **superuser 비밀번호를 바꾼 뒤에도 시크릿을 갱신할 필요가 없다.** `NEXUS__AUTH__SUPERUSER_PASSWORD`는 **그 계정이 없을 때 새로 만드는 용도로만** 읽힌다 — 계정이 이미 있으면 기동 시 값을 읽지도, 비교하지도 않는다. 그래서 시크릿의 값과 실제 로그인 비밀번호가 달라도 파드는 정상 기동하고, 반대로 시크릿을 바꿔 재배포해도 비밀번호는 바뀌지 않는다. 이 값을 "현재 비밀번호"가 아니라 **"계정 생성용 씨앗"**으로 보시는 편이 정확하다. 실제로 다시 쓰이는 경우는 하나뿐이다 — `auth.superuserEmail`을 **아직 가입되지 않은** 주소로 바꿔 재배포하면, 그때 이 값으로 새 계정이 만들어진다(이미 누가 쓰는 주소를 넣으면 그 계정을 채택하므로 그 사람이 superuser가 된다).
-- **지표를 보려면 `GET /_internal/metrics`**(차트 0.3.6+). 시크릿의 `NEXUS__METRICS__TOKEN`을 bearer로 받고, 그 값이 없으면 경로 자체가 **404**다. Prometheus 텍스트를 내며, **서버 0.1.9까지는 DB를 전혀 조회하지 않았고 0.1.10부터 아래 DB 집계(0.1.12까지 다섯, 그 뒤로 넷)가 워크로드 풀에서 한 왕복을 쓴다**(250ms를 넘기거나 조회가 실패해도 그 값은 사라지지 않고 직전 값으로 남는다(기동 후 한 번도 못 읽었으면 처음부터 없다) — 서버 0.1.12부터 `nexus_metrics_db_stats_ok`로 가른다). 15초보다 촘촘한 주기는 권하지 않는다.
-
-  ```bash
-  curl -H "Authorization: Bearer $METRICS_TOKEN" $base/_internal/metrics
-  ```
-
-  DB 풀 셋(`nexus_db_pool_connections` · `_idle_connections` · `_acquire_timeouts_total`)과 적재 유입 제어 셋(`nexus_ingest_permits_total` · `_available` · `nexus_ingest_rejected_total`)이다. **`_acquire_timeouts_total`이 오르기 시작하는 순간이 풀 포화의 시작점이다** — readiness는 전용 커넥션을 쓰므로 그 상황에서도 계속 200이고, 이 카운터가 유일한 신호다.
-
-  **서버 0.1.10부터 로봇 토큰 넷이 더 붙는다** — `nexus_robot_tokens_active` · `_expiring_soon` · `nexus_robot_token_min_expires_in_seconds` · `nexus_robot_accounts_without_active_token`. 이 넷만 DB를 조회한다(250ms 제한). **조회가 실패하거나 250ms를 넘겨도 그 넷은 사라지지 않고 직전 값으로 남는다(기동 후 한 번도 못 읽었으면 처음부터 없다)** — 이번 스크레이프에서 실제로 읽었는지는 **서버 0.1.12부터** `nexus_metrics_db_stats_ok`(읽었으면 `1`, 못 읽었으면 `0`)로 가른다. 넷을 읽는 알림에는 `and nexus_metrics_db_stats_ok == 1`을 함께 건다. `min_expires_in_seconds`는 **활성 토큰이 없을 때 `+Inf`**이므로 `< 임계값` 경보가 저절로 풀린다. 서버 `0.1.10`~`0.1.12`에 있던 `nexus_cas_credential_revocations_pending`(미처리 CAS 자격증명 폐기 건수)은 **서버 0.1.13에서 없어졌다** — 여기에 건 알림은 걷는다.
-
-  **서버 0.1.13부터 HTTP 요청 지표 셋이 더 붙는다** — `axum_http_requests_total`(라벨 `method` · `status` · `endpoint`) · `axum_http_requests_duration_seconds`(히스토그램, 같은 라벨) · `axum_http_requests_pending`(라벨 `method` · `endpoint`). 이름·라벨 키·지연 구간이 cas-server와 같다(매칭되지 않은 요청만 cas-server는 요청 경로, nexus는 `unmatched`로 적는다). `endpoint`는 요청 경로가 아니라 **라우트 템플릿**(`/datasets/{dataset_id}`)이라 id마다 시리즈가 생기지 않고, 어느 라우트에도 매칭되지 않은 요청은 `unmatched` 하나로 모이고, 프로브·스크레이프 경로도 함께 세어진다. 응답 전에 끊긴 요청은 요청 수·지연에 잡히지 않는다(로그의 `요청이 취소됐다` 줄로 본다). 엔드포인트 하나만 5xx인 결함을 이렇게 본다.
-
-  ```promql
-  sum by (endpoint) (rate(axum_http_requests_total{status=~"5.."}[5m]))
-  ```
-
-- **적용된 설정을 확인하려면 `GET /api/v1/admin/config-effective`**(차트 0.3.5+, 관리자 전용 — 설정 superuser와 `role = admin` 둘 다 통과한다). 지금 그 프로세스가 **읽은 값**을 돌려준다 — 차트 렌더 결과가 아니므로 `extraEnv` 오버라이드도 드러난다.
-
-  ```python
-  requests.get(f"{base}/api/v1/admin/config-effective", headers=h).json()
-  # {"server": {...},
-  #  "database": {"url": "postgres://nexus:<redacted>@db-host:5432/nexus", "max_connections": 16},
-  #  "jwt": {"secret": "<set>", "ttl_hours": 24},
-  #  "auth": {"superuser_email": "<set>", "approval_required": false,
-  #           "revocation_cache_ttl_secs": 5, ...},
-  #  "cvat": null}
-  ```
-
-  **이것이 필요한 이유는 오타가 조용히 삼켜지기 때문이다.** 서버는 모르는 설정 키를 오류로 만들지 않는다 — `NEXUS__JWT__TTLHOURS`처럼 한 글자 틀린 env는 무시되고 기본값으로 기동한다. 경고도 없고 기동도 정상이라, 의도한 값이 실제로 걸렸는지 확인할 방법이 이 응답뿐이다. `jwt.ttlHours`는 토큰을 디코드하면 알 수 있지만 `auth.revocationCacheTtlSecs`(권한 회수 상한)는 그마저도 없다.
-
-  비밀값은 값이 아니라 `<set>`/`<unset>`으로만 나오고 `database.url`은 비밀번호만 가려진다(호스트·DB명은 남는다 — "어느 DB에 붙었나"가 진단의 절반이다). **`superuser_email`도 주소가 아니라 `<set>`/`<unset>`이다** — 이 서버는 이메일이 곧 권한이라 주소를 아는 것이 표적을 아는 것과 같다. 그 값이 필요하면 기동 로그를 보면 된다.
-
-- **다만 시크릿 값을 비우지는 마십시오.** 이메일만 있고 비밀번호가 없으면(공백만 있는 경우 포함) **서버가 기동에 실패한다.** 쓰이지 않는 값이라도 8자 이상으로 남겨 두어야 하며, 기능을 끄실 때는 `auth.superuserEmail`과 이 시크릿 키를 **함께** 비우십시오.
-
-**로그인·가입·갱신·OIDC 교환의 `200` 응답은 모두 `{ token, user_id, email }`이다** — 로그인 화면이 실어 쓰는 토큰 필드는 `token`이다. 가입이 승인 대기(`auth.approvalRequired`)면 `202`이고 타입이 다르다.
-
-관리 엔드포인트는 다음과 같다. 전부 superuser 또는 `role = admin`이 통과한다.
-
-| 경로 | 용도 |
-|---|---|
-| `GET /api/v1/admin/users` | 회원 목록(`?email=` 부분검색·`?role=`·커서) |
-| `POST /api/v1/admin/users` | 사람 계정 생성(서버 0.1.16+, 만드는 순간 승인됨) |
-| `POST /api/v1/admin/users/role` | 역할 변경 |
-| `POST /api/v1/admin/users/active` | 계정 정지·해제 |
-| `GET /api/v1/admin/users/pending` · `POST /api/v1/admin/users/approve` | 승인 대기 목록·승인(`auth.approvalRequired`가 켜진 배포) |
-| `POST /api/v1/admin/users/password-reset` | 임시 비밀번호 발급 |
-| `PUT /api/v1/admin/datasets/{id}/owner` · `POST /api/v1/admin/datasets/transfer-owner` | 담당자 지정·일괄 이관 |
-| `POST /api/v1/admin/robots` · `GET` | 로봇 계정 생성·목록(서버 0.1.10+) |
-| `DELETE /api/v1/admin/robots/{user_id}` | 로봇 계정 삭제 |
-| `POST /api/v1/admin/robots/{user_id}/tokens` · `GET` | 토큰 발급·목록 |
-| `DELETE /api/v1/admin/robots/{user_id}/tokens/{token_id}` | 토큰 폐기 |
-| `PATCH /api/v1/admin/robots/{user_id}/tokens/{token_id}` | 토큰 만료 앞당기기(서버 0.1.12+) |
-| `POST /api/v1/admin/oidc-identities` · `GET` | OIDC 신원 `(issuer, subject)` → 계정 매핑 등록·목록(서버 0.1.11+). 목록은 `?user_id=`로 좁힌다 |
-| `DELETE /api/v1/admin/oidc-identities/{identity_id}` | 매핑 삭제. 그 신원 하나만 막는다 |
-| `GET /api/v1/admin/config-effective` | 지금 그 프로세스가 읽은 설정값(차트 렌더 결과가 아니다). 비밀은 값 대신 `<set>`/`<unset>`이고, `database.url`만 비밀번호를 가린 채 호스트·DB명을 남긴다 |
-
-#### 인증 관련 설정 (차트 0.3.0+)
-
-superuser 외에 인증 관련 설정을 helm 값으로 조정할 수 있다.
-
-| values 키 | 기본값 | 설명 |
-|---|---|---|
-| `jwt.ttlHours` | 빈 값 (서버 기본 **24**) | 발급 토큰의 수명(시간). 허용 범위 **1~8760**. 이 서버는 토큰을 무효화할 수 없으므로(위 계정 관리·superuser 항목 참조) 이 값이 곧 탈취·비밀번호변경·계정삭제 이후에도 토큰이 살아있는 최대 시간이다. **범위를 벗어난 값(`0` 포함)을 주면 서버가 기동에 실패한다** — DB 연결보다 먼저 검사하므로 "0을 줬는데 조용히 24시간으로 되돌아갔다"처럼 잘못 설정한 채 넘어가는 일이 없다. 줄이면 노출 시간은 줄지만 `POST /api/v1/auth/refresh` 호출이 그만큼 잦아진다. |
-| `auth.registrationEnabled` | `true` | `false`로 하면 `POST /api/v1/auth/register`만 403이 되고, 로그인·토큰 갱신·기존 계정은 영향을 받지 않는다. **가입을 닫은 뒤에도 관리자는 `POST /api/v1/admin/users`로 사람 계정을 만들 수 있다**(차트 0.3.13 / 서버 0.1.16+, 만든 계정은 즉시 승인되어 `approvalRequired`도 지나지 않는다). 로봇 계정은 `POST /api/v1/admin/robots`(서버 0.1.10+)로 만든다 — 둘 다 이 값을 보지 않는다. |
-| `auth.docsEnabled` | `true` | `false`로 하면 `/api-docs/openapi.json`, `/swagger-ui`, `/swagger-ui/` 세 경로가 **404**가 된다(라우트 자체가 등록되지 않아서다 — 403이 아니다). 스펙은 이미 전 경로가 인증 뒤에 있으므로, 이걸로 감추는 것은 API 경로 목록뿐이다. |
-| `auth.approvalRequired` (0.3.4+) | `false` | `true`로 하면 가입은 열어 둔 채 **승인 전까지 아무것도 할 수 없다.** 가입 요청은 계정을 만들되 **토큰을 주지 않고** `202`와 `{"status": "pending"}`을 반환하며, 승인 전에는 로그인·토큰 갱신이 `403`이다(본문 `pending_approval`). 승인은 `POST /api/v1/admin/users/approve`(본문에 `email`·`role` 필수), 대기 목록은 `GET /api/v1/admin/users/pending`. **켜기 전에 가입 화면이 `202`를 처리해야 하고**, 승인 엔드포인트가 관리자 전용이라 `auth.superuserEmail`도 함께 설정해야 한다. 켜기 전에 가입한 계정은 영향받지 않는다. |
-| `auth.oidc.issuers` (0.3.8+) | `[]` (기능 꺼짐) | 외부 IdP가 발급한 토큰을 인증 자격증명으로 받을 발급자 목록. 항목마다 `issuer`(필수, `https://`, 토큰의 `iss`와 같아야 한다) · `audience`(필수, 토큰 `aud` **안에 있으면** 통과하는 포함 검사) · `exchange`(기본 `false`, `POST /api/v1/auth/oidc/exchange`를 이 발급자에게 여는 스위치 — 자동 회전하는 토큰에는 켜지 말 것) · `jwksUri`(선택, 발급자와 JWKS 호스트가 다를 때) · `jwksAuth`(선택, `serviceaccount` 하나만 — 파드 자신의 SA 토큰을 실어 JWKS를 읽는다). **`audience`가 비었거나 `issuer`가 비-https·중복이면 기동에 실패한다.** 목록이 비면 기능이 꺼질 뿐 기동은 정상이다. **발급자만 설정하면 아무도 인증되지 않는다** — 신원 `(issuer, subject)` → 계정 매핑을 `POST /api/v1/admin/oidc-identities`로 관리자가 등록해야 하고 자동 생성은 없다. 이 갈래로 온 요청은 `POST /api/v1/auth/refresh`가 `403`이다. |
-| `auth.revocationCacheTtlSecs` (0.3.4+) | 빈 값 (서버 기본 **5**초) | 인증이 사용자 행(역할·승인·활성 상태)을 읽고 캐시하는 시간. **이 값이 곧 권한 회수·계정 정지·계정 삭제가 듣기까지의 상한이다.** `0`이면 매 요청 조회가 되어 즉시 반영되지만 적재 처리량이 20~33% 떨어진다(측정치). 조회 자체를 끄는 옵션은 없다 — 쓰기가 역할로 막히므로 요청마다 역할을 알아야 한다. |
-
-```bash
-helm upgrade --install nexus-server int2nexus/nexus-server -n <namespace> \
-  --set cas.baseUrl=<CAS 주소> \
-  --set jwt.ttlHours=8 \
-  --set auth.registrationEnabled=false \
-  --set auth.docsEnabled=false
-```
-
-### 2.2 CVAT 연동 (선택, 차트 0.2.0+)
-
-annotation을 CVAT에서 편집하려는 경우에만 설정한다. **설정하지 않아도 nexus는 정상 동작한다** — 세션 **생성**과 **결과 회수(import)**만 503을 반환하고, 카탈로그·업로드·seal·조회는 영향을 받지 않는다.
-
-#### CVAT 쪽 준비 (운영자 작업)
-
-nexus가 통제하지 않는 부분이라 CVAT 관리자와 함께 준비해야 한다.
-
-| 항목 | 내용 |
-|---|---|
-| 서비스 계정 | nexus가 사용할 CVAT 계정 1개. `docker exec -it cvat_server python manage.py createsuperuser` 로 생성한다. 모든 CVAT project를 이 계정이 소유하므로 일반 작업자 계정과 분리한다 |
-| 네트워크 도달 | **CVAT 워커 컨테이너**에서 CAS 주소로 HTTP 요청이 가능해야 한다. 이미지는 nexus를 거치지 않고 CVAT이 CAS에서 직접 받는다 |
-| smokescreen 허용 | CVAT은 원격 URL 다운로드에 SSRF 가드(smokescreen)를 거친다. CAS가 사설 IP면 기본 설정에서 차단되므로 허용 대역을 지정해야 한다 |
-
-smokescreen은 CVAT 컨테이너 안에서 로컬 프록시로 동작하며, compose의 `SMOKESCREEN_OPTS` 환경변수로 허용 대상을 지정한다.
-
-```bash
-# CVAT의 .env 등에 지정한 뒤 서버·워커를 재생성한다
-SMOKESCREEN_OPTS=--allow-range=10.0.0.0/8        # 또는 --allow-address=<CAS IP>
-
-docker compose up -d --force-recreate cvat_server cvat_worker_import cvat_worker_chunks
-```
-
-**확인 방법.** 워커 안에서 프록시를 경유해 CAS 오브젝트를 실제로 받아본다. 워커에서 `curl`이 직접 성공하더라도 프록시를 거치지 않으면 의미가 없으므로, `-x`로 프록시를 명시해서 확인한다.
-
-```bash
-# 프록시 경유로 200이 나와야 한다. 407이면 smokescreen이 막고 있는 것이다.
-docker exec cvat_worker_import curl -s -o /dev/null -w '%{http_code}\n' \
-  -x http://127.0.0.1:4750 http://<CAS>/<bucket>/<object-key>
-```
-
-#### nexus 설정 (Helm)
-
-비밀번호는 기존 Secret에 키를 하나 추가하고, 나머지는 values로 준다.
-
-```bash
-kubectl create secret generic nexus-server -n <namespace> --dry-run=client -o yaml \
-  --from-literal=NEXUS__DATABASE__URL='...' \
-  --from-literal=NEXUS__CAS__KEY_ID='...' \
-  --from-literal=NEXUS__CAS__SECRET='...' \
-  --from-literal=NEXUS__JWT__SECRET='...' \
-  --from-literal=NEXUS__CVAT__PASSWORD='<CVAT 서비스 계정 비밀번호>' \
-  | kubeseal --format yaml > sealed-nexus-server.yaml
-```
-
-```bash
-helm upgrade --install nexus-server int2nexus/nexus-server -n <namespace> \
-  --set cas.baseUrl=<CAS 주소> \
-  --set cvat.baseUrl=http://cvat.example.com:8080 \
-  --set cvat.user=nexus-svc
-```
-
-| values 키 | 기본값 | 설명 |
-|---|---|---|
-| `cvat.baseUrl` | `""` | CVAT 주소. **비우면 연동이 꺼진다** |
-| `cvat.user` | `""` | CVAT 서비스 계정 |
-| `cvat.organization` | `""` | CVAT organization slug (선택) |
-| `cvat.projectNamePrefix` | `nexus` | 생성되는 CVAT project 이름 접두사 |
-| `cvat.segmentSize` | `""` | job 분할 크기. 비우면 CVAT 기본 동작 |
-| `cvat.maxSessionSamples` | `""` | 세션당 샘플 상한(서버 기본 2000) |
-| `cvat.staleCreatingSecs` | `""` | 준비 중 방치된 세션 정리 기준(초, 서버 기본 1800) |
-
-비밀번호는 values에 두지 않는다. Secret의 `NEXUS__CVAT__PASSWORD`로 주입한다.
-
-> **호환성** — CVAT 연동에는 **appVersion 0.1.1 이상**의 이미지가 필요하다. 그 이전 이미지는 `cvat` 설정 자체를 모른다. 다만 `NEXUS__CVAT__*` 환경변수를 줘도 **기동이 깨지지는 않는다** — 모르는 설정 섹션은 무시되고 CVAT 기능만 없는 상태로 정상 기동한다(실측 확인). 차트를 먼저 올리고 이미지를 나중에 올려도 안전하다.
-
-#### 연결 확인
-
-기동 로그에 다음 중 하나가 남는다.
-
-```
-INFO  CVAT 연동 활성화 base_url=http://cvat.example.com:8080
-WARN  [cvat] 설정이 불완전해 CVAT 연동을 켜지 않는다 ... missing=user, password
-INFO  [cvat] 설정 없음 — annotation session 엔드포인트는 503을 반환한다
-```
-
-`baseUrl`/`user`/`password` 셋 중 하나라도 비면 연동을 켜지 않으며, **무엇이 빠졌는지 로그에 남는다.**
-
-연동이 켜진 뒤 실제 동작은 세션을 하나 만들어 확인한다. 준비에 실패하면 세션 상태가 `failed`가 되고 사유가 세션의 `error`에 기록된다.
-
-| 세션 `error` | 원인 |
-|---|---|
-| `CVAT login 요청 실패: ...` | CVAT이 떠 있지 않거나 주소가 틀렸다 |
-| `CVAT login 실패: 401 ...` | 서비스 계정 아이디·비밀번호가 틀렸다 |
-| `CVAT login 실패: 404 ...` | 그 주소에 CVAT API가 없다. **CVAT 앞단 프록시의 Host 기반 라우팅**인 경우가 많다 — 아래 참조 |
-| `... likely attempt to access internal host` | smokescreen이 CAS 주소를 막고 있다 |
-| `CVAT 데이터 첨부가 제한 시간 안에 ...` | 이미지 다운로드가 30분을 넘겼다. 샘플 수를 줄이거나 네트워크를 확인한다 |
-
-`401`과 `404`를 구분해서 본다. **401은 계정 문제, 404는 주소 문제**다.
-
-> **404가 나면서 루트(`/`)까지 404라면** CVAT 앞단 traefik이 Host 기반으로 라우팅하는데 그 규칙에
-> 걸리지 않는 주소로 접근한 것이다. CVAT compose는 `CVAT_HOST` 값으로 traefik 라우터 규칙을
-> 만들기 때문에, 그 값이 `localhost`인 상태에서 IP로 접근하면 traefik이 자기 기본 404
-> (`404 page not found`, Go 서버 응답)를 돌려준다.
->
-> ```bash
-> # 확인 — Host 헤더를 바꿨을 때만 200이면 이 경우다
-> curl -o /dev/null -w '%{http_code}\n'                      http://<CVAT-IP>:8080/api/server/about   # 404
-> curl -o /dev/null -w '%{http_code}\n' -H 'Host: localhost' http://<CVAT-IP>:8080/api/server/about   # 200
-> ```
->
-> 해결은 CVAT 쪽에서 `CVAT_HOST`를 **실제 접속 주소(IP 또는 DNS 이름)로 바꾸고** traefik·서버·UI를
-> 재생성하는 것이다. nexus의 `cvat.baseUrl`만 `localhost`로 되돌려 우회하면, nexus와 CVAT이 같은
-> 호스트일 때만 동작하고 세션의 `cvat_url`이 `http://localhost:8080/tasks/N`으로 만들어져
-> **다른 PC의 작업자가 열 수 없다.**
-
-#### 연결되지 않았을 때의 동작
-
-| CVAT 상태 | 서버 기동 | 카탈로그 API | 세션 생성·회수 | 세션 목록·조회·close·delete |
-|---|---|---|---|---|
-| 설정 없음 | 정상 | 정상 | 503 | 정상 |
-| 설정 불완전 | 정상(경고 로그) | 정상 | 503 | 정상 |
-| 설정됨, CVAT 다운 | 정상 | 정상 | 세션이 `failed`가 된다 | 정상 |
-| 정상 연결 | 정상 | 정상 | 정상 | 정상 |
-
-**목록·조회·`close`·`delete`는 CVAT 없이도 동작한다.** CVAT을 호출하지 않거나(목록·조회), 호출에 실패해도 진행하기 때문이다(`delete`는 CVAT project 삭제를 건너뛰고 세션 행만 지운다). 이미 만들어진 세션을 CVAT이 죽은 뒤에도 정리할 수 있어야 하기 때문이다 — 그러지 않으면 샘플이 영구히 잠긴다.
-
-nexus는 기동 시점에 CVAT을 호출하지 않는다. 따라서 운영 중 CVAT이 내려가도 영향은 세션 생성·회수에만 국한된다.
-
-## 3. 핵심 흐름
-### 3.1 Dataset 생성
+### 3.2 Dataset 생성
 이름으로 dataset을 찾거나 생성하고, 그 안에 지정한 version이 없으면 생성한다. 멱등 동작이며 version은 항상 명시해야 하는 필수값이다.  
 생성 직후 버전은 draft 상태 — 샘플 추가/삭제, annotation 수정이 가능하다.
 ```python
@@ -449,12 +219,12 @@ from nexus.sample import CasRef
 ds = nx.Dataset.load_or_create("my-dataset", "v0")
 ```
 
-### 3.2 원본 파일 업로드
+### 3.3 원본 파일 업로드
 
 로컬 이미지를 CAS에 직접 올리고 각 파일을 가리키는 참조 `{CasRef}`를 받는다. 이후 이 참조로 샘플을 등록한다.
 - 같은 파일을 다시 올려도 내용이 같으면 건너뛴다(멱등). 실패한 파일만 골라 재시도할 수 있다(같은 목록으로 재호출).  
 - 같은 key에 **다른** 내용이 이미 있으면 기본은 에러(충돌)다. 의도적으로 교체하려면 `nx.upload(..., overwrite=True)`를 쓴다 — 이때 썸네일도 새 내용으로 함께 다시 만든다(안 그러면 옛 썸네일이 새 이미지에 그대로 남는다). 내용이 같으면 `overwrite` 여부와 무관하게 그대로 건너뛴다(SDK 0.1.4+).
-- 이미 CAS에 올라가 있는 파일이면 이 단계를 건너뛰고, 그 파일의 CAS URL을 바로 다음 단계(nx.Sample(image=...))에 명시하여 사용할 수 있다. 다만 그렇게 하면 이미지 크기를 알 수 없어 `meta.width`/`meta.height`가 비게 된다 — 아래 [`nx.probe`](#nxprobe--업로드-없이-이미지-크기만-채우기-sdk-013)로 채운다.
+- 이미 CAS에 올라가 있는 파일이면 이 단계를 건너뛰고, 그 파일의 CAS URL을 바로 다음 단계(nx.Sample(image=...))에 명시하여 사용할 수 있다. 다만 그렇게 하면 이미지 크기를 알 수 없어 `meta.width`/`meta.height`가 비게 된다 — 아래 [`nx.probe`](#nxprobe--업로드-없이-이미지-크기만-채우기)로 채운다.
 
 ```python
 import json
@@ -498,7 +268,7 @@ python backfill_thumbnails.py --bucket <버킷>              # 실행
 
 > 직접 업로드를 상시 경로로 쓴다면 **적재 후 이 스크립트를 돌리는 것을 절차에 포함**해야 한다. 빠뜨리면 UI에서 원본이 그대로 로드되어 그리드가 무거워진다.
 
-#### `nx.probe` — 업로드 없이 이미지 크기만 채우기 (sdk 0.1.3+)
+#### `nx.probe` — 업로드 없이 이미지 크기만 채우기
 
 업로드를 건너뛰고 CAS URL로 바로 등록하면 썸네일뿐 아니라 **이미지 크기도 빠진다.** CAS가 객체의 픽셀 크기를 알려주지 않기 때문이다(`HEAD`로 얻는 것은 hash·size·content_type뿐이다). `nx.probe`가 각 객체의 **앞부분 64KB만** 받아 이미지 헤더를 파싱해 크기를 채운다.
 
@@ -524,7 +294,7 @@ ref = (CasRef(bucket="my-bucket", key=key, width=info.width, height=info.height)
 
 > 크기를 못 구하면 `meta`에 `width`/`height` 키를 **넣지 않는다**. `0`을 적으면 크기 facet의 range가 `min:0`으로 오염되고, CVAT이 그 값으로 정규화 좌표를 계산해 좌표가 망가진다. 키가 없으면 집계에서 조용히 빠지고, **CVAT 편집 세션 생성은 명확한 에러로 거부된다**([6.1](#61-시작-전-확인)).
 
-#### 이미 등록된 샘플의 크기 백필 — `ds.backfill_dims` (sdk 0.1.3+)
+#### 이미 등록된 샘플의 크기 백필 — `ds.backfill_dims`
 
 `nx.probe`가 생기기 전에 등록된 샘플은 `meta.width`/`meta.height`가 `0`으로 들어가 있다. 그 `0`은 측정값이 아니라 SDK가 자리를 채우려고 넣은 값이고, **CVAT에서는 세션 생성은 통과한 뒤 export 단계에서 해당 인스턴스가 조용히 빠진다.** 썸네일 백필과 같은 성격의 일회성 정비다.
 
@@ -548,7 +318,7 @@ print(report)
 - **적재 당시의 선언값 자체가 틀린 경우는 `overwrite=True`로 고친다**(SDK 0.1.10+ / 서버 0.1.10+). 그 값은 「기록됨」이라 위 채우기 모드로는 구조적으로 닿지 않는다. 이 모드는 전량을 다시 재고 **실측값이 기록값과 다른 것만** 보내며, `dry_run=True`가 개수가 아니라 변경 목록(`from` → `to`)을 준다 — 그 목록이 "probe가 엉뚱한 객체를 재고 있다"를 잡는 자리다. `patch_annotations`로 `meta`만 고치려 하면 안 된다 — 그 경로는 그 버전의 인스턴스를 통째로 교체하므로 GT가 사라진다.
 - sealed 버전의 샘플도 보정된다 — `samples.meta`는 seal이 얼리는 대상이 아니고([architecture.md 10.3](architecture.md#103-version-불변성)), 애초에 그 `0`은 측정된 값이 아니었다.
 
-### 3.3 샘플 생성 & 등록
+### 3.4 샘플 생성과 등록
 
 받은 ref로 `nx.Sample`을 만들어 dataset/version에 등록한다.  
 저장해둔 refs를 다시 로드하는 패턴:
@@ -585,7 +355,7 @@ for r in (r for r in results if not r.ok):
 > 이 상한과 무관하다.
 
 - `image` - `nx.upload`가 돌려준 `CasRef`, 또는 그 이미지의 CAS URL을 직접 넣는다(`http://<cas>/<bucket>/<key>`).  
-- `annotation`은 Sample 등록 시점에 같이 넣는 게 자연스럽다(나중에 따로 고치는 방법은 §3.5).  
+- `annotation`은 Sample 등록 시점에 같이 넣는 게 자연스럽다(나중에 따로 고치는 방법은 §5.1).  
 생략하면 서버가 최소한의 정보만으로 등록한다.
 - `assets`는 image 외 추가 모달리티(depth map 등)를 담는 범용 dict(`{role: ref}`).  
 `image`외 새 모달리티(thermal, lidar 등)가 필요하면 필드 추가 없이 이 dict에 role을 추가한다.
@@ -620,7 +390,7 @@ for r in (r for r in results if not r.ok):
 ```
 
 **GT에 `meta`가 있으면 그 값이 그대로 쓰인다.** SDK는 `meta`가 있는 경우 어떤 필드도
-수정하지 않는다. 따라서 GT가 `width`/`height`를 이미 담고 있으면 [`nx.probe`](#nxprobe--업로드-없이-이미지-크기만-채우기-sdk-013)로
+수정하지 않는다. 따라서 GT가 `width`/`height`를 이미 담고 있으면 [`nx.probe`](#nxprobe--업로드-없이-이미지-크기만-채우기)로
 크기를 채울 필요가 없다. `meta`가 **없을 때만** SDK가 최소 meta(`format_version`,
 `filename`, 그리고 ref에 크기가 있으면 `width`/`height`)를 만들어 넣는다.
 
@@ -628,12 +398,13 @@ for r in (r for r in results if not r.ok):
 
 - **`meta`는 통째로 신뢰된다.** `filename`만 있고 `width`/`height`가 없는 부분 meta를 주면
   SDK가 나머지를 채워주지 않는다. 그 샘플은 크기 facet·히스토그램 집계에서 빠지고 CVAT
-  편집 세션 생성이 거부된다. 크기가 없는 GT라면 [`nx.probe`](#nxprobe--업로드-없이-이미지-크기만-채우기-sdk-013)로
+  편집 세션 생성이 거부된다. 크기가 없는 GT라면 [`nx.probe`](#nxprobe--업로드-없이-이미지-크기만-채우기)로
   ref를 채워 `image=`에 넘기거나, 등록 후 `ds.backfill_dims()`로 보정한다.
 - **업로드를 건너뛰었으므로 썸네일이 없다.** UI는 원본으로 폴백하므로 동작은 정상이고
-  로딩만 무겁다(§3.2 참조).
+  로딩만 무겁다(§3.3 참조).
 
-### 3.4 등록 확인
+## 4. 조회와 검색
+### 4.1 샘플 조회
 ```python
 samples = ds.list_samples()                        # 이 버전의 샘플 목록
 sample = ds.get_sample(samples[0]["sample_id"])     # 샘플 하나의 annotation을 포함한 전체 정보
@@ -661,7 +432,135 @@ by_split = ds.samples(split="val", tags=["night"])
       cursor = page[-1]["sample_id"]
 ```
 
-### 3.5 annotation 추가/교체
+### 4.2 태그 제외 필터, 결과 개수, 필터 스코프 일괄 태그
+
+세 기능은 **같은 필터 객체**를 쓴다. 화면이나 스크립트가 필터를 하나만 들고 있으면 그대로 세 곳에 보낼 수 있다.
+
+**태그 제외** — `exclude_tags`에 적은 태그를 하나라도 가진 샘플을 뺀다. `tags`(포함)와 함께 주면 AND다. 태그가 하나도 없는 샘플은 제외되지 않는다.
+
+```python
+ds.samples(tags=["train"], exclude_tags=["blurry"])   # train 이면서 blurry 가 아닌 것
+ds.fork("v1", tags=["train"], exclude_tags=["blurry"])
+```
+
+> **SDK는 0.1.8 이상이어야 한다.** 0.1.7에는 결함이 있어 `ds.samples()`가 인자와 무관하게
+> `TypeError`로 실패하고, 같은 경로를 지나는 `ds.fork()`·`ds.backfill_dims()`도 함께
+> 실패한다. 서버는 무관하다 — HTTP로 직접 부르면 `exclude_tags`는 서버 0.1.7부터 정상이다.
+
+**결과 개수** — 필터에 걸리는 샘플 수를 센다. SDK `0.1.10`+는 `client.count_samples()`가 있다.
+
+```python
+count, exact = client.count_samples(ds.dataset_id, ds.version, {"tags": ["train"]})
+print(count, exact)    # 1204 True
+
+# 저수준(구 SDK)
+r = client._post(f"/datasets/{ds.dataset_id}/versions/{ds.version}/samples/explorer/count",
+                 json={"tags": ["train"], "include_annotations": False})
+print(r.json())    # {"count": 1204, "exact": true}
+```
+
+기본은 10,000에서 세기를 멈추고 `exact: false`를 돌려준다 — 그때 실제 개수는 `count` **이상**이므로 화면에는 "10,000+"로 적으면 된다. 정확한 값이 필요하면 `?exact=true`를 붙인다(비용이 결과 크기에 비례하므로 필요한 곳에만 쓴다).
+
+**필터 스코프 일괄 태그** — 필터에 걸리는 **전부**의 태그를 한 번에 고친다. `client.add_tags_bulk(sample_ids, tags)`가 넘긴 id만 다루는 것과 다르고, 둘 다 남는다.
+
+```python
+r = client._post(f"/datasets/{ds.dataset_id}/versions/{ds.version}/samples/tags",
+                 json={"tags": ["reviewed"],
+                       "filter": {"tags": ["train"], "include_annotations": False}})
+print(r.json())    # {"updated": 1204}
+```
+
+- **대상이 10,000건을 넘으면 `?confirm=<건수>`가 필수다.** 없으면 `409`이고, 값이 실제와 다르면 역시 `409`이며 **아무것도 바뀌지 않는다.** `409` 본문의 건수는 구조화된 필드가 아니라 메시지 문장 안에 있으므로, 파싱하지 말고 위 개수 조회를 다시 부르는 편이 안전하다.
+- 응답은 갱신된 행 수만 준다. 대상이 수십만이면 샘플 목록 응답이 수백 MB가 되기 때문이다.
+- **`DELETE`로 떼면 원래부터 그 태그를 갖고 있던 샘플에서도 지워진다** — 이번에 붙은 것과 구분하지 않는다. 일괄 부여는 새 태그 이름으로 하면 되돌리기가 안전하다.
+
+### 4.3 태그 후보 목록
+
+4.2의 `exclude_tags`를 화면에 붙이려면 **어떤 태그가 있는지** 먼저 알아야 한다. `id`·`label` 같은 문자열 필드는 facet으로 후보를 고를 수 있는데 샘플 태그만 그 수단이 없었다. 같은 자리에 얹었다.
+
+SDK 메서드는 아직 없고 저수준으로 호출한다.
+
+```python
+r = client._get(f"/datasets/{ds.dataset_id}/versions/{ds.version}/facets", params={"field": "tags"})
+print(r.json())    # {"field": "tags", "values": ["blurry", "night", "train"], "truncated": false}
+
+# 타입어헤드 — 대소문자를 구분하지 않는 부분일치
+client._get(f"/datasets/{ds.dataset_id}/versions/{ds.version}/facets",
+            params={"field": "tags", "q": "trai"})
+```
+
+- **그 버전에 실제로 붙어 있는 태그만** 나온다. 삭제된 샘플의 태그는 빠지고, 다른 dataset·다른 버전의 태그는 섞이지 않는다.
+- 값은 **500개에서 잘리고** 그때 `truncated`가 `true`다. 그 이상이면 `q`로 좁혀 받는다.
+- `label` 후보와 달리 관측 사이드 테이블이 없어 **매 호출이 그 버전의 샘플을 훑는다.** 자동완성처럼 자주 부르는 자리라면 `q`를 함께 보낸다.
+- 여기서 받은 값을 4.2의 `tags=`/`exclude_tags=`에 그대로 넣으면 된다.
+
+### 4.4 필터 옵션별 개수
+
+4.3의 후보 목록에 **지금 걸린 필터를 반영한 개수**를 붙인다. `Car (8,500)`의 그 숫자다.
+
+```python
+r = client._post(f"/datasets/{ds.dataset_id}/versions/{ds.version}/facets/counts",
+                 params={"field": "det_gt.label"},
+                 json={"tags": ["train"]})
+print(r.json())
+# {"field":"det_gt.label","computed":true,"truncated":false,
+#  "counts":[{"value":"car","count":8500},{"value":"pedestrian","count":3120}]}
+```
+
+- **단위는 샘플이다.** `Car (8,500)`은 박스 8,500개가 아니라 Car가 든 8,500**장**이다 — 누르면 나올 결과 수를 예고하는 숫자이기 때문이다. 같은 자리의 `GET .../histogram`은 인스턴스 수를 주고 필터도 받지 않으므로 **두 숫자가 다른 것이 정상이다.**
+- **그 필드 자신의 필터만 뺀다.** `label=car`를 고른 채 label 목록을 펴면 car 말고 전부 0이 되어 목록이 쓸모없어지기 때문이다. 다른 필드의 필터는 반영한다.
+- **`computed: false`를 「0건」으로 그리면 안 된다.** 제한 시간(3초) 안에 못 셌다는 뜻이라 숫자 없이 목록만 그린다. `true`일 때만 목록에 없는 값이 0건이다.
+- 개수가 붙는 field는 다섯이다 — `tags`·`meta.<enum|bool|string>`·`group_key`·`<group>.label`·`<group>.component.type`. 나머지는 400이다(range·datetime은 histogram이 이미 분포를 준다).
+- 목록(`GET .../facets`)과 나뉘어 있으므로 사이드바는 개수를 기다리지 않는다.
+
+### 4.5 임의 위치로 건너뛰기 — `offset`
+
+화면 하단 위치 바를 임의 지점으로 끌 때 쓴다. `.../samples/explorer` 바디에 `offset`(앞 N개 건너뛰기)을 넣는다. 총 개수는 `.../samples/explorer/count`다.
+
+정렬이 `sample_id` 하나뿐이고 그 값이 시간순 UUID 기본키라 **같은 필터·같은 `offset`은 언제나 같은 자리**를 가리킨다.
+
+- `offset`과 `cursor`를 함께 주면 **400**이다. 한쪽을 조용히 무시하면 화면이 엉뚱한 자리를 가리키는데 증상만으로는 어느 쪽이 무시됐는지 알 수 없다.
+- **깊은 `offset`은 비싸다** — 건너뛸 행을 DB가 세어 나간다. 위치로 점프한 뒤의 연속 스크롤은 `cursor`로 이어간다.
+
+### 4.6 데이터셋 목록 조회
+```python
+nx.list_datasets()                              # 전체 목록
+nx.list_datasets(q="incabin")                    # name/description/tags 통합 검색(부분일치)
+nx.list_datasets(tags=["person-detection"])      # 태그로 필터(하나라도 포함)
+nx.list_datasets(favorite=True)                  # 내 즐겨찾기만
+nx.list_datasets(sort="name", order="asc")       # 정렬
+```
+- `q`는 `name/description/tags` 중 하나라도 부분일치하는 데이터셋을 반환한다. `name=/description=`은 개별 필드 검색
+- 즐겨찾기는 `ds.favorite() / ds.unfavorite()`(멱등)로 켜고 끄고, favorite=True로 목록을 필터링한다.
+- **서버 0.1.7부터 이 목록은 한 응답에 기본 100개까지만 실린다.** SDK `0.1.7+`의 `nx.list_datasets()`는 커서를 자동으로 순회해 전체를 모으므로 호출부는 그대로 두면 된다. 한 페이지만 받으려면 `limit=`을 준다(그때는 자동 순회하지 않는다). **SDK를 올리지 않고 서버만 올리면 100개에서 잘린다.**
+- 담당자로 좁히려면 `nx.list_datasets(mine=True)`(내가 담당), `unowned=True`(담당자 없음). 둘 다 **기본 뷰용 필터이지 권한이 아니다** — 걸지 않으면 전부 보인다. 함께 주면 400이다.
+- `GET /datasets/{id}/versions`와 `.../subsets`에도 같은 상한이 생겼고, SDK의 `client.list_versions()`·`client.list_subsets()`도 같은 방식으로 자동 순회한다.
+
+### 4.7 즐겨찾기 그룹
+
+즐겨찾기는 유저별 불리언(`ds.favorite()` / `ds.unfavorite()`)이었는데 그룹(폴더)과 순서가 붙었다. 전부 유저 스코프이고 SDK 메서드는 아직 없다.
+
+```
+POST   /api/v1/datasets/favorites/groups              {"name": "촬영-2026"}
+GET    /api/v1/datasets/favorites/groups              사이드바 트리 전체
+PATCH  /api/v1/datasets/favorites/groups/{group_id}   {"name": "..."}
+DELETE /api/v1/datasets/favorites/groups/{group_id}
+PUT    /api/v1/datasets/favorites/layout              그룹 순서·소속·그룹 내 순서
+```
+
+`GET /datasets` 응답에 `favorite_group_id`와 `favorite_position`이 함께 온다(즐겨찾기가 아니면 둘 다 `null`).
+
+**`created_by_kind`도 함께 온다**(차트 0.3.8~). 만든 계정이 사람인지 로봇인지를 `human` / `robot`으로 주고, 만든 사람 기록이 없으면 `null`이다. 목록(`GET /datasets`)·단건(`GET /datasets/{dataset_id}`)·생성(`POST /datasets`)·수정(`PATCH /datasets/{dataset_id}`)·태그 추가·태그 삭제 응답 여섯에 모두 실린다.
+
+`created_by`는 계정 ID(정수)뿐이고 그것을 이름으로 푸는 경로는 관리자 전용(`GET /api/v1/admin/users`)이라, 일반 사용자에게는 이 필드가 「누가 만들었나」에 답할 수 있는 유일한 값이다. **이름과 이메일은 주지 않는다** — 종만 준다. `null`의 뜻은 하나이고(만든 사람 기록 없음), `datasets.created_by`가 계정 삭제 시 `NULL`이 되므로 값이 있으면 종은 항상 풀린다.
+
+- **레이아웃은 한 요청이 셋을 다 정한다.** 배열 순서가 곧 순서다. 멱등이라 두 탭이 각각 옮겨도 마지막 쓰기가 정해진다.
+- **전체를 보내야 한다.** 즐겨찾기한 dataset이 하나라도 빠지거나 중복되면 400이고 본문에 그 목록이 담긴다. 다른 탭이 그 사이 즐겨찾기를 추가했으면 400을 받고 다시 받아 보내면 된다.
+- 그룹을 지우면 안의 즐겨찾기는 **미분류로 빠진다**(사라지지 않는다). 새 즐겨찾기는 미분류 맨 뒤에 붙는다.
+- 남의 `group_id`를 본문에 적으면 400, 남의 그룹을 직접 조작하면 404다.
+
+## 5. annotation 편집
+### 5.1 dict API (통째 교체)
 
 이미 등록된 샘플에 annotation만 따로 붙이거나 교체한다(재적재 없이).  
 이미지 파일명(stem)으로 annotation 파일을 매핑하는 패턴:
@@ -684,7 +583,7 @@ print("patched:", sum(r.ok for r in pres), "/", len(pres))
 ds.patch_annotations(sample_id, {"det": [{"id": "a", "label": "truck"}]})   # 하나씩
 ```
 - draft 버전에서만 가능(sealed면 409). 이전 patch를 완전 교체하는 방식(누적 아님).
-- 교체 단위는 group_key 단위가 아닌 샘플 전체(이 버전 한정). 기존 그룹을 유지하려면 바꾸지 않는 그룹도 `annotation_data`에 같이 넣어야 한다. 그룹 단위로만 바꾸려면 아래 [부분 저장](#annotation-객체-모델과-부분-저장-서버-0118--sdk-0116)을 쓴다.
+- 교체 단위는 group_key 단위가 아닌 샘플 전체(이 버전 한정). 기존 그룹을 유지하려면 바꾸지 않는 그룹도 `annotation_data`에 같이 넣어야 한다. 그룹 단위로만 바꾸려면 아래 [부분 저장](#52-객체-api-부분-저장)을 쓴다.
 - **서버 0.1.18(차트 0.3.14)부터 바뀐 점 두 가지** — (1) 그룹 키를 하나도 보내지 않으면(`meta`만, 또는 `{}`) 인스턴스를 건드리지 않는다. 0.1.16 이하에서는 그 버전의 인스턴스가 지워졌다(공유 원본이 있으면 원본이 되살아났다) — 그래서 `{}`로 "원본으로 되돌리기"는 더 이상 되지 않는다. (2) 보낸 그룹이 전부 비는데 그 샘플에 공유 원본(적재한 GT)이 있으면 `409`다(이전에는 `200`이었지만 원본이 다시 보여 실제로는 비워지지 않았다). 이 버전에서 그 샘플을 비우려면 버전에서 unlink한다.
 - SDK 0.1.16부터 `save_annotation`/`patch_annotations`에 그룹 키가 없는 본문(`meta`만, 또는 `{}`)을 넘기면 `RuntimeWarning`이 난다(위 (1)처럼 아무것도 지워지지 않으므로). `-W error`로 도는 스크립트는 여기서 멈출 수 있다. 그룹을 비우려면 그 키를 빈 배열로 보낸다(`{"det": []}`).
 
@@ -717,13 +616,13 @@ rep = ds.save_annotation(sample_id, ann)                  # 그대로 다시 저
 # rep == {"instances": 12, "skipped": 0,
 #         "skipped_reasons": {"missing_label": 0, "not_an_object": 0, "group_not_an_array": 0}}
 ```
-- `save_annotation`은 내부적으로 `patch_annotations`와 동일하게 동작한다 — **이 버전의 인스턴스를 병합이 아니라 통째로 교체**한다. 받은 것 중 일부 그룹만 빼고 보내면 그 그룹은 사라진다(§3.5 위 패턴대로 건드리지 않는 그룹도 함께 넣어 보낼 것). 위의 서버 0.1.18 변경 두 가지도 똑같이 적용된다.
+- `save_annotation`은 내부적으로 `patch_annotations`와 동일하게 동작한다 — **이 버전의 인스턴스를 병합이 아니라 통째로 교체**한다. 받은 것 중 일부 그룹만 빼고 보내면 그 그룹은 사라진다(위 패턴대로 건드리지 않는 그룹도 함께 넣어 보낼 것). 위의 서버 0.1.18 변경 두 가지도 똑같이 적용된다.
 - `meta`는 버전이 아니라 샘플에 붙는다 — **모든 버전이 같은 `meta`를 공유**하므로, `get_annotation`으로 받아 그대로 `save_annotation`에 되돌리는 왕복만 해도 `meta`가 다시 쓰인다(다른 버전에서 이미 `meta`를 바꿔 뒀다면 그 값을 덮어쓰지 않도록 왕복 전에 확인할 것). 바꾼 키만 보내려면 아래 부분 저장을 쓴다.
 - `save_annotation`은 **서버가 버린 인스턴스 수를 담은 보고서를 반환한다.** 서버는 형식이 어긋난 원소(`label` 필드가 없는 원소, object가 아닌 원소, 값이 배열이 아닌 그룹)를 버리는데, 교체는 병합이 아니므로 **버려진 만큼 기존 인스턴스가 지워진다.** `skipped`가 0이 아니면 SDK가 `RuntimeWarning`도 함께 낸다 — 반환값을 보지 않는 스크립트에서도 유실이 드러나야 하기 때문이다. `patch_annotations`(단일·배치)도 같은 경고를 낸다.
 - 구 서버(`0.1.5` 미만)나 구 SDK(`0.1.5` 미만)에는 이 메서드 자체가 없다 — 기존 `patch_annotations`/`get_sample` 조합은 그대로 쓸 수 있다. 구 서버에 새 SDK를 붙이면 `save_annotation`의 반환은 빈 dict이고 경고도 나지 않는다(서버가 보고서를 주지 않으므로 유실을 주장할 근거가 없다).
-- **SDK `0.1.5`는 서버와 별도로 발행된다.** 위 §2의 업데이트 명령을 돌린 뒤 `python -c "import importlib.metadata as m; print(m.version('int2nexus-sdk'))"`로 확인하고, 아직 낮으면 인덱스에 올라오지 않은 것이다 — 그동안은 `patch_annotations`/`get_sample` 조합을 쓰거나 `GET`/`PUT` 엔드포인트를 직접 호출한다.
+- **SDK `0.1.5`는 서버와 별도로 발행된다.** §2.1의 업데이트 명령을 돌린 뒤 `python -c "import importlib.metadata as m; print(m.version('int2nexus-sdk'))"`로 확인하고, 아직 낮으면 인덱스에 올라오지 않은 것이다 — 그동안은 `patch_annotations`/`get_sample` 조합을 쓰거나 `GET`/`PUT` 엔드포인트를 직접 호출한다.
 
-#### annotation 객체 모델과 부분 저장 (서버 0.1.18 + SDK 0.1.16)
+### 5.2 객체 API (부분 저장)
 
 위의 `get_annotation`/`save_annotation`/`patch_annotations`는 annotation을 **dict** 그대로 주고받는다. SDK 0.1.16부터는 같은 annotation을 **타입 객체**로 받아 고치고, 저장할 때 **바뀐 그룹과 바뀐 `meta` 키만** 보내는 경로가 함께 있다.
 
@@ -836,167 +735,7 @@ rep = s.save()      # PATCH — seatbelt_gt 그룹 통째 + meta 의 width 키�
 - 대량으로 annotation을 통째 교체하거나(`patch_annotations(..., workers=)`) 적재할 때, 그룹 종류를 선언하고 싶지 않을 때는 **dict API**.
 - 샘플을 하나씩 열어 고칠 때, 여러 사람·작업이 같은 샘플의 서로 다른 그룹을 고칠 때, 서버로 보내기 전에 형식을 검사받고 싶을 때는 **객체 API**.
 
-### 3.6 seal - 버전 잠금
-검수가 끝난 draft 버전을 봉인해 불변 상태로 전환한다(draft → sealed, 단방향 - 되돌릴 수 없음). seal 시 annotation을 NDJSON 스냅샷으로 CAS에 박제하고 manifest hash를 기록한다.
-
-```python
-ds.seal()                       # 이미 sealed면 서버 409(NexusError) 전파
-ds.seal(if_sealed="ignore")     # 이미 sealed면 현재 상태 그대로 반환(멱등 — 재실행 편의)
-```
-- seal 이후로는 해당 버전에서 샘플 추가/삭제/annotation 추가 및 버전 삭제 동작이 전부 막히고(409 — 버전 삭제의 응답 코드와 관리자 HTTP 예외는 §4.3), to_df()로 학습 소비가 가능해진다.
-- 수정하고 싶으면 새 버전으로 `fork`(§5.3) 해서 새로운 draft 버전을 만든다.
-
-### 3.7 DataFrame 변환
-`ds.to_df()`는 sealed 버전의 GT annotation 스냅샷(NDJSON)을 pandas DataFrame으로 로드한다.  
-각 행 = 한 샘플 = `{sample_id, meta, <group_key>:[instances...]}`.  
-seal 시 이 스냅샷은 여러 NDJSON 샤드로 나뉘어 CAS에 저장되고, nexus는 그 샤드들의 위치를 가리키는 manifest만 갖고 있다.  
-`to_df()`는 nexus 서버에 manifest만 한 번 조회한 뒤, 실제 annotation 데이터(샤드 NDJSON)는 CAS에서 직접 다운로드해 DataFrame으로 조립한다 - 대량의 annotation을 읽어도 nexus 서버에 부하가 몰리지 않는다.
-
-```python
-df = ds.to_df()                              # 모든 group_key
-df = ds.to_df(groups=["seatbelt", "bkp_gt"]) # 지정 그룹만
-ds.to_df(path="gt.jsonl")                    # 파일로도 저장(+ df 반환) — csv/json/jsonl/parquet
-for chunk in ds.to_df(chunksize=1000):       # 대규모 — 샤드 단위 스트리밍 이터레이터
-    ...
-
-import requests
-
-for _, row in df.iterrows():
-    image_bytes = requests.get(row["meta"]["filename"]).content   # 이미지는 URL로 받아옴(서명 없는 GET)
-    instances = row.get("det", [])
-    train(image_bytes, instances)
-```
-- `meta.filename`의 URL은 서명 없이 받는다. CAS가 익명 읽기를 허용하지 않는 배포에서는 `403`이다 — 그때는 CAS 자격증명으로 서명해(S3 호환 SigV4) 받는다.
-
-DataFrame에는 annotation과 이미지 경로(meta.filename)만 담기고, 이미지 바이트 자체는 안 담긴다 - 필요하면 그 경로에서 따로 받는다.  
-대용량 데이터의 경우 ds.to_df(chunksize=1000)으로 한 번에 다 메모리에 올리지 않고 나눠 처리할 수 있다.
-
-### 3.8 전체 예제
-지금까지의 흐름(3.1~3.7)을 간략히 정리한다.
-```python
-import nexus as nx
-
-nx.connect()
-
-# 1. dataset 생성
-ds = nx.Dataset.load_or_create("my-dataset", "v0")
-
-# 2. 원본 파일 업로드
-refs = nx.upload(["img1.png"], bucket="my-bucket", prefix="incabin")
-
-# 3. 샘플 생성 + 등록
-sample = nx.Sample(
-    image=refs["img1.png"],
-    annotation={"det": [{"id": "a", "label": "car"}]},   # meta를 생략하면 SDK가 filename·format_version을, ref에 크기가 있으면 width/height를 채운다
-    split="train",
-)
-ds.add(sample)
-results = ds.flush()
-
-# 4. 확인
-print(ds.list_samples())
-
-# 5. (필요하면) annotation 수정
-ds.patch_annotations(results[0].sample_id, {"det": [{"id": "a", "label": "truck"}]})
-
-# 6. 확정
-ds.seal()
-
-# 7. 학습 데이터로 사용
-df = ds.to_df()
-```
-
-## 3.9 태그 제외 필터 · 결과 개수 · 필터 스코프 일괄 태그 (서버 0.1.7+)
-
-세 기능은 **같은 필터 객체**를 쓴다. 화면이나 스크립트가 필터를 하나만 들고 있으면 그대로 세 곳에 보낼 수 있다.
-
-**태그 제외** — `exclude_tags`에 적은 태그를 하나라도 가진 샘플을 뺀다. `tags`(포함)와 함께 주면 AND다. 태그가 하나도 없는 샘플은 제외되지 않는다.
-
-```python
-ds.samples(tags=["train"], exclude_tags=["blurry"])   # train 이면서 blurry 가 아닌 것
-ds.fork("v1", tags=["train"], exclude_tags=["blurry"])
-```
-
-> **SDK는 0.1.8 이상이어야 한다.** 0.1.7에는 결함이 있어 `ds.samples()`가 인자와 무관하게
-> `TypeError`로 실패하고, 같은 경로를 지나는 `ds.fork()`·`ds.backfill_dims()`도 함께
-> 실패한다. 서버는 무관하다 — HTTP로 직접 부르면 `exclude_tags`는 서버 0.1.7부터 정상이다.
-
-**결과 개수** — 필터에 걸리는 샘플 수를 센다. SDK `0.1.10`+는 `client.count_samples()`가 있다.
-
-```python
-count, exact = client.count_samples(ds.dataset_id, ds.version, {"tags": ["train"]})
-print(count, exact)    # 1204 True
-
-# 저수준(구 SDK)
-r = client._post(f"/datasets/{ds.dataset_id}/versions/{ds.version}/samples/explorer/count",
-                 json={"tags": ["train"], "include_annotations": False})
-print(r.json())    # {"count": 1204, "exact": true}
-```
-
-기본은 10,000에서 세기를 멈추고 `exact: false`를 돌려준다 — 그때 실제 개수는 `count` **이상**이므로 화면에는 "10,000+"로 적으면 된다. 정확한 값이 필요하면 `?exact=true`를 붙인다(비용이 결과 크기에 비례하므로 필요한 곳에만 쓴다).
-
-**필터 스코프 일괄 태그** — 필터에 걸리는 **전부**의 태그를 한 번에 고친다. `client.add_tags_bulk(sample_ids, tags)`가 넘긴 id만 다루는 것과 다르고, 둘 다 남는다.
-
-```python
-r = client._post(f"/datasets/{ds.dataset_id}/versions/{ds.version}/samples/tags",
-                 json={"tags": ["reviewed"],
-                       "filter": {"tags": ["train"], "include_annotations": False}})
-print(r.json())    # {"updated": 1204}
-```
-
-- **대상이 10,000건을 넘으면 `?confirm=<건수>`가 필수다.** 없으면 `409`이고, 값이 실제와 다르면 역시 `409`이며 **아무것도 바뀌지 않는다.** `409` 본문의 건수는 구조화된 필드가 아니라 메시지 문장 안에 있으므로, 파싱하지 말고 위 개수 조회를 다시 부르는 편이 안전하다.
-- 응답은 갱신된 행 수만 준다. 대상이 수십만이면 샘플 목록 응답이 수백 MB가 되기 때문이다.
-- **`DELETE`로 떼면 원래부터 그 태그를 갖고 있던 샘플에서도 지워진다** — 이번에 붙은 것과 구분하지 않는다. 일괄 부여는 새 태그 이름으로 하면 되돌리기가 안전하다.
-
-## 3.10 태그 후보 목록 (서버 0.1.8+)
-
-3.9의 `exclude_tags`를 화면에 붙이려면 **어떤 태그가 있는지** 먼저 알아야 한다. `id`·`label` 같은 문자열 필드는 facet으로 후보를 고를 수 있는데 샘플 태그만 그 수단이 없었다. 같은 자리에 얹었다.
-
-SDK 메서드는 아직 없고 저수준으로 호출한다.
-
-```python
-r = client._get(f"/datasets/{ds.dataset_id}/versions/{ds.version}/facets", params={"field": "tags"})
-print(r.json())    # {"field": "tags", "values": ["blurry", "night", "train"], "truncated": false}
-
-# 타입어헤드 — 대소문자를 구분하지 않는 부분일치
-client._get(f"/datasets/{ds.dataset_id}/versions/{ds.version}/facets",
-            params={"field": "tags", "q": "trai"})
-```
-
-- **그 버전에 실제로 붙어 있는 태그만** 나온다. 삭제된 샘플의 태그는 빠지고, 다른 dataset·다른 버전의 태그는 섞이지 않는다.
-- 값은 **500개에서 잘리고** 그때 `truncated`가 `true`다. 그 이상이면 `q`로 좁혀 받는다.
-- `label` 후보와 달리 관측 사이드 테이블이 없어 **매 호출이 그 버전의 샘플을 훑는다.** 자동완성처럼 자주 부르는 자리라면 `q`를 함께 보낸다.
-- 여기서 받은 값을 3.9의 `tags=`/`exclude_tags=`에 그대로 넣으면 된다.
-
-## 3.11 필터 옵션별 개수 (서버 0.1.10+)
-
-3.10의 후보 목록에 **지금 걸린 필터를 반영한 개수**를 붙인다. `Car (8,500)`의 그 숫자다.
-
-```python
-r = client._post(f"/datasets/{ds.dataset_id}/versions/{ds.version}/facets/counts",
-                 params={"field": "det_gt.label"},
-                 json={"tags": ["train"]})
-print(r.json())
-# {"field":"det_gt.label","computed":true,"truncated":false,
-#  "counts":[{"value":"car","count":8500},{"value":"pedestrian","count":3120}]}
-```
-
-- **단위는 샘플이다.** `Car (8,500)`은 박스 8,500개가 아니라 Car가 든 8,500**장**이다 — 누르면 나올 결과 수를 예고하는 숫자이기 때문이다. 같은 자리의 `GET .../histogram`은 인스턴스 수를 주고 필터도 받지 않으므로 **두 숫자가 다른 것이 정상이다.**
-- **그 필드 자신의 필터만 뺀다.** `label=car`를 고른 채 label 목록을 펴면 car 말고 전부 0이 되어 목록이 쓸모없어지기 때문이다. 다른 필드의 필터는 반영한다.
-- **`computed: false`를 「0건」으로 그리면 안 된다.** 제한 시간(3초) 안에 못 셌다는 뜻이라 숫자 없이 목록만 그린다. `true`일 때만 목록에 없는 값이 0건이다.
-- 개수가 붙는 field는 다섯이다 — `tags`·`meta.<enum|bool|string>`·`group_key`·`<group>.label`·`<group>.component.type`. 나머지는 400이다(range·datetime은 histogram이 이미 분포를 준다).
-- 목록(`GET .../facets`)과 나뉘어 있으므로 사이드바는 개수를 기다리지 않는다.
-
-## 3.12 임의 위치로 건너뛰기 — `offset` (서버 0.1.10+)
-
-화면 하단 위치 바를 임의 지점으로 끌 때 쓴다. `.../samples/explorer` 바디에 `offset`(앞 N개 건너뛰기)을 넣는다. 총 개수는 `.../samples/explorer/count`다.
-
-정렬이 `sample_id` 하나뿐이고 그 값이 시간순 UUID 기본키라 **같은 필터·같은 `offset`은 언제나 같은 자리**를 가리킨다.
-
-- `offset`과 `cursor`를 함께 주면 **400**이다. 한쪽을 조용히 무시하면 화면이 엉뚱한 자리를 가리키는데 증상만으로는 어느 쪽이 무시됐는지 알 수 없다.
-- **깊은 `offset`은 비싸다** — 건너뛸 행을 DB가 세어 나간다. 위치로 점프한 뒤의 연속 스크롤은 `cursor`로 이어간다.
-
-## 3.13 골격 정의 심기 — `set_keypoint_info` (서버 0.1.10+)
+### 5.3 골격 정의 심기 — `set_keypoint_info`
 
 CVAT skeleton의 관절 **이름**과 **연결선**은 `meta.keypoint_info`에서 온다. 컴포넌트 키로 색인하며 FiftyOne `fo.KeypointSkeleton`과 같은 모양이다.
 
@@ -1017,167 +756,7 @@ ds.set_keypoint_info({
 - 옛 배열 모양(`{"<키>": ["hip", ...]}`), 빈 `labels`, **관절 수 밖을 가리키는 `edges` 인덱스**는 400이다. 대상이 10,000건을 넘으면 `confirm=True`(개수를 먼저 센다) 또는 정확한 정수가 필요하다.
 - 이미 적재된 샘플은 옛 모양 그대로 읽히므로 급하지 않다. 심으면 연결선이 생긴다. 이미 열려 있는 CVAT 세션은 영향받지 않는다.
 
-## 4. 데이터셋 관리
-### 4.1 데이터셋 목록 조회
-```python
-nx.list_datasets()                              # 전체 목록
-nx.list_datasets(q="incabin")                    # name/description/tags 통합 검색(부분일치)
-nx.list_datasets(tags=["person-detection"])      # 태그로 필터(하나라도 포함)
-nx.list_datasets(favorite=True)                  # 내 즐겨찾기만
-nx.list_datasets(sort="name", order="asc")       # 정렬
-```
-- `q`는 `name/description/tags` 중 하나라도 부분일치하는 데이터셋을 반환한다. `name=/description=`은 개별 필드 검색
-- 즐겨찾기는 `ds.favorite() / ds.unfavorite()`(멱등)로 켜고 끄고, favorite=True로 목록을 필터링한다.
-- **서버 0.1.7부터 이 목록은 한 응답에 기본 100개까지만 실린다.** SDK `0.1.7+`의 `nx.list_datasets()`는 커서를 자동으로 순회해 전체를 모으므로 호출부는 그대로 두면 된다. 한 페이지만 받으려면 `limit=`을 준다(그때는 자동 순회하지 않는다). **SDK를 올리지 않고 서버만 올리면 100개에서 잘린다.**
-- 담당자로 좁히려면 `nx.list_datasets(mine=True)`(내가 담당), `unowned=True`(담당자 없음). 둘 다 **기본 뷰용 필터이지 권한이 아니다** — 걸지 않으면 전부 보인다. 함께 주면 400이다.
-- `GET /datasets/{id}/versions`와 `.../subsets`에도 같은 상한이 생겼고, SDK의 `client.list_versions()`·`client.list_subsets()`도 같은 방식으로 자동 순회한다.
-
-### 4.1.1 즐겨찾기 그룹 (서버 0.1.10+)
-
-즐겨찾기는 유저별 불리언(`ds.favorite()` / `ds.unfavorite()`)이었는데 그룹(폴더)과 순서가 붙었다. 전부 유저 스코프이고 SDK 메서드는 아직 없다.
-
-```
-POST   /api/v1/datasets/favorites/groups              {"name": "촬영-2026"}
-GET    /api/v1/datasets/favorites/groups              사이드바 트리 전체
-PATCH  /api/v1/datasets/favorites/groups/{group_id}   {"name": "..."}
-DELETE /api/v1/datasets/favorites/groups/{group_id}
-PUT    /api/v1/datasets/favorites/layout              그룹 순서·소속·그룹 내 순서
-```
-
-`GET /datasets` 응답에 `favorite_group_id`와 `favorite_position`이 함께 온다(즐겨찾기가 아니면 둘 다 `null`).
-
-**`created_by_kind`도 함께 온다**(차트 0.3.8~). 만든 계정이 사람인지 로봇인지를 `human` / `robot`으로 주고, 만든 사람 기록이 없으면 `null`이다. 목록(`GET /datasets`)·단건(`GET /datasets/{dataset_id}`)·생성(`POST /datasets`)·수정(`PATCH /datasets/{dataset_id}`)·태그 추가·태그 삭제 응답 여섯에 모두 실린다.
-
-`created_by`는 계정 ID(정수)뿐이고 그것을 이름으로 푸는 경로는 관리자 전용(`GET /api/v1/admin/users`)이라, 일반 사용자에게는 이 필드가 「누가 만들었나」에 답할 수 있는 유일한 값이다. **이름과 이메일은 주지 않는다** — 종만 준다. `null`의 뜻은 하나이고(만든 사람 기록 없음), `datasets.created_by`가 계정 삭제 시 `NULL`이 되므로 값이 있으면 종은 항상 풀린다.
-
-- **레이아웃은 한 요청이 셋을 다 정한다.** 배열 순서가 곧 순서다. 멱등이라 두 탭이 각각 옮겨도 마지막 쓰기가 정해진다.
-- **전체를 보내야 한다.** 즐겨찾기한 dataset이 하나라도 빠지거나 중복되면 400이고 본문에 그 목록이 담긴다. 다른 탭이 그 사이 즐겨찾기를 추가했으면 400을 받고 다시 받아 보내면 된다.
-- 그룹을 지우면 안의 즐겨찾기는 **미분류로 빠진다**(사라지지 않는다). 새 즐겨찾기는 미분류 맨 뒤에 붙는다.
-- 남의 `group_id`를 본문에 적으면 400, 남의 그룹을 직접 조작하면 404다.
-
-### 4.2 데이터셋 정보 수정
-```python
-ds.update(name="my-dataset-renamed")             
-ds.update(description="새 설명")                  
-ds.update(name="new-name", description="새 설명") 
-```
-- 제공한 필드만 수정된다(둘 다 생략하면 아무 것도 안 함).  
-이름을 바꾸면 이 `ds` 핸들의 내부 이름도 자동으로 같이 갱신된다.
-- 다른 dataset이 이미 쓰고 있는 이름으로는 바꿀 수 없다(충돌 시 에러).
-- `editor` 이상이면 다른 사람이 담당인 dataset도 이름/설명을 바꿀 수 있다(서버 0.1.7). `viewer`는 403이다.
-
-### 4.3 데이터셋 삭제 정책
-Dataset 삭제는 버전 단위로 수행한다. `ds.delete()`로 버전을 삭제하고, 남은 버전이 하나도 없으면 Dataset도 자동으로 삭제된다. 이때 Dataset에 속한 잔여 Sample도 모두 정리되며, CAS로 Asset 삭제 요청을 보낼지는 아래 `delete_cas`가 정한다.
-삭제는 **`editor` 이상의 사람 계정**이면 된다(로봇은 403). 담당자와 무관하게 남의 dataset의 버전·샘플도 지울 수 있다(마지막 버전을 지우면 dataset도 함께 사라진다). `viewer`는 자기가 담당인 dataset도 지울 수 없다. 샘플 하나를 지우는 `DELETE /samples/{sample_id}`는 그 샘플이 sealed 버전에 하나라도 속해 있으면 `409`다(서버 0.1.18~ — draft 버전에서만 빼려면 unlink). sealed 버전은 기본적으로 삭제할 수 없다 — `confirm`을 맞게 준 비-admin은 `409`, `confirm`이 없거나 틀리면 역할과 무관하게 `400`이다(서버 0.1.18부터. 이전에는 `409`). 그 버전이 Dataset의 마지막 버전이어도 마찬가지다. **단 서버 0.1.18부터, 관리자(`role=admin` 또는 설정 superuser, 사람 계정)는 HTTP로 `DELETE /datasets/{id}/versions/{v}?confirm=<버전>&confirm_dataset_name=<데이터셋명>` 처럼 두 확인값을 정확히 함께 주면 sealed 버전도 지울 수 있다**(되돌릴 수 없음). SDK(`ds.delete`/`client.delete_version`)는 `confirm_dataset_name`을 보내지 않으므로 SDK로는 sealed 버전을 지울 수 없다 — 비-admin은 `409`, admin은 `400`(데이터셋명 확인 실패).
-
-**CAS 원본 삭제(`delete_cas`)는 층마다 기본값이 다르다.**
-
-- `ds.delete(...)`(SDK 고수준): `delete_cas`를 생략하면 **한 번 물어본다** — 대화형(터미널·노트북)이면 `삭제=y / 보존=N` 프롬프트가 뜨고, 입력이 불가능한 비대화형(CI·파이프)에서는 **보존(False)**으로 진행한다. 묻지 않게 하려면 `delete_cas=False`(보존) 또는 `delete_cas=True`(삭제)를 명시한다. 이 동작은 예전과 같다.
-- **HTTP로 직접 호출할 때(서버 `0.1.5`부터 변경):** `?delete_cas=`를 생략하면 이제 **CAS 객체를 지우지 않는다.** 이전 버전은 지웠다. `DELETE /datasets/{id}/versions/{v}`와 `DELETE /samples/{sample_id}` 둘 다 해당한다. 지우려면 `?delete_cas=true`를 명시해야 한다.
-- **SDK 저수준 `client.delete_version(...)`(SDK `0.1.5`부터 변경):** 기본값이 `delete_cas=True`에서 **`False`(보존)**로 바뀌었다. 이 함수를 직접 부르며 기본값에 기대어 용량을 회수하던 스크립트는 이제 `delete_cas=True`를 명시해야 한다.
-
-**남아 있는** sealed 버전이 참조하는 객체는 `delete_cas` 값과 무관하게 **항상 보존**된다. 관리자가 sealed 버전을 지우면(서버 0.1.18~) 그 버전만 붙잡던 객체는 `delete_cas=true`일 때 GC 대상이 된다.
-
-`confirm`에는 **삭제할 버전 문자열**을 준다(`True`면 현재 버전). 서버가 경로의 버전과 정확히 비교해 어긋나면 400이다 — dataset 이름이 아니다.
-
-```python
-ds.delete(confirm="v0")                   # delete_cas 생략 → 대화형으로 한 번 물어본다
-ds.delete(confirm="v0", delete_cas=False) # 묻지 않고 카탈로그만 삭제, CAS 원본 유지
-ds.delete(confirm="v0", delete_cas=True)  # CAS로 삭제 요청까지 보냄
-```
-
-### 4.4 Dataset 담당자 이전 (서버 0.1.6+)
-
-`owner_user_id`는 **담당자**이며, 서버 0.1.9부터 **인가에 전혀 관여하지 않는다**(0.1.7~0.1.8은 삭제에만 관여했다). 적재·annotation 수정·seal·이름 변경·삭제 전부 `editor` 이상이면 담당자가 아니어도 할 수 있다. 담당자는 목록 필터(`mine`·`unowned`)와 인수 대기 관리에 쓰이는 값이고, 담당자를 넘기는 것은 **"이 dataset을 다시 넘길 수 있는 사람"**을 넘기는 일이다.
-
-SDK `0.1.6`부터 메서드가 있다.
-
-```python
-ds = nx.Dataset.load_or_create("my-dataset", "v0")
-
-updated = ds.transfer_owner("새주인@example.com")
-print(updated["owner_user_id"])                # 새 담당자의 user_id
-```
-
-저수준은 `client.transfer_dataset_owner(dataset_id, email)`이고, SDK 없이 부를 때는 이렇다.
-
-```bash
-curl -X PUT "$BASE/api/v1/datasets/$DATASET_ID/owner" \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"email":"새주인@example.com"}'
-```
-
-- **현재 담당자만 넘길 수 있다**(아니면 403). 받는 사람은 이미 가입된 계정이어야 한다(아니면 404).
-- **자기 자신에게 넘기면 400이다.** 아무 일도 일어나지 않은 것을 200으로 돌려주면 넘긴 것으로 읽히기 때문이다.
-- **담당은 dataset 단위다** — 어느 버전에서 부르든 그 dataset의 모든 버전이 함께 넘어간다.
-- **담당자가 없는 dataset은 이 경로로 가져올 수 없다**(403). 그런 dataset의 인수는 관리자의 `PUT /api/v1/admin/datasets/{dataset_id}/owner`로 한다([2.1 superuser](#superuser-차트-030-선택)).
-- **이미 떠난 사람의 담당분은 관리자가 일괄로 넘긴다** — `POST /api/v1/admin/datasets/transfer-owner`(본문 `from_email`·`to_email`). 자가 이관은 현재 담당자만 호출할 수 있는데 정리는 대개 그 사람이 떠난 뒤에 하기 때문이다.
-- **계정 삭제 전에 정리할 필요는 없다**(서버 0.1.7). 0.3.2가 넣었던 409 거부는 철회됐다 — 담당하던 dataset은 담당자만 해제되고 남는다. 담당자가 없어도 `editor` 이상이면 그대로 쓰고 지울 수 있다(서버 0.1.9). 넘겨 두는 이유는 권한이 아니라 「이 dataset을 누가 맡고 있는가」를 목록에서 알아보기 위해서다.
-
-내가 담당인 dataset은 `GET /datasets?mine=true`로, 담당자가 없는 것은 `?unowned=true`로 조회한다. 둘 다 **기본 뷰용 필터이지 권한이 아니다** — 걸지 않으면 전부 보인다.
-
-## 5. 데이터셋 버전 관리
-### 5.1 Draft 버전
-처음 버전 생성 시 Draft 상태이며 자유롭게 수정 가능한 작업 중 상태이다. 
-이 상태에서 할 수 있는 일:
-- 샘플 추가/등록, Annotation 추가, 버전 삭제
-- 같은 Dataset의 다른 버전에서 샘플 재사용(재적재 없이 참조만 연결)
-```python
-ds.link_samples([sid1, sid2])          # 이미 존재하는 sample_id를 이 버전에 연결
-ds.unlink_samples([sid1, sid2])        # 연결 해제(샘플 자체·다른 버전은 유지)
-```
-- 다른 Dataset의 샘플 재사용(Sample은 Dataset 범위 객체라 직접 링크가 아닌 복사)
-```python
-ds.import_samples(source_dataset_id, "v0", [sid1, sid2])
-```
-복사된 Sample은 이후 원본과 독립적으로 관리된다. `ds.samples()`로 조회한 결과를 그대로 옮기는 패턴:
-```python
-source = nx.Dataset.load_or_create("source-dataset", "v0")
-people = source.samples(label="Person")           # 조건에 맞는 샘플 검색(전체, 자동 페이지네이션)
-
-target = nx.Dataset.load_or_create("target-dataset", "v0")
-target.import_samples(
-    source.dataset_id, source.version,
-    [s["sample_id"] for s in people],              # samples()의 dict에서 sample_id만 뽑는다
-)
-```
-
-### 5.2 Sealed 버전
-Seal 하면 그 시점 상태로 불변 스냅샷이 된다. 이후:
-- 샘플 추가/삭제, Annotation 수정, 버전 삭제 불가(409)
-  - **버전 삭제 예외**: 서버 0.1.18(차트 0.3.14)부터 관리자만 HTTP로 `?confirm=<버전>` 과 `?confirm_dataset_name=<데이터셋명>` 을 함께 주면 지울 수 있다(되돌릴 수 없음, §4.3 데이터셋 삭제 정책 참조). SDK로는 여전히 불가.
-- `to_df()`로 소비할 수 있다.
-- 수정이 필요할 경우 `fork`해서 새 Draft 버전을 생성하여 작업한다(§5.3).
-
-### 5.3 Fork
-기존 버전을 기반으로 새로운 작업용 버전을 만든다.
-```python
-ds_v1 = nx.Dataset.load_or_create("my-dataset", "v1", fork_from="v0")   # 전량 fork
-```
-
-> `sealed v0` --(fork_from)--> `draft v1`
-
-fork된 버전은 원본의 샘플 구성(+ Annotation)을 그대로 이어받지만, 이후 샘플 추가/제거나 Annotation 수정은 새 버전에서 독립적으로 이루어진다(원본에 영향 없음).  
-특정 샘플만 골라서 fork하고 싶으면 sample_ids=[...]를 같이 넘기거나, 조건으로 바로 고르고 싶으면 ds.fork()를 사용해 매칭되는 샘플만 담은 새 버전을 만든다:
-```python
-cars_v1 = ds.fork("v1", group_key="det", label="car")   # label=car인 샘플만 담은 새 버전
-```
-필터가 지정되지 않은 경우 위의 전량 fork와 동일하게 동작한다.
-
-### 5.4 Clone
-fork가 같은 Dataset 안에서 새 버전을 만드는 것이라면, clone은 완전히 다른 Dataset으로 통째로 복제한다.
-```python
-new_ds = ds.clone("my-dataset-copy", "v0")
-```
-- **서버 0.1.18(차트 0.3.14) + SDK 0.1.16부터 서버 비동기 job으로 복제한다.** SDK가 `POST /datasets/{id}/versions/{version}/clone-jobs`로 시작하고 `GET /clone-jobs/{job_id}`로 완료까지 폴링하며(진행률 표시), 복사와 실패 시 롤백을 서버가 담당한다 — 대규모 Dataset도 클라이언트가 import를 수천 번 왕복하지 않는다.
-- 원본의 tags/description을 복사해 새 dataset을 만들고, 항상 **Draft**로 시작한다(복제 직후 바로 이어서 patch/추가 작업이 가능하다). Asset은 참조만 재사용해 CAS 재업로드가 없다.
-- 실패하면 서버가 만들던 대상을 롤백한다. 단 복사 중에 누가 대상을 seal했거나 버전을 붙였으면 롤백하지 않고 사유를 job의 `error`에 남긴다.
-- 동시 복제가 전역 상한(3)을 넘으면 서버가 `429`를 주고 SDK가 물러났다 자동으로 재시도한다. 끝내 넘으면 `NexusError(status_code=429)`다.
-- **대상 이름의 dataset이 이미 있으면 `409`다**(SDK 0.1.15까지는 그 dataset을 재사용해 버전을 더했다). 기존 dataset에 버전을 더하려면 그 핸들에서 `import_samples`를 쓴다.
-- `clone(..., timeout=초)`를 주면 그 안에 끝나지 않을 때 기다리기를 그만두고 job id를 담은 `NexusError`를 던진다. job은 취소되지 않고 서버에서 계속 돈다.
-- **clone-job이 없는 구서버**에서는 예전처럼 클라이언트가 import를 반복하는 방식으로 자동 폴백한다 — 그 경우 멱등하지 않다(같은 대상에 두 번 부르면 샘플이 중복 복사된다).
-
-## 6. CVAT으로 annotation 편집 (sdk 0.1.2+)
+## 6. CVAT으로 annotation 편집
 
 Draft 버전의 샘플을 **CVAT으로 보내 사람이 편집**하고, 그 결과를 다시 Draft에 반영한다.
 이미지는 Nexus를 거치지 않는다 - CVAT이 CAS에서 직접 받는다.
@@ -1281,7 +860,7 @@ print(summary)
 
 - `pull()`은 **여러 번 호출해도 안전하다.** 작업 도중에 중간중간 불러도 되고, 편집이 없으면 전부 0이다.
 - `pull()`은 샘플의 `meta`를 쓰지 않는다(서버 0.1.18~) — CVAT은 `meta`를 편집하지 않으므로, 그 사이 다른 곳에서 고친 `meta`를 옛 값으로 되돌리지 않는다.
-- **한 프레임의 도형을 전부 지웠는데 그 샘플에 공유 원본(적재한 GT)이 있으면 그 샘플은 반영되지 않는다**(서버 0.1.18~, `warnings`에 사유가 온다). 이 버전에서 원본을 가린 채 비워 둘 방법이 없기 때문이다([3.5](#35-annotation-추가교체)의 `409`). 이때 반영 기준시각이 멈춰 `close()`가 `force` 없이 막힌다 — 도형을 다시 그리거나, 그 샘플을 버전에서 unlink하거나, 편집을 버리고 `close(force=True)`로 닫는다.
+- **한 프레임의 도형을 전부 지웠는데 그 샘플에 공유 원본(적재한 GT)이 있으면 그 샘플은 반영되지 않는다**(서버 0.1.18~, `warnings`에 사유가 온다). 이 버전에서 원본을 가린 채 비워 둘 방법이 없기 때문이다([5.1](#51-dict-api-통째-교체)의 `409`). 이때 반영 기준시각이 멈춰 `close()`가 `force` 없이 막힌다 — 도형을 다시 그리거나, 그 샘플을 버전에서 unlink하거나, 편집을 버리고 `close(force=True)`로 닫는다.
 - `warnings`를 버리지 말 것 - "CVAT에서 지웠는데 annotation에 남아 있다"의 이유가 대개 여기 있다. 일부 샘플 반영 실패도 예외가 아니라 이 목록으로 온다.
 
 ### 6.5 종료 - `close`와 `delete`는 다르다
@@ -1351,7 +930,165 @@ for sid in ids:
 ses.close()
 ```
 
-## 7. 에러 처리
+## 7. 버전 관리
+### 7.1 Draft 버전
+처음 버전 생성 시 Draft 상태이며 자유롭게 수정 가능한 작업 중 상태이다. 
+이 상태에서 할 수 있는 일:
+- 샘플 추가/등록, Annotation 추가, 버전 삭제
+- 같은 Dataset의 다른 버전에서 샘플 재사용(재적재 없이 참조만 연결)
+```python
+ds.link_samples([sid1, sid2])          # 이미 존재하는 sample_id를 이 버전에 연결
+ds.unlink_samples([sid1, sid2])        # 연결 해제(샘플 자체·다른 버전은 유지)
+```
+- 다른 Dataset의 샘플 재사용(Sample은 Dataset 범위 객체라 직접 링크가 아닌 복사)
+```python
+ds.import_samples(source_dataset_id, "v0", [sid1, sid2])
+```
+복사된 Sample은 이후 원본과 독립적으로 관리된다. `ds.samples()`로 조회한 결과를 그대로 옮기는 패턴:
+```python
+source = nx.Dataset.load_or_create("source-dataset", "v0")
+people = source.samples(label="Person")           # 조건에 맞는 샘플 검색(전체, 자동 페이지네이션)
+
+target = nx.Dataset.load_or_create("target-dataset", "v0")
+target.import_samples(
+    source.dataset_id, source.version,
+    [s["sample_id"] for s in people],              # samples()의 dict에서 sample_id만 뽑는다
+)
+```
+
+### 7.2 seal — 버전 잠금
+검수가 끝난 draft 버전을 봉인해 불변 상태로 전환한다(draft → sealed, 단방향 - 되돌릴 수 없음). seal 시 annotation을 NDJSON 스냅샷으로 CAS에 박제하고 manifest hash를 기록한다.
+
+```python
+ds.seal()                       # 이미 sealed면 서버 409(NexusError) 전파
+ds.seal(if_sealed="ignore")     # 이미 sealed면 현재 상태 그대로 반환(멱등 — 재실행 편의)
+```
+- seal 이후로는 해당 버전에서 샘플 추가/삭제/annotation 추가 및 버전 삭제 동작이 전부 막히고(409 — 버전 삭제의 응답 코드와 관리자 HTTP 예외는 §8.3), to_df()로 학습 소비가 가능해진다.
+- 수정하고 싶으면 새 버전으로 `fork`(§7.5) 해서 새로운 draft 버전을 만든다.
+
+### 7.3 Sealed 버전
+Seal 하면 그 시점 상태로 불변 스냅샷이 된다. 이후:
+- 샘플 추가/삭제, Annotation 수정, 버전 삭제 불가(409)
+  - **버전 삭제 예외**: 서버 0.1.18(차트 0.3.14)부터 관리자만 HTTP로 `?confirm=<버전>` 과 `?confirm_dataset_name=<데이터셋명>` 을 함께 주면 지울 수 있다(되돌릴 수 없음, §8.3 삭제 정책 참조). SDK로는 여전히 불가.
+- `to_df()`로 소비할 수 있다.
+- 수정이 필요할 경우 `fork`해서 새 Draft 버전을 생성하여 작업한다(§7.5).
+
+### 7.4 DataFrame 변환
+`ds.to_df()`는 sealed 버전의 GT annotation 스냅샷(NDJSON)을 pandas DataFrame으로 로드한다.  
+각 행 = 한 샘플 = `{sample_id, meta, <group_key>:[instances...]}`.  
+seal 시 이 스냅샷은 여러 NDJSON 샤드로 나뉘어 CAS에 저장되고, nexus는 그 샤드들의 위치를 가리키는 manifest만 갖고 있다.  
+`to_df()`는 nexus 서버에 manifest만 한 번 조회한 뒤, 실제 annotation 데이터(샤드 NDJSON)는 CAS에서 직접 다운로드해 DataFrame으로 조립한다 - 대량의 annotation을 읽어도 nexus 서버에 부하가 몰리지 않는다.
+
+```python
+df = ds.to_df()                              # 모든 group_key
+df = ds.to_df(groups=["seatbelt", "bkp_gt"]) # 지정 그룹만
+ds.to_df(path="gt.jsonl")                    # 파일로도 저장(+ df 반환) — csv/json/jsonl/parquet
+for chunk in ds.to_df(chunksize=1000):       # 대규모 — 샤드 단위 스트리밍 이터레이터
+    ...
+
+import requests
+
+for _, row in df.iterrows():
+    image_bytes = requests.get(row["meta"]["filename"]).content   # 이미지는 URL로 받아옴(서명 없는 GET)
+    instances = row.get("det", [])
+    train(image_bytes, instances)
+```
+- `meta.filename`의 URL은 서명 없이 받는다. CAS가 익명 읽기를 허용하지 않는 배포에서는 `403`이다 — 그때는 CAS 자격증명으로 서명해(S3 호환 SigV4) 받는다.
+
+DataFrame에는 annotation과 이미지 경로(meta.filename)만 담기고, 이미지 바이트 자체는 안 담긴다 - 필요하면 그 경로에서 따로 받는다.  
+대용량 데이터의 경우 ds.to_df(chunksize=1000)으로 한 번에 다 메모리에 올리지 않고 나눠 처리할 수 있다.
+
+### 7.5 Fork
+기존 버전을 기반으로 새로운 작업용 버전을 만든다.
+```python
+ds_v1 = nx.Dataset.load_or_create("my-dataset", "v1", fork_from="v0")   # 전량 fork
+```
+
+> `sealed v0` --(fork_from)--> `draft v1`
+
+fork된 버전은 원본의 샘플 구성(+ Annotation)을 그대로 이어받지만, 이후 샘플 추가/제거나 Annotation 수정은 새 버전에서 독립적으로 이루어진다(원본에 영향 없음).  
+특정 샘플만 골라서 fork하고 싶으면 sample_ids=[...]를 같이 넘기거나, 조건으로 바로 고르고 싶으면 ds.fork()를 사용해 매칭되는 샘플만 담은 새 버전을 만든다:
+```python
+cars_v1 = ds.fork("v1", group_key="det", label="car")   # label=car인 샘플만 담은 새 버전
+```
+필터가 지정되지 않은 경우 위의 전량 fork와 동일하게 동작한다.
+
+### 7.6 Clone
+fork가 같은 Dataset 안에서 새 버전을 만드는 것이라면, clone은 완전히 다른 Dataset으로 통째로 복제한다.
+```python
+new_ds = ds.clone("my-dataset-copy", "v0")
+```
+- **서버 0.1.18(차트 0.3.14) + SDK 0.1.16부터 서버 비동기 job으로 복제한다.** SDK가 `POST /datasets/{id}/versions/{version}/clone-jobs`로 시작하고 `GET /clone-jobs/{job_id}`로 완료까지 폴링하며(진행률 표시), 복사와 실패 시 롤백을 서버가 담당한다 — 대규모 Dataset도 클라이언트가 import를 수천 번 왕복하지 않는다.
+- 원본의 tags/description을 복사해 새 dataset을 만들고, 항상 **Draft**로 시작한다(복제 직후 바로 이어서 patch/추가 작업이 가능하다). Asset은 참조만 재사용해 CAS 재업로드가 없다.
+- 실패하면 서버가 만들던 대상을 롤백한다. 단 복사 중에 누가 대상을 seal했거나 버전을 붙였으면 롤백하지 않고 사유를 job의 `error`에 남긴다.
+- 동시 복제가 전역 상한(3)을 넘으면 서버가 `429`를 주고 SDK가 물러났다 자동으로 재시도한다. 끝내 넘으면 `NexusError(status_code=429)`다.
+- **대상 이름의 dataset이 이미 있으면 `409`다**(SDK 0.1.15까지는 그 dataset을 재사용해 버전을 더했다). 기존 dataset에 버전을 더하려면 그 핸들에서 `import_samples`를 쓴다.
+- `clone(..., timeout=초)`를 주면 그 안에 끝나지 않을 때 기다리기를 그만두고 job id를 담은 `NexusError`를 던진다. job은 취소되지 않고 서버에서 계속 돈다.
+- **clone-job이 없는 구서버**에서는 예전처럼 클라이언트가 import를 반복하는 방식으로 자동 폴백한다 — 그 경우 멱등하지 않다(같은 대상에 두 번 부르면 샘플이 중복 복사된다).
+
+## 8. 데이터셋 관리
+### 8.1 정보 수정
+```python
+ds.update(name="my-dataset-renamed")             
+ds.update(description="새 설명")                  
+ds.update(name="new-name", description="새 설명") 
+```
+- 제공한 필드만 수정된다(둘 다 생략하면 아무 것도 안 함).  
+이름을 바꾸면 이 `ds` 핸들의 내부 이름도 자동으로 같이 갱신된다.
+- 다른 dataset이 이미 쓰고 있는 이름으로는 바꿀 수 없다(충돌 시 에러).
+- `editor` 이상이면 다른 사람이 담당인 dataset도 이름/설명을 바꿀 수 있다(서버 0.1.7). `viewer`는 403이다.
+
+### 8.2 담당자 이전
+
+`owner_user_id`는 **담당자**이며, 서버 0.1.9부터 **인가에 전혀 관여하지 않는다**(0.1.7~0.1.8은 삭제에만 관여했다). 적재·annotation 수정·seal·이름 변경·삭제 전부 `editor` 이상이면 담당자가 아니어도 할 수 있다. 담당자는 목록 필터(`mine`·`unowned`)와 인수 대기 관리에 쓰이는 값이고, 담당자를 넘기는 것은 **"이 dataset을 다시 넘길 수 있는 사람"**을 넘기는 일이다.
+
+SDK `0.1.6`부터 메서드가 있다.
+
+```python
+ds = nx.Dataset.load_or_create("my-dataset", "v0")
+
+updated = ds.transfer_owner("새주인@example.com")
+print(updated["owner_user_id"])                # 새 담당자의 user_id
+```
+
+저수준은 `client.transfer_dataset_owner(dataset_id, email)`이고, SDK 없이 부를 때는 이렇다.
+
+```bash
+curl -X PUT "$BASE/api/v1/datasets/$DATASET_ID/owner" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"email":"새주인@example.com"}'
+```
+
+- **현재 담당자만 넘길 수 있다**(아니면 403). 받는 사람은 이미 가입된 계정이어야 한다(아니면 404).
+- **자기 자신에게 넘기면 400이다.** 아무 일도 일어나지 않은 것을 200으로 돌려주면 넘긴 것으로 읽히기 때문이다.
+- **담당은 dataset 단위다** — 어느 버전에서 부르든 그 dataset의 모든 버전이 함께 넘어간다.
+- **담당자가 없는 dataset은 이 경로로 가져올 수 없다**(403). 그런 dataset의 인수는 관리자의 `PUT /api/v1/admin/datasets/{dataset_id}/owner`로 한다([README 계정과 권한 관리](../README.md#계정과-권한-관리)).
+- **이미 떠난 사람의 담당분은 관리자가 일괄로 넘긴다** — `POST /api/v1/admin/datasets/transfer-owner`(본문 `from_email`·`to_email`). 자가 이관은 현재 담당자만 호출할 수 있는데 정리는 대개 그 사람이 떠난 뒤에 하기 때문이다.
+- **계정 삭제 전에 정리할 필요는 없다**(서버 0.1.7). 0.3.2가 넣었던 409 거부는 철회됐다 — 담당하던 dataset은 담당자만 해제되고 남는다. 담당자가 없어도 `editor` 이상이면 그대로 쓰고 지울 수 있다(서버 0.1.9). 넘겨 두는 이유는 권한이 아니라 「이 dataset을 누가 맡고 있는가」를 목록에서 알아보기 위해서다.
+
+내가 담당인 dataset은 `GET /datasets?mine=true`로, 담당자가 없는 것은 `?unowned=true`로 조회한다. 둘 다 **기본 뷰용 필터이지 권한이 아니다** — 걸지 않으면 전부 보인다.
+
+### 8.3 삭제 정책
+Dataset 삭제는 버전 단위로 수행한다. `ds.delete()`로 버전을 삭제하고, 남은 버전이 하나도 없으면 Dataset도 자동으로 삭제된다. 이때 Dataset에 속한 잔여 Sample도 모두 정리되며, CAS로 Asset 삭제 요청을 보낼지는 아래 `delete_cas`가 정한다.
+삭제는 **`editor` 이상의 사람 계정**이면 된다(로봇은 403). 담당자와 무관하게 남의 dataset의 버전·샘플도 지울 수 있다(마지막 버전을 지우면 dataset도 함께 사라진다). `viewer`는 자기가 담당인 dataset도 지울 수 없다. 샘플 하나를 지우는 `DELETE /samples/{sample_id}`는 그 샘플이 sealed 버전에 하나라도 속해 있으면 `409`다(서버 0.1.18~ — draft 버전에서만 빼려면 unlink). sealed 버전은 기본적으로 삭제할 수 없다 — `confirm`을 맞게 준 비-admin은 `409`, `confirm`이 없거나 틀리면 역할과 무관하게 `400`이다(서버 0.1.18부터. 이전에는 `409`). 그 버전이 Dataset의 마지막 버전이어도 마찬가지다. **단 서버 0.1.18부터, 관리자(`role=admin` 또는 설정 superuser, 사람 계정)는 HTTP로 `DELETE /datasets/{id}/versions/{v}?confirm=<버전>&confirm_dataset_name=<데이터셋명>` 처럼 두 확인값을 정확히 함께 주면 sealed 버전도 지울 수 있다**(되돌릴 수 없음). SDK(`ds.delete`/`client.delete_version`)는 `confirm_dataset_name`을 보내지 않으므로 SDK로는 sealed 버전을 지울 수 없다 — 비-admin은 `409`, admin은 `400`(데이터셋명 확인 실패).
+
+**CAS 원본 삭제(`delete_cas`)는 층마다 기본값이 다르다.**
+
+- `ds.delete(...)`(SDK 고수준): `delete_cas`를 생략하면 **한 번 물어본다** — 대화형(터미널·노트북)이면 `삭제=y / 보존=N` 프롬프트가 뜨고, 입력이 불가능한 비대화형(CI·파이프)에서는 **보존(False)**으로 진행한다. 묻지 않게 하려면 `delete_cas=False`(보존) 또는 `delete_cas=True`(삭제)를 명시한다. 이 동작은 예전과 같다.
+- **HTTP로 직접 호출할 때(서버 `0.1.5`부터 변경):** `?delete_cas=`를 생략하면 이제 **CAS 객체를 지우지 않는다.** 이전 버전은 지웠다. `DELETE /datasets/{id}/versions/{v}`와 `DELETE /samples/{sample_id}` 둘 다 해당한다. 지우려면 `?delete_cas=true`를 명시해야 한다.
+- **SDK 저수준 `client.delete_version(...)`(SDK `0.1.5`부터 변경):** 기본값이 `delete_cas=True`에서 **`False`(보존)**로 바뀌었다. 이 함수를 직접 부르며 기본값에 기대어 용량을 회수하던 스크립트는 이제 `delete_cas=True`를 명시해야 한다.
+
+**남아 있는** sealed 버전이 참조하는 객체는 `delete_cas` 값과 무관하게 **항상 보존**된다. 관리자가 sealed 버전을 지우면(서버 0.1.18~) 그 버전만 붙잡던 객체는 `delete_cas=true`일 때 GC 대상이 된다.
+
+`confirm`에는 **삭제할 버전 문자열**을 준다(`True`면 현재 버전). 서버가 경로의 버전과 정확히 비교해 어긋나면 400이다 — dataset 이름이 아니다.
+
+```python
+ds.delete(confirm="v0")                   # delete_cas 생략 → 대화형으로 한 번 물어본다
+ds.delete(confirm="v0", delete_cas=False) # 묻지 않고 카탈로그만 삭제, CAS 원본 유지
+ds.delete(confirm="v0", delete_cas=True)  # CAS로 삭제 요청까지 보냄
+```
+
+## 9. 에러 처리
 
 모든 SDK 예외는 `NexusError`(및 하위 클래스 `NexusAuthError`/`NexusCasError`/`NexusIngestError`/`NexusBatchError`/`NexusValidationError`)를 상속한다. `NexusValidationError`는 객체 모델의 `save()` 검증 실패이고 서버 요청 전에 나므로 `status_code`가 `None`이다.
 
@@ -1374,31 +1111,13 @@ except NexusError as e:
 - `e.status_code`(`int | None`)와 `e.server_message`(`str | None`)로 서버가 보낸 실제 에러 사유를 프로그램적으로 분기할 수 있다. `str(e)`에도 같은 내용이 포함되지만(사람이 읽는 용도), 상태코드로 분기하려면 이 두 속성을 쓴다.
 - `flush`/`patch_annotations`의 배치 호출은 건당 결과를 `IngestResult(ok, sample, sample_id, error, status_code)`로 모아서 반환한다 — `strict=True`면 실패가 하나라도 있을 때 `NexusBatchError(failures=[...])`를 던진다.
 
-#### 401과 403을 구분한다
+### 9.1 401과 403을 구분한다
 
 | 코드 | 뜻 | 대응 |
 |---|---|---|
 | `401` | 토큰이 없거나 만료됐다 | **SDK 0.1.2+는 자동으로 다시 로그인하고 재시도한다** — 보통 이 예외를 볼 일이 없다. 그래도 401이 올라오면 자격증명 자체가 안 맞는 것이다(비밀번호가 바뀌었거나 서버 JWT 시크릿이 교체됨) |
 | `403` | 로그인은 됐지만 권한이 모자라다 | 본문으로 갈린다 — 아래 표 참조 |
 
-#### 사람이 없는 워크로드는 로봇 토큰으로 붙는다 (서버 0.1.10+)
-
-적재 잡·스케줄러·CI는 로그인할 수 없다. 관리자가 만든 **로봇 계정**의 장수명 토큰을 그대로 제시한다.
-
-```python
-nx.connect(nexus_url=..., robot_token="nxr_...")   # 또는 환경변수 NEXUS_ROBOT_TOKEN
-```
-
-토큰 발급은 관리자가 `POST /api/v1/admin/robots/{user_id}/tokens`로 한다. body는 `{"label": "...", "expires_in_days": 1~365}`이고 **둘 다 필수다** — `label`을 빠뜨리면 `422`이고, 계정 생성은 이미 끝났으므로 **토큰 없는 계정이 남는다**. **평문은 발급 응답에만 한 번 실린다.**
-
-계정 생성(`POST /api/v1/admin/robots`, body `{"name": "...", "role": "editor", "display_name": "..."}`, `display_name`만 선택)의 이름은 소문자·숫자·하이픈 1~48자이고 하이픈으로 시작하거나 끝날 수 없다(`400`). **이름 검사가 `role` 검사보다 먼저 돈다** — 이름이 틀린 동안에는 `role` 오류를 볼 수 없다. 로봇의 `role`은 `editor`·`viewer`뿐이고 `admin`은 `400`이다. 경로의 `user_id`는 정수다(UUID를 넣으면 본문 검사 전에 `400`).
-
-**만료는 앞당길 수만 있다**(서버 0.1.12+). `PATCH /api/v1/admin/robots/{user_id}/tokens/{token_id}` body `{"expires_at": "<RFC 3339>"}` — 현재 만료보다 빠르고 지금보다 뒤여야 하며, 연장·같은 값·과거 시각은 `400`이다.
-
-- **계정 1 : 토큰 N이다.** 새 토큰을 발급하고 `last_used_at`으로 배포를 확인한 뒤 옛 토큰을 폐기하면 중단 없이 회전한다.
-- **로봇은 dataset·version·sample과 CVAT 세션, 저장된 explorer 필터(subset)를 지울 수 없다**(403). CVAT 세션과 subset은 차트 0.3.8에서 더해졌다. 적재·수정·seal·이름 변경·fork와 세션 생성·`close`·`import`는 된다.
-- **`refresh`가 403이다.** 로봇 토큰으로 24시간 JWT를 받아 만료 강제를 우회하는 경로를 막는다.
-- 폐기는 캐시 수명(기본 5초)만큼 늦게 듣고, **만료는 늦지 않는다.**
 
 **조회를 포함한 모든 요청에 토큰이 필요하다.** 쓰기는 역할이 가른다(서버 0.1.7) — 적재(`flush`), annotation 수정, 샘플 추가, seal, 이름 변경은 **`editor` 이상이면 다른 사람이 담당인 dataset에도** 된다. **삭제도 서버 0.1.9부터 같다** — 담당자 조건이 빠졌다. **다만 삭제는 역할 위에 종을 하나 더 본다**: `viewer`가 못 지우는 것에 더해 **로봇 계정도 지울 수 없다**(서버 0.1.10~, 바로 위 로봇 절 참고).
 
@@ -1413,24 +1132,12 @@ nx.connect(nexus_url=..., robot_token="nxr_...")   # 또는 환경변수 NEXUS_R
 
 `flush`는 권한 때문에 거부된 건이 있으면 조용히 넘기지 않고 예외를 던진다. 남의 dataset에 적재를 시도하다 일부만 들어가는 상황을 막기 위해서다.
 
-#### CAS 임시 자격증명 — STS (SDK 0.1.12+)
-
-cas 에 STS(`auth.oidc.issuers`)를 켠 배포는 장수명 CAS 키 대신 OIDC 토큰으로 임시 자격증명을 받는다. SDK 는 **명시 인자로만** 이 모드를 켜고 AWS 환경변수를 읽지 않는다.
-
-```python
-nx.connect(nexus_url="http://nexus-server", robot_token="nxr_...", cas_url="http://cas-server",
-           cas_sts=nx.CasSts(token_file="/var/run/secrets/tokens/cas"))   # 또는 token_provider=함수
-```
-
-토큰의 남은 수명은 **900초 이상**이어야 한다(projected 토큰 `expirationSeconds` 7200 이상 권장, Keycloak 은 realm 토큰 수명을 올린다). 남은 수명 600초 이하에서 스스로 갱신하고, 토큰 파일은 갱신마다 다시 읽는다. SDK 0.1.11 이하는 세션 토큰을 보내지 않아 STS 자격증명을 쓸 수 없다.
-
-
-## 8. 전체 API 레퍼런스
+## 10. 전체 API 레퍼런스
 ### 최상위 함수
 |||
 |---|---|
 |`nx.connect(nexus_url=, email=, password=, robot_token=, cas_url=, cas_key_id=, cas_secret=, save_cas_credentials=False, cas_sts=, oidc=)`|서버 연결. `robot_token=`이면 로그인하지 않는다(SDK 0.1.10+). `save_cas_credentials`는 **SDK 0.1.14부터 아무 일도 하지 않는다**(발급이 없어 저장할 값이 생기지 않는다 — `True`로 주면 경고한다). 시그니처 호환으로 남아 있다. `cas_sts=nx.CasSts(...)`이면 CAS 임시 자격증명(STS) 모드(SDK 0.1.12+). `oidc=nx.OidcAuth(token_file=)`/`(token_provider=)`이면 외부 IdP(OIDC) 토큰으로 nexus에 인증(SDK 0.1.15+) — `email`/`password`·`robot_token`과 함께 못 쓴다|
-|`nx.list_datasets(q=, name=, description=, tags=, sort=, order=, favorite=, mine=, unowned=, limit=, cursor=)`|dataset 목록 검색. `limit`을 주지 않으면 커서를 자동 순회해 전체를 모은다([4.1](#41-데이터셋-목록-조회))|
+|`nx.list_datasets(q=, name=, description=, tags=, sort=, order=, favorite=, mine=, unowned=, limit=, cursor=)`|dataset 목록 검색. `limit`을 주지 않으면 커서를 자동 순회해 전체를 모은다([4.6](#46-데이터셋-목록-조회))|
 |`nx.upload(paths, bucket, prefix="", workers=8, overwrite=False)` → {경로: CasRef}|파일 업로드. `overwrite=True`면 같은 key에 다른 내용이 있어도 에러 대신 덮어씀(SDK 0.1.4+)|
 |`nx.probe(refs, workers=8, strict=False, max_header_bytes=65536)` → [CasRef]|업로드 없이 CAS 객체의 이미지 크기만 채움(앞부분만 읽음, 순서 보존)|
 |`nx.image_info(data)` → ImageInfo(width, height, mime, channels)|로컬 bytes에서 헤더만 읽어 크기 판독|
@@ -1448,12 +1155,12 @@ nx.connect(nexus_url="http://nexus-server", robot_token="nxr_...", cas_url="http
 |`.list_samples()` / `.get_sample(id)`|	조회|
 |`.samples(sample_ids=, group_key=, label=, confidence_min=, confidence_max=, track_id=, split=, tags=, exclude_tags=, meta=, include_annotations=True, limit=, after=)`|	조건 조회(기본 전체, limit=주면 한 페이지). `exclude_tags`는 그 태그를 하나라도 가진 샘플을 뺀다(SDK 0.1.8+ — 0.1.7은 결함으로 `samples()` 자체가 실패한다). `include_annotations=False`면 annotation 없는 경량 코어만|
 |`.patch_annotations(sample_id, data)`|	annotation 수정(그 버전의 인스턴스를 통째로 교체)|
-|`.load_sample(sample_id)` → `.save()`|	annotation을 타입 객체로 받아 바뀐 그룹·`meta` 키만 저장(서버 0.1.18 + SDK 0.1.16, [3.5](#annotation-객체-모델과-부분-저장-서버-0118--sdk-0116))|
+|`.load_sample(sample_id)` → `.save()`|	annotation을 타입 객체로 받아 바뀐 그룹·`meta` 키만 저장(서버 0.1.18 + SDK 0.1.16, [5.2](#52-객체-api-부분-저장))|
 |`.declare_group_kinds({그룹: "group"\|"container"})`|	`load_sample`이 타입 객체로 다룰 그룹 선언(누적, 서버에 저장되지 않는다 — fork·clone·`to_version` 핸들에는 복사되어 이어진다)|
-|`.get_annotation(sample_id)` / `.save_annotation(sample_id, ann)`|	annotation 왕복 — 받은 dict를 고쳐 그대로 저장([3.5](#35-annotation-추가교체))|
-|`.transfer_owner(email)`|	담당자 이전. 현재 담당자만 호출할 수 있다([4.4](#44-dataset-담당자-이전-서버-016))|
+|`.get_annotation(sample_id)` / `.save_annotation(sample_id, ann)`|	annotation 왕복 — 받은 dict를 고쳐 그대로 저장([5.1](#51-dict-api-통째-교체))|
+|`.transfer_owner(email)`|	담당자 이전. 현재 담당자만 호출할 수 있다([8.2](#82-담당자-이전))|
 |`.backfill_dims(workers=8, chunk_size=500, overwrite=False, dry_run=False)` → dict|	`meta.width/height`를 실측값으로 보정. 기본은 **빈칸만** 채우고, `overwrite=True`면 **기록된 값도 교체한다**(적재 당시 선언값 자체가 틀린 경우 — SDK 0.1.10+). 그 모드는 `dry_run=True`가 개수가 아니라 변경 목록(`from` → `to`)을 준다|
-|`.set_keypoint_info(info, filter=None, confirm=None)` → dict|	CVAT skeleton의 관절 이름·연결선을 심는다([3.13](#313-골격-정의-심기--set_keypoint_info-서버-0110)). 인스턴스를 건드리지 않는다|
+|`.set_keypoint_info(info, filter=None, confirm=None)` → dict|	CVAT skeleton의 관절 이름·연결선을 심는다([5.3](#53-골격-정의-심기--set_keypoint_info)). 인스턴스를 건드리지 않는다|
 |`.sample_history(sample_id)` / `.diff(against=)`|	이력 / 비교|
 |`.link_samples(ids)` / `.unlink_samples(ids)` / `.import_samples(src_dataset, src_version, ids)`|	샘플 재사용|
 |`.fork(new_version, sample_ids=, group_key=, label=, tags=, exclude_tags=, ...)`|	필터링된 fork(같은 dataset)|
@@ -1461,8 +1168,8 @@ nx.connect(nexus_url="http://nexus-server", robot_token="nxr_...", cas_url="http
 |`.update(name=, description=)`|	이름/설명 수정|
 |`.seal()`|	버전 확정|
 |`.to_df(groups=, path=, format=, chunksize=)`|	DataFrame 변환|
-|`.delete(confirm=, delete_cas=)`|	버전 삭제. `confirm`은 버전 문자열(또는 `True`). `delete_cas` 미지정 시 대화형으로 한 번 묻고, 비대화형이면 CAS 원본을 유지한다([4.3](#43-데이터셋-삭제-정책))|
-|`.favorite()` / `.unfavorite()`|	즐겨찾기. 그룹·순서는 [4.1.1](#411-즐겨찾기-그룹-서버-0110) 참조|
+|`.delete(confirm=, delete_cas=)`|	버전 삭제. `confirm`은 버전 문자열(또는 `True`). `delete_cas` 미지정 시 대화형으로 한 번 묻고, 비대화형이면 CAS 원본을 유지한다([8.3](#83-삭제-정책))|
+|`.favorite()` / `.unfavorite()`|	즐겨찾기. 그룹·순서는 [4.7](#47-즐겨찾기-그룹) 참조|
 |`.create_subset(name, filter)` / `.list_subsets()`|	저장된 explorer 필터(뷰). `Subset`을 돌려준다|
 |`.create_annotation_session(sample_ids, groups=, extra_labels=, wait=True, timeout=600)`|	CVAT 편집 세션 생성|
 |`.annotation_sessions(status=)`|	이 dataset·version의 세션 목록|
@@ -1494,6 +1201,6 @@ nx.connect(nexus_url="http://nexus-server", robot_token="nxr_...", cas_url="http
 |`client.add_tags_bulk(sample_ids, tags)` / `.remove_tags_bulk(...)`|태그 일괄 처리|
 |`client.count_samples(dataset_id, version, filter=None, exact=False)` → (개수, 정확한가)|필터에 걸리는 샘플 수만 조회(목록을 받지 않는다). 기본은 10,000에서 멈추고 `exact=True`가 전수(SDK 0.1.10+)|
 |`client.change_password(current, new)`|본인 비밀번호 변경(현재 비밀번호 재확인)|
-|`client.delete_account(password)` → dict|본인 계정 **완전 삭제** — 되돌릴 수 없다. 담당하던 dataset은 담당자만 해제되고 남는다([4.4](#44-dataset-담당자-이전-서버-016))|
+|`client.delete_account(password)` → dict|본인 계정 **완전 삭제** — 되돌릴 수 없다. 담당하던 dataset은 담당자만 해제되고 남는다([8.2](#82-담당자-이전))|
 |`NexusError`, `NexusAuthError`, `NexusCasError`, `NexusIngestError`, `NexusBatchError`, `NexusValidationError`|	예외 타입(`.status_code`, `.server_message`). `NexusValidationError`는 객체 모델 `save()` 검증 실패(`status_code` 없음)|
 |`IngestResult(ok, sample, sample_id, error, status_code)`|	배치 처리 건별 결과|
