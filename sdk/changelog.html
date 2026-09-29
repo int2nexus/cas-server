@@ -18,6 +18,22 @@ h2{border-bottom:1px solid #d0d7de;padding-bottom:4px;margin-top:2em}
 </code></pre>
 <p><code>scripts/publish_sdk.py</code> 는 <code>sdk/pyproject.toml</code> 의 버전과 같은 <code>## &lt;버전&gt;</code> 절이 이 파일에 없으면
 빌드하지 않고 멈춥니다. 최신 버전이 위로 오게 적습니다.</p>
+<h2>0.1.17</h2>
+<p><strong>annotation 객체 모델의 instance id — 빈 id 도 채우고, 형식을 UUID v4 로 맞춥니다.</strong></p>
+<ul>
+<li><strong>id 가 없거나 빈 문자열인 행에 UUID v4(하이픈 형식 <code>8-4-4-4-12</code>, GT spec 형식)를 붙입니다.</strong>
+  <code>0.1.16</code> 은 id 키가 없을 때만 하이픈 없는 32 자리 hex 를 붙였습니다. 서버는 id 없이 적재된 행을
+  빈 문자열로 돌려주므로, <code>0.1.16</code> 으로 <code>load_sample()</code> 한 그런 행들은 모두 id 가 <code>""</code> 로 남아 서로
+  구분되지 않았고, id 로 행을 가르는 <code>merge()</code>·<code>add_labels()</code>·CVAT 왕복이 그 행들을 하나로 취급했습니다.
+  채운 id 는 로드 기준에 포함되므로 <strong>그 그룹을 고쳐 저장할 때만</strong> 서버에 기록됩니다 — 손대지 않은
+  그룹은 그대로입니다. 이미 id 가 있는 행은 형식과 무관하게 그대로 보존합니다.</li>
+<li><strong><code>save()</code> 가 보내는 그룹 안에 같은 id 가 두 번 이상 있으면 거부합니다</strong>(<code>NexusValidationError</code>,
+  메시지에 중복 id). GT spec 4 장 「모든 객체의 id 는 그룹 내에서 유일해야 한다」의 구조 규칙이고,
+  중복이면 id 로 행을 가르는 <code>merge()</code>·<code>add_labels()</code>·CVAT 왕복이 그중 한 행만 다룹니다. 로드와
+  손대지 않은 그룹은 검사하지 않으므로 중복이 있는 그룹도 열고 읽을 수 있고, 고쳐 저장할 때만 중복
+  행의 id 를 먼저 정리해야 합니다(그룹이 다르면 같은 id 는 정상입니다 — 같은 대상을 잇는 값입니다).
+  id 형식은 여전히 검사하지 않습니다.</li>
+</ul>
 <h2>0.1.16</h2>
 <p><strong><code>Dataset.clone</code> 을 서버 비동기 job 으로 전환합니다.</strong> 신서버(nexus-server <code>0.1.18</code> 이상)에서는
 복제를 <code>POST /datasets/{id}/versions/{version}/clone-jobs</code> 로 시작하고 <code>GET /clone-jobs/{job_id}</code> 로
