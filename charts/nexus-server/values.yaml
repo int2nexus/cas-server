@@ -6,16 +6,16 @@
 #
 # ── 문서 ─────────────────────────────────────────────────────────────────────
 #   아키텍처 (도메인 모델·버전 관리·스냅샷 구조)
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.13/charts/nexus-server/docs/architecture.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.14/charts/nexus-server/docs/architecture.md
 #   사용법 (설치·SDK 연결·Dataset 워크플로우)
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.13/charts/nexus-server/docs/usage.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.14/charts/nexus-server/docs/usage.md
 #   차트 README
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.13/charts/nexus-server/README.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.14/charts/nexus-server/README.md
 # ─────────────────────────────────────────────────────────────────────────────
 
 image:
   repository: int2jieun/nexus-server
-  tag: "0.1.16"
+  tag: "0.1.18"
   # digest 로 핀하려면 여기에 넣으십시오 (`sha256:...`). 값이 있으면 tag 대신 이것이
   # 쓰이고, 렌더 결과가 `repository@sha256:...` 가 됩니다.
   #
@@ -74,7 +74,8 @@ cas:
   # cas 쪽에서 데이터 평면 키(Secret의 NEXUS__CAS__KEY_ID/SECRET)에 걸어야 할 정책:
   #   CreateBucket/PutObject/DeleteObject/GetObject. CreateBucket은 버킷이 이미 있어도
   #   필요하다 — 없으면 기동 시 기본 버킷 보장이 403으로 실패한다.
-  #   annotations/·manifests/ 앞에 deny를 걸지 말 것 — seal이 이 키로 그 두 접두사에 직접 쓴다.
+  #   annotations/·manifests/ 앞에 deny를 걸지 말 것 — seal이 이 키로 그 두 접두사에 직접 쓰고,
+  #   admin의 sealed 버전 삭제(delete_cas=true)가 그 두 접두사의 버전 manifest를 DeleteObject 한다(appVersion 0.1.18~).
   #   **cas의 root 키를 쓰지 말 것**(root는 정책 평가를 건너뛰어 관리 평면 전권이다).
   #   서버는 이것을 확인하지 않는다.
   #
@@ -135,11 +136,11 @@ auth:
   # 로그인·갱신·기존 계정 동작은 그대로다. NodePort로 직접 노출된 배포에서
   # "망 안 누구나 계정을 만들 수 있는" 표면을 닫는 용도다.
   #
-  # 끄기 전에 **필요한 사람 계정을 먼저 만들어 둘 것** — 끈 뒤에는 superuser도 사람
-  # 계정을 새로 만들 수 없다(사람 계정을 만드는 API가 register 하나뿐이다).
-  # 로봇 계정은 예외다 — `POST /api/v1/admin/robots`(appVersion 0.1.10+)는 이 값을
-  # 보지 않으므로 가입을 닫은 뒤에도 관리자가 만들 수 있다. 적재용 자격증명은 이쪽으로
-  # 낸다.
+  # 끈 뒤에도 관리자가 계정을 만들 수 있다 — 사람 계정은 `POST /api/v1/admin/users`
+  # (appVersion 0.1.16+, 만드는 순간 승인됨), 로봇 계정은 `POST /api/v1/admin/robots`
+  # (appVersion 0.1.10+). 둘 다 이 값을 보지 않는다. 적재용 자격증명은 로봇 쪽으로 낸다.
+  # appVersion 0.1.15 이하에서는 사람 계정을 만드는 API 가 register 하나뿐이라, 끄기 전에
+  # 필요한 사람 계정을 먼저 만들어 두어야 한다.
   registrationEnabled: true
   # 가입 승인 게이트. true로 하면 가입은 열려 있되 승인 전까지 아무것도 할 수 없다.
   #
@@ -220,8 +221,9 @@ auth:
   # users.role = admin 은 마이그레이션이 백필하지 않으므로, 최초 한 명을 이 계정으로
   # 만들어야 한다. 한 명이라도 생긴 뒤에는 이 값을 비워도 그 계정들이 관리 권한을 유지한다.
   #
-  # 관리 권한의 출처는 둘이다 — 이 설정 계정(재배포로 즉시 회수)과 users.role = admin
-  # (운영 중 부여·회수, 캐시 수명만큼 늦게 듣는다).
+  # 관리 권한의 출처는 둘이다 — 이 설정 계정과 users.role = admin(운영 중 부여·회수).
+  # 서버가 기동 시 이 계정에 role = admin 을 부여하므로, 이메일을 바꿔 재배포해도 이전
+  # 계정은 admin 으로 남는다 — 회수하려면 POST /api/v1/admin/users/role 로 강등한다.
   #
   # 켜려면 **두 곳을 함께** 채워야 한다 — 이메일은 여기, 비밀번호는 Secret의
   # NEXUS__AUTH__SUPERUSER_PASSWORD. **한쪽만 있으면 서버가 기동에 실패한다.** 일부러
