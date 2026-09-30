@@ -44,6 +44,22 @@ nexus-server 버전을 함께 씁니다.
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.1.14
+
+image: `jiwonkim97/nexus-client:0.1.16`
+digest: `sha256:7876b561650f9a3f7dd85c8670704b8a00a6e4b78b6e3cbb2a150f2e23a42295`
+
+이번 릴리스: `/cas` 이미지 프록시의 서명 경로 인코딩 수정, 어노테이션 그리기가 선택 필드(`meta.intrinsic`·keypoint `visibility`·cuboid `rotation`)를 필수로 요구하지 않도록 수정. 프록시·라우팅 계약(`/api`·`/cas`, backendUrl·casUrl 해석)은 변경 없음.
+
+**동작 변경** - `/api`·`/cas` 프록시 경로와 backendUrl·casUrl 해석은 변경 없음. 아래는 전부 이미지 동작이다.
+- `/cas` 이미지 프록시의 서명 경로: 경로의 각 세그먼트를 한 번 퍼센트 디코드한 뒤 다시 인코딩해 서명한다. 이전에는 디코드 없이 인코딩해, 경로에 이미 `%XX`가 있으면 한 번 더 인코딩됐다(`%5B` -> `%255B`). 영숫자와 `-_.~`만 쓰는 key는 서명 결과가 이전과 같다.
+- 어노테이션 그리기: keypoint `visibility`와 cuboid `rotation`을 더 이상 필수 값으로 요구하지 않는다. 둘 다 선택 필드로 다뤄, `visibility`가 없으면 전부 보이는 점으로, `rotation`이 없거나 숫자 9개가 아니면 회전 없음으로 그린다. 값이 있으면 이전과 똑같이 그린다.
+- `meta.intrinsic`도 선택 필드로 다룬다. 없거나 쓸 수 없는 값이면 3D 투영(keypoint_3d·cuboid_3d)만 건너뛰고 나머지는 그린다.
+- 그리기 오류가 나면 그 샘플의 카드·상세 보기는 이미지만 보여 주고, 브라우저 콘솔에 `sample_id`·`filename`을 한 번 남긴다(이전에는 화면 전체가 깨졌다).
+
+**마이그레이션** - 없음
+**설정 키** - 없음
+
 ## 0.1.13
 
 image: `jiwonkim97/nexus-client:0.1.15`
