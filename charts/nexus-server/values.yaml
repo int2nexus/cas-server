@@ -6,16 +6,16 @@
 #
 # ── 문서 ─────────────────────────────────────────────────────────────────────
 #   아키텍처 (도메인 모델·버전 관리·스냅샷 구조)
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.14/charts/nexus-server/docs/architecture.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.15/charts/nexus-server/docs/architecture.md
 #   사용법 (설치·SDK 연결·Dataset 워크플로우)
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.14/charts/nexus-server/docs/usage.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.15/charts/nexus-server/docs/usage.md
 #   차트 README
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.14/charts/nexus-server/README.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.15/charts/nexus-server/README.md
 # ─────────────────────────────────────────────────────────────────────────────
 
 image:
   repository: int2jieun/nexus-server
-  tag: "0.1.18"
+  tag: "0.1.19"
   # digest 로 핀하려면 여기에 넣으십시오 (`sha256:...`). 값이 있으면 tag 대신 이것이
   # 쓰이고, 렌더 결과가 `repository@sha256:...` 가 됩니다.
   #
@@ -75,12 +75,9 @@ cas:
   #   CreateBucket/PutObject/DeleteObject/GetObject. CreateBucket은 버킷이 이미 있어도
   #   필요하다 — 없으면 seal 이 manifest 버킷 보장에서 403으로 실패한다(기동은 경고만 남긴다).
   #   annotations/·manifests/ 앞에 deny를 걸지 말 것 — seal이 이 키로 그 두 접두사에 직접 쓰고,
-  #   admin의 sealed 버전 삭제(delete_cas=true)가 그 두 접두사의 버전 manifest를 DeleteObject 한다(appVersion 0.1.18~).
+  #   admin의 sealed 버전 삭제(delete_cas=true)가 그 두 접두사의 버전 manifest를 DeleteObject 한다.
   #   **cas의 root 키를 쓰지 말 것**(root는 정책 평가를 건너뛰어 관리 평면 전권이다).
   #   서버는 이것을 확인하지 않는다.
-  #
-  # CAS 자격증명 자동 발급(cas.adminKeyId · cas.credentialsPerUser)은 차트 0.3.10에서 뺐다 —
-  # 그 값을 적어도 렌더되지 않는다. CHANGELOG 0.3.10 참조.
 
 # ── DB 풀 / ingest 동시성 ────────────────────────────────────────────
 # 불변식: (동시에 적재하는 전원의 flush workers 합) × ingest.batchItemConcurrency
@@ -88,8 +85,7 @@ cas:
 #
 #   **왼쪽 항은 한 사람이 아니라 그 순간 적재 중인 전원의 합이다.** 기본값(16/3)에서
 #   workers 합계 상한은 4다. 5곳이 SDK 기본 workers=4로 동시에 적재하면 64로 상한의 4배.
-#   appVersion 0.1.9부터 서버가 이것을 강제한다(아래 admissionWaitMs) — 넘긴 적재는
-#   무한 대기 대신 429다. 즉 이 식은 처리량 기준이지 안전 기준이 아니다.
+#   서버가 이것을 강제한다(아래 admissionWaitMs) — 넘긴 적재는 무한 대기 대신 429다. 즉 이 식은 처리량 기준이지 안전 기준이 아니다.
 #
 #   처리량을 더 원하면 둘을 함께 올릴 것(예: 40 / 8).
 #   replicaCount>1이면 replicaCount × (maxConnections + 1) 이 Postgres max_connections 이하여야 함(+1 은 readiness 전용 커넥션).
@@ -98,19 +94,17 @@ database:
   # 풀 밖에 하나 더 붙으므로 Postgres 쪽 계산은 replica당 이 값 + 1.
   #
   # **내릴 때는 ingest.batchItemConcurrency와 함께 볼 것** — 자리가 배치 한 건의 비용보다
-  # 작으면 부하 0에서도 /ingest/batch가 항상 429다. appVersion 0.1.9부터 그 조합은
+  # 작으면 부하 0에서도 /ingest/batch가 항상 429이므로, 서버가 그 조합이면
   # **기동을 거부한다**(6 이하에서 걸린다).
   maxConnections: 16          # 항상 주입(어떤 이미지든 안전 — DB url은 secret에서 옴)
 ingest:
-  # 이미지 기본값도 3이다(비우면 env 미주입). override 하려면 이미지가
-  # IngestConfig 전 필드 serde default 이상이어야 한다 — appVersion 0.0.3 이하에 주면
-  # 역직렬화 실패로 기동이 깨진다.
+  # 배치 한 건이 동시에 처리하는 항목 수. 이미지 기본값도 3이다(비우면 env 미주입).
   batchItemConcurrency: "3"
   # /ingest 와 /ingest/batch 가 자리를 기다리는 상한(ms). 그 안에 못 얻으면 대기가 아니라
   # 429 + Retry-After: 1. 비우면 서버 기본 3000. 0이면 기다리지 않는다 — 자리가 비어
   # 있으면 그대로 통과하고, 없으면 그 자리에서 429다.
   # 키우면 큰 배치가 잘릴 확률이 줄지만 상류 프록시 읽기 타임아웃(nexus-client nginx
-  # 기본 60초)까지 붙잡혀 있는 시간도 는다. appVersion 0.1.9+.
+  # 기본 60초)까지 붙잡혀 있는 시간도 는다.
   admissionWaitMs: ""
 
 # ── 인증 ─────────────────────────────────────────────────────────────
@@ -134,10 +128,8 @@ auth:
   # "망 안 누구나 계정을 만들 수 있는" 표면을 닫는 용도다.
   #
   # 끈 뒤에도 관리자가 계정을 만들 수 있다 — 사람 계정은 `POST /api/v1/admin/users`
-  # (appVersion 0.1.16+, 만드는 순간 승인됨), 로봇 계정은 `POST /api/v1/admin/robots`
-  # (appVersion 0.1.10+). 둘 다 이 값을 보지 않는다. 적재용 자격증명은 로봇 쪽으로 낸다.
-  # appVersion 0.1.15 이하에서는 사람 계정을 만드는 API 가 register 하나뿐이라, 끄기 전에
-  # 필요한 사람 계정을 먼저 만들어 두어야 한다.
+  # (만드는 순간 승인됨), 로봇 계정은 `POST /api/v1/admin/robots`. 둘 다 이 값을 보지 않는다.
+  # 적재용 자격증명은 로봇 쪽으로 낸다.
   registrationEnabled: true
   # 가입 승인 게이트. true로 하면 가입은 열려 있되 승인 전까지 아무것도 할 수 없다.
   #
@@ -149,8 +141,6 @@ auth:
   # 켜기 전에 가입한 계정은 영향받지 않는다.
   #
   # 주의: 켜면 가입 화면이 202를 처리해야 한다. nexus-client 쪽 대응이 먼저 필요하다.
-  #
-  # 호환성: appVersion 0.1.7 이상. 그 이전 이미지는 이 env를 무시한다.
   approvalRequired: false
   # 인증이 사용자 행(역할·승인 상태·활성 상태)을 읽고 캐시하는 시간(초). 기본 5.
   #
@@ -159,8 +149,6 @@ auth:
   # 끌 수 없다 — 이 키는 얼마나 자주 다시 읽는지만 조절한다.
   #
   # "설정 안 함"은 빈 문자열(`""`)뿐이다.
-  #
-  # 호환성: appVersion 0.1.7 이상. 그 이전 이미지는 이 env를 무시한다.
   revocationCacheTtlSecs: ""
   # OpenAPI 스펙(/api-docs/openapi.json)과 Swagger UI(/swagger-ui, /swagger-ui/).
   # false로 하면 세 경로가 **404**가 된다(403이 아니다).
@@ -189,9 +177,8 @@ auth:
   #             false에서는 토큰 파일이 없어 조회 요청이 나가지도 못하고, 그 발급자의
   #             토큰을 쓴 요청이 전부 실패한다. 기동은 성공한다(파일이 없어도 서버는
   #             뜬다). 응답은 전부 503("IdP 의 JWKS 를 가져오지 못했습니다")이고 로그에
-  #             auth_error="jwks unavailable" 이 남는다(appVersion 0.1.12+. 0.1.11까지는
-  #             조회를 시도한 요청만 503이고 이어지는 5초는 401이라 "토큰이 틀렸다"와
-  #             구분되지 않았다). 판정은 서버 로그의 "JWKS 조회 실패" 줄에서 한다.
+  #             auth_error="jwks unavailable" 이 남는다. 판정은 서버 로그의 "JWKS 조회
+  #             실패" 줄에서 한다.
   #             같은 디렉터리의 ca.crt를 JWKS 조회의 TLS 신뢰에도 쓰므로, 클러스터
   #             자체 CA로 서명된 API 서버 인증서 뒤의 JWKS가 이 값으로 검증된다.
   #
@@ -239,13 +226,10 @@ auth:
   # 비밀번호를 덮지 않는다** — 운영자가 API로 바꾼 값이 파드 재시작마다 되돌아가면 안 되기
   # 때문이다. 즉 여기 적은 비밀번호는 **최초 생성 때만** 쓰인다. 나중에 이 값을 바꿔도
   # 로그인 비밀번호는 바뀌지 않는다(자주 나오는 오해다).
-  #
-  # 호환성: appVersion 0.1.3 이상이 필요하다. 그 이전 이미지는 이 env를 무시하므로 기동이
-  #   깨지지는 않지만 기능도 켜지지 않는다 — 비워두면 어떤 이미지에서도 안전하다.
   superuserEmail: ""           # 예: "nexus-admin@example.com" — 비우면 기능 꺼짐
                                # 비밀번호는 Secret의 NEXUS__AUTH__SUPERUSER_PASSWORD (8자 이상)
 
-# ── 메트릭 (선택, appVersion 0.1.9+) ─────────────────────────────────
+# ── 메트릭 (선택) ─────────────────────────────────────────────────────
 # `GET /_internal/metrics` 가 Prometheus 텍스트를 낸다. **Secret의
 # NEXUS__METRICS__TOKEN을 채우면 열리고, 비우면(기본) 그 경로는 404다.**
 # values에 스위치가 없는 것은 이 차트가 Secret 전체를 envFrom으로 받기 때문이다 —
@@ -254,8 +238,7 @@ auth:
 # 나머지 엔드포인트와 달리 JWT가 아니라 별도 bearer를 받는다 — 스크레이퍼는 로그인할 수
 # 없고, JWT를 쓰게 하면 모니터링 스택이 카탈로그 전체를 읽는 계정을 들고 있어야 한다.
 #
-# 내는 지표 이름 열넷(appVersion 0.1.10부터 다섯, 0.1.12부터 하나가 늘었고, 차트 0.3.10의 이미지에서
-# 하나가 빠지고 셋이 늘었다):
+# 내는 지표 이름 열넷:
 #   nexus_db_pool_connections            워크로드 풀의 현재 커넥션 수(상한이 아니다)
 #   nexus_db_pool_idle_connections       그중 유휴. 현재 - 유휴 = 사용 중
 #   nexus_db_pool_acquire_timeouts_total 풀 획득 타임아웃 누적 — 이 값이 오르기
@@ -270,15 +253,14 @@ auth:
 #                                        "임박"으로 읽고, 시리즈를 빼면 옛 값이 남는다
 #   nexus_robot_accounts_without_active_token 활성 토큰이 하나도 없는 로봇 계정 수
 #   nexus_metrics_db_stats_ok            DB를 읽는 로봇 넷을 이번 스크레이프에서
-#                                        실제로 읽었으면 1, 못 읽었으면 0 (appVersion 0.1.12+)
+#                                        실제로 읽었으면 1, 못 읽었으면 0
 #   axum_http_requests_total             요청 수. 라벨 method·status·endpoint
 #   axum_http_requests_duration_seconds  요청 지연 히스토그램. 라벨 method·status·endpoint
 #   axum_http_requests_pending           처리 중인 요청 수. 라벨 method·endpoint
-#                                        (HTTP 셋은 차트 0.3.10의 이미지부터. 이름·라벨 키가
+#                                        (HTTP 셋은 이름·라벨 키가
 #                                        cas-server와 같다. endpoint는 라우트 템플릿이고,
 #                                        어느 라우트에도 매칭되지 않은 요청은 unmatched다 —
 #                                        cas-server는 그 자리에 요청 경로를 적는다)
-#   nexus_cas_credential_revocations_pending은 차트 0.3.10의 이미지에서 없어졌다.
 # readiness 전용 커넥션은 세지 않는다(크기 1 고정).
 #
 # **DB를 조회하는 것은 로봇 넷뿐이다**(한 왕복, 250ms 제한). **조회가 실패하거나 250ms를
@@ -287,7 +269,7 @@ auth:
 # nexus_metrics_db_stats_ok == 1 을 함께 건다. 풀·유입 제어 지표는 메모리 상태라 그대로
 # 나온다. readiness 전용
 # 풀(크기 1)은 쓰지 않는다: 스크레이프가 그 하나를 잡으면 readiness가 굶어 파드가
-# 서비스에서 빠지는데, 그것이 0.3.6에서 두 풀을 나눈 이유와 같은 모양의 사고다.
+# 서비스에서 빠진다 — 두 풀을 나눈 이유가 그것이다.
 # 설정 여부는 `GET /api/v1/admin/config-effective` 의 `metrics.token_set` 으로 확인한다.
 
 # ── CVAT 연동 (선택) ─────────────────────────────────────────────────
@@ -297,10 +279,6 @@ auth:
 # 켜려면 baseUrl과 user를 여기에, 비밀번호는 Secret에 NEXUS__CVAT__PASSWORD로 넣는다.
 # 셋 중 하나라도 비면 서버가 미구성으로 판단하고(기동 로그에 무엇이 빠졌는지 남는다)
 # 연동을 켜지 않는다.
-#
-# 호환성: CVAT 연동에는 appVersion 0.1.1 이상이 필요하다(그 이전 이미지는 cvat 설정을
-#   모른다). 구 이미지에 NEXUS__CVAT__* env를 줘도 기동이 깨지지는 않는다 — 모르는 설정
-#   섹션은 무시된다(실측 확인). 차트를 먼저 올리고 이미지를 나중에 올려도 안전하다.
 #
 # CVAT 쪽 준비(운영자 작업): 서비스 계정 생성, CVAT 워커에서 CAS 주소로 도달 가능,
 #   smokescreen 사설대역 허용(SMOKESCREEN_OPTS=--allow-range=...). 자세한 내용은 usage.md.
@@ -391,18 +369,12 @@ resources:
 terminationGracePeriodSeconds: 30
 
 # ── 프로브 ───────────────────────────────────────────────────────────────────
-# 셋으로 갈린다(appVersion 0.1.3 이상):
+# 셋으로 갈린다:
 #
 #   startupProbe   기동이 끝났는가.       GET /_internal/live
 #                  성공할 때까지 liveness/readiness는 평가되지 않는다.
 #   livenessProbe  프로세스가 먹통인가.    GET /_internal/live  (의존성을 조회하지 않음)
 #   readinessProbe 지금 서빙 가능한가.     GET /_internal/health (DB ping)
-#
-# 호환성: /_internal/live 는 appVersion 0.1.3 이상에서만 제공된다. 위 image.tag 가 기본으로
-#    그 이상을 가리키므로 평소에는 신경 쓸 것이 없다. 다만 image.tag 를 0.1.2 이하로 **덮어
-#    쓰는 경우**에는 startupProbe.enabled 를 false 로 하고 livenessProbe.httpGet.path 를
-#    /_internal/health 로 함께 되돌릴 것 — 그러지 않으면 404가 프로브 실패로 계산되어
-#    파드가 Ready 에 이르지 못한 채 재시작을 반복한다.
 #
 # livenessProbe를 /_internal/health로 두면 안 된다. DB failover(보통 30~120초)에 파드가
 # kill되는데, 재시작으로는 외부 의존성이 복구되지 않는다. 오히려 CrashLoopBackOff
@@ -426,10 +398,6 @@ terminationGracePeriodSeconds: 30
 # 걸려 뒤에 도는 파드가 자신은 아무것도 적용하지 않았는데도 0이 아닌 applied를 보고할
 # 수 있다 — 이 경우 그 파드의 elapsed_ms는 다른 파드의 마이그레이션이 끝나길 기다린
 # 시간이지 자신이 스키마를 바꾼 시간이 아니다. 여유가 부족하면 failureThreshold를 올릴 것.
-#
-# 이미지 0.1.5의 마이그레이션에는 기존 samples를 한 번 훑는 백필이 있다(meta 필드 관측).
-# 그 백필은 0.1.5로 처음 올라갈 때 한 번만 돌므로, 이미 0.1.5를 지나온 배포가 0.1.6으로
-# 올라갈 때는 이 비용이 없다.
 #
 # **소요가 행 수에 선형이라는 것은 같은 하드웨어 안에서만 성립한다.** 계수는 환경마다
 # 다르므로 다른 환경의 실측값을 행 수로 환산해 자기 예산으로 쓰면 안 된다. 같은
@@ -463,12 +431,10 @@ livenessProbe:
 # readiness는 의존성을 본다. DB가 죽으면 Service 엔드포인트에서 빠지는 것이 맞는
 # 동작이다 — 파드를 죽이지는 않으므로 DB가 돌아오면 그대로 복귀한다.
 #
-# **appVersion 0.1.9부터 크기 1의 전용 풀로 ping한다.** 적재가 워크로드 풀을 다 써도
-# 200이므로, 이 프로브의 실패는 「DB에 못 닿는다」만 뜻한다(0.1.8 이하는 한 풀을 써서
-# 적재 정체가 전면 중단으로 번졌다). 앱이 커넥션을 못 받고 있는지는 위 metrics 절의
+# **크기 1의 전용 풀로 ping한다.** 적재가 워크로드 풀을 다 써도 200이므로, 이 프로브의
+# 실패는 「DB에 못 닿는다」만 뜻한다(적재 정체가 전면 중단으로 번지지 않는다). 앱이 커넥션을 못 받고 있는지는 위 metrics 절의
 # nexus_db_pool_acquire_timeouts_total 로 본다.
-# 응답 본문은 성공 {"status":"ok","db":true}, 실패 {"status":"error","db":false}(503)이다
-# (이미지 0.1.5부터 — 0.1.3 이하는 성공 {"status":"ok"} / 실패 {"error":"database unavailable"}).
+# 응답 본문은 성공 {"status":"ok","db":true}, 실패 {"status":"error","db":false}(503)이다.
 # 프로브는 상태 코드만 읽으므로 이 본문은 사람이 curl로 확인할 때와, 본문을 직접 파싱하는
 # 스크립트에만 의미가 있다.
 readinessProbe:
@@ -502,9 +468,7 @@ securityContext: {}
 nodeSelector: {}
 tolerations: []
 affinity: {}
-# 파드가 쓸 ServiceAccount. **`serviceAccount.create`/`serviceAccount.name`은 0.3.0부터
-# 실제로 배선된다** — 그 전에는 이 블록이 있어도 템플릿이 참조하지 않아 설정해도 조용히
-# 무시됐다.
+# 파드가 쓸 ServiceAccount.
 #   create: true  → 차트가 만든다(이름은 name 또는 릴리스 fullname)
 #   create: false → 이미 있는 것을 쓴다(name이 비면 "default")
 # PodSecurity/NetworkPolicy를 ServiceAccount 기준으로 거는 배포에서는 이 값이 실제로
@@ -520,14 +484,9 @@ serviceAccount:
   # 파드가 쿠버네티스 API의 JWKS를 부르고, 토큰과 ca.crt를 그 마운트에서 읽는다(조회
   # 때마다 다시 읽는다 — kubelet이 갈아 끼우기 때문이다).
   # false로 둔 채 켜면 기동은 성공하고 그 발급자의 토큰을 쓴 요청만 실패한다. 응답은
-  # 전부 503("IdP 의 JWKS 를 가져오지 못했습니다")이다(appVersion 0.1.12+. 0.1.11까지는
-  # 재조회를 시도한 요청만 503이고 그 뒤 5초 백오프 동안은 401이었다). 파일이 없다는
+  # 전부 503("IdP 의 JWKS 를 가져오지 못했습니다")이다. 파일이 없다는
   # 사실은 응답에 나오지 않는다 — 서버 로그의 "JWKS 조회 실패"와
   # auth_error="jwks unavailable" 줄에서 본다.
   #
-  # **`automountToken`은 0.3.1부터 이 값이 실제로 적용된다.** 그 전에는 templates/serviceaccount.yaml
-  # 하나에만 렌더됐는데 그 파일은 create: true일 때만 만들어져, 기본값(create: false)
-  # 설치에서는 이 키가 아무 효과가 없었다 — 파드는 네임스페이스의 default ServiceAccount를
-  # 쓰고 그 토큰이 그대로 마운트됐다(문서와 반대). 이제 Deployment podSpec에도 직접
-  # 렌더되어 create 여부와 무관하게 적용된다.
+  # 이 값은 Deployment podSpec 에 렌더되어 create 여부와 무관하게 적용된다.
   automountToken: false

@@ -121,6 +121,7 @@ Dataset은 Sample과 Dataset Version을 포함하는 관리 범위이다. 접근
 Dataset Version은 특정 시점의 Dataset 상태를 나타내는 논리적 스냅샷이다.  
 Version에는 여러 Sample이 포함될 수 있으며, 하나의 Sample은 여러 Version에서 재사용될 수 있다.  
 Version은 Draft 상태에서 수정할 수 있으며, Seal되면 불변(Immutable)이 된다.  
+Version 이름은 Seal 스냅샷의 CAS key(`manifests/{dataset}/{version}.json` 등, `/`는 `_`로 바뀐다)와 API 경로에 그대로 쓰인다. 그래서 key가 될 수 없는 이름(`%`·백슬래시·제어문자, 지나치게 긴 이름)과 URL로 가리킬 수 없는 이름(빈 이름·공백뿐인 이름·`.`·`..`)은 만들 때 거부하고, 같은 Dataset 안에서 `/`와 `_`만 다른 두 이름(`a/b`와 `a_b`)은 같은 스냅샷 위치를 쓰게 되므로 공존시키지 않는다. 이미 겹친 쌍이 있으면 한쪽이 Sealed일 때 다른 쪽의 Seal을 거부한다 — 나중 Seal이 먼저 Seal된 스냅샷을 덮어쓰면 Sealed 불변이 깨지기 때문이다.  
 Version의 생성과 상태 변화는 다음 장에서 자세히 설명한다.
 
 ### 3.4 Sample
@@ -267,7 +268,7 @@ Nexus는 Annotation을 직접 편집하는 도구를 제공하지 않고, 편집
 Sealed Version은 편집 대상이 될 수 없으며, 세션 생성 요청은 거부된다.
 
 #### 5.5.1 데이터 흐름
-이미지 파일은 Nexus를 통과하지 않는다. Nexus는 CAS Object의 URL 목록만 CVAT에 전달하고, CVAT이 CAS에서 직접 이미지를 내려받는다.
+이미지 파일은 Nexus를 통과하지 않는다. Nexus는 CAS Object의 URL 목록(key는 퍼센트 인코딩한다 — API 응답의 `image_url`과 같다)만 CVAT에 전달하고, CVAT이 CAS에서 직접 이미지를 내려받는다.
 Nexus가 주고받는 것은 Annotation과 라벨 정의뿐이다.
 
 ```mermaid
