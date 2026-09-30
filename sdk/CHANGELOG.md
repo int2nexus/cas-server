@@ -9,6 +9,74 @@ pip install --extra-index-url https://int2nexus.github.io/cas-server/sdk/simple/
 `scripts/publish_sdk.py` 는 `sdk/pyproject.toml` 의 버전과 같은 `## <버전>` 절이 이 파일에 없으면
 빌드하지 않고 멈춥니다. 최신 버전이 위로 오게 적습니다.
 
+## 0.1.18
+
+**id 로 기존 dataset 버전을 여는 `Dataset.open` 과, 접속된 CAS 클라이언트를 얻는 `nx.cas_client()` 를
+더합니다.** 기존 호출의 동작이 달라지는 것은 아래 쿼리 붙은 URL(「수정 — CAS URL」의 첫 항목)과
+「동작 변경 — `flush`·`patch_annotations`」 둘입니다.
+
+- **`nx.Dataset.open(dataset_id, version, *, client=None, cas=None)`** — 아무것도 만들지 않습니다.
+  dataset 이나 버전이 없으면 `NexusError`(`status_code=404`)입니다. `load_or_create` 는 이름으로 찾고
+  없으면 만들므로, 읽기만 하는 워커(`to_df()` 등)는 이쪽을 쓰십시오. 핸들에 읽기 전용 제한은 없고,
+  쓰기 권한은 서버의 역할 판정이 정합니다. `client`/`cas` 를 둘 다 주지 않으면 `nx.connect()` 의
+  접속을 씁니다(접속 전이면 자동 접속). 한쪽만 주면 나머지는 이미 `connect()` 된 것에서만 채우고,
+  없으면 `ValueError` 입니다(자동 접속으로 다른 서버의 것과 짝지어지지 않게).
+- **`nx.cas_client()`** — 현재 접속의 `CasClient` 를 돌려줍니다(접속 전이면 자동 접속). 비공개 전역
+  `nexus._cas` 를 읽던 코드는 이것으로 옮기십시오.
+- **`nx.CasClient` · `nx.NexusClient` 를 공개 목록(`nexus.__all__`)에 올립니다.** 두 클래스는 전부터
+  최상위에서 import 됐고, 이번 판부터 공개 API 로 약속합니다.
+
+**수정 — CAS URL 의 key 에 `#` · `?` 가 있으면 그 앞에서 key 가 잘리던 문제.** `Sample(image=<URL>)`
+처럼 `http(s)://` URL 을 참조로 넘기면 `#` 뒤를 fragment, `?` 뒤를 query 로 떼어내, 없는 객체를
+`HEAD` 해 `flush()` 가 실패했습니다(`0.1.16` 의 특수문자 수정 범위 밖이었습니다). 이제 호스트 뒤의
+경로 전체를 bucket/key 로 씁니다 — `s3://` 와 같은 방식입니다. `#` `?` `;` 는 key 에 남고 요청
+경로에서 `%23` `%3F` `%3B` 로 인코딩됩니다. `%XX` 는 전과 같이 풀어서 원래 key 로 씁니다.
+같은 파싱을 쓰는 `backfill_dims()`(서버가 준 `image_url`)와 annotation `meta.filename` 참조도 함께
+고쳐집니다.
+
+- **쿼리가 붙은 URL 은 이제 참조로 쓸 수 없습니다.** presigned URL 이나 브라우저에서 복사한
+  `https://cas/b/k.png?X-Amz-Signature=...` 처럼 쿼리가 붙은 URL 은 `0.1.17` 까지 쿼리를 버리고
+  읽었지만, 이제 쿼리까지 key 로 보아 없는 객체를 가리킵니다. 쿼리를 떼고 넘기거나 `CasRef`·`s3://`
+  를 쓰십시오.
+
+**서버 `0.1.19` 의 인코딩된 객체 URL 을 읽습니다.** 서버 `0.1.19` 부터 `image_url`·`thumbnail_url`·
+manifest 의 `cas_url` 이 key 를 인코딩해 줍니다. `to_df()` 가 스냅샷 URL 에서 key 를 되읽을 때 이제
+한 번 풀어 씁니다. 옛 서버가 준 인코딩되지 않은 URL 도 그대로 읽습니다.
+
+- **호환성(중요): 서버를 `0.1.19` 로 올리면 SDK 도 `0.1.18` 로 올리십시오.** 버전 이름에 영숫자와
+  `-_.~` `/` 밖의 문자(한글·공백·괄호·`+` 등)가 있는 sealed 버전은 서버 `0.1.19` 와 SDK
+  `0.1.16`·`0.1.17` 조합에서 `to_df()` 가 실패합니다("annotation 스냅샷 manifest을(를) CAS에서 받지
+  못했습니다(404)"). 버전 이름이 스냅샷 key 에 들어가는데, 옛 SDK 가 서버가 인코딩한 URL 을 한 번
+  더 인코딩하기 때문입니다. 버전 이름이 영숫자와 `-_.~` 만이면(`v1`, `v1.0` 등) 영향이 없습니다.
+  (`/` 는 스냅샷 key 에서 `_` 로 바뀌어 이 문제와는 무관하지만, `/` 가 든 버전은 옛 SDK 에서 원래
+  조회·seal 이 되지 않습니다 — 아래 버전 경로 수정.)
+
+**수정 — 버전 이름에 `#` · `?` · `/` 가 있으면 다른 버전으로 요청이 가던 문제.** SDK 가 버전 이름을
+요청 경로에 인코딩 없이 넣어, `v1#x` 는 `#` 뒤가 떨어져 `v1` 로 요청했고(`v1` 이 있으면 그 버전의
+응답을 받았습니다) `release/2026` 은 없는 경로로 갔습니다. 이제 버전 이름을 경로 한 조각으로
+인코딩합니다. 영숫자·공백·한글만 쓰는 버전 이름은 전과 같은 요청이 나갑니다.
+
+**동작 변경 — `flush`·`patch_annotations`.**
+
+- **결과가 입력 순서로 옵니다.** `0.1.17` 까지는 병렬 처리가 끝난 순서로 모아, 준비 단계(CAS
+  `HEAD`) 실패가 목록 맨 앞에 왔고 적재 청크도 끝난 순서대로 섞였습니다. 결과를 입력 순서로 맞추던
+  코드는 엉뚱한 샘플과 짝지어졌습니다. 이제 둘 다 입력 순서로 정렬해 돌려주고, `IngestResult` 에
+  입력에서의 위치 `index` 를 더했습니다(`flush` 는 호출 시점 큐, `patch_annotations` 는 넘긴 항목).
+- **`flush` 준비 단계에서 CAS 가 401/403 을 내면 아무것도 적재하지 않고 `NexusCasError` 를
+  올립니다.** 한 건이라도 있으면 배치 전체가 멈춥니다. 예외 문구는 CAS 자격증명·정책 문제라고
+  적고, 큐는 그대로 남으므로 고친 뒤 같은 핸들에서 다시 `flush()` 하면 됩니다. `0.1.17` 까지는
+  CAS `HEAD` 의 403 이 `status_code` 없이 건별 실패로만 남았고, annotation 을 CAS 에서 받다 난 403 은
+  나머지를 적재한 뒤 nexus 역할 문제라는 틀린 문구로 예외가 됐습니다. 나머지를 적재한 뒤 예외를
+  올리지 않는 이유는, 그러면 이미 등록된 건의 `sample_id` 가 예외와 함께 사라져 재시도가 중복
+  적재가 되기 때문입니다.
+
+**`NexusCasError` 가 HTTP 상태코드를 싣습니다.** CAS `HEAD`·범위 `GET`·`PUT` 실패와 STS 발급
+실패, STS 모드의 리다이렉트 거부가 `status_code`(와 `server_message`)를 채웁니다(`GET` 은 전부터
+채웠습니다). `flush` 의 "CAS object 없음"(`HEAD` 404)은 `404` 입니다. 그래서 `IngestResult.status_code` 로
+403(영구)·404(없음)·5xx(일시)를 가를 수 있습니다. HTTP 응답이 없는 실패는 여전히 `None` 입니다 —
+연결 실패는 `NexusCasError` 가 아니라 requests 예외(`ConnectionError` 등) 그대로 올라오고, SDK 가
+스스로 판정한 오류(입력 검증, 업로드 key 충돌)는 `NexusCasError` 이되 `status_code` 가 없습니다.
+
 ## 0.1.17
 
 **annotation 객체 모델의 instance id — 빈 id 도 채우고, 형식을 UUID v4 로 맞춥니다.**
