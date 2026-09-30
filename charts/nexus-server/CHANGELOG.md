@@ -81,6 +81,73 @@ nexus-server 는 마이그레이션이 바이너리에 임베드되어 **기동 
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.3.15
+
+image: `int2jieun/nexus-server:0.1.18` → `0.1.19`
+digest: `sha256:35ea2c75384877f51642d05cfbb45dda22f87006e8aab0e15be48b61c9940aca`
+
+**동작 변경** — 셋입니다.
+
+1. **객체 URL 이 key 를 퍼센트 인코딩합니다.** ASCII 영숫자·`-_.~`·`/` 밖의 문자(공백·한글·`[` `]`·`#`·
+   `?`·`+` 등)가 `%XX` 가 됩니다. 이전에는 key 를 그대로 붙여, key 에 `#`·`?` 가 있으면 브라우저와 HTTP
+   클라이언트가 그 뒤를 fragment·query 로 떼어내 없는 객체를 요청했습니다. key 가 ASCII 영숫자·`-_.~`·`/`
+   로만 되어 있으면 URL 은 이전과 바이트가 같습니다. 대상은 다음과 같습니다.
+   - 샘플 응답(`GET /samples`, `POST .../samples/explorer` 등)의 `image_url`·`thumbnail_url`
+   - `GET .../manifest` 의 `annotation_snapshot.cas_url`, `GET .../manifest/samples` 의 `assets.*.cas_url`
+   - 이 판에서 새로 seal 하는 버전의 Main Manifest(CAS 에 저장되는 JSON) 안의 `cas_url` — 이전에 seal 한
+     버전의 Main Manifest 는 그대로입니다
+   - CVAT 세션을 만들 때 CVAT 에 넘기는 이미지 URL
+
+   URL 에서 bucket·key·파일명을 잘라 쓰는 클라이언트는 잘라낸 조각을 한 번 디코드해야 원래 key 입니다.
+   URL 을 다시 인코딩(`encodeURI` 등)하면 `%23` 이 `%2523` 이 되어 `404` 입니다. `samples.meta.filename` 은
+   바꾸지 않습니다(이름 필드이고, 저장된 값을 그대로 돌려줍니다).
+
+2. **쓸 수 없는 버전 이름을 만들 때 `400` 으로 거부합니다.** 버전을 만드는 입구 넷 —
+   `POST /datasets/{id}/versions`(fork 포함)·`POST /subsets/{id}/version`·clone job 생성(`target_version`)·
+   ingest 의 버전 자동 생성 — 에서 거부하며, 이유는 둘입니다.
+   - **seal key 가 될 수 없는 이름** — `%`·백슬래시·ASCII 제어문자(DEL 포함)가 든 이름, UTF-8 961 바이트를
+     넘는 이름. seal 은 버전 이름으로 CAS key 를 만들기 때문에, 이전에는 생성·적재가 되고 마지막 seal 에서
+     `400` 이었습니다.
+   - **URL 로 조회할 수 없는 이름** — 빈 이름·공백뿐인 이름·`.`·`..`. URL 경로에서 사라지거나 정규화되어
+     그 버전을 가리킬 수 없습니다.
+
+   `/`·`#`·`?`·공백·한글은 그대로 허용합니다. **이미 있는 버전은 영향이 없습니다** — 조회·적재·fork 는
+   종전과 같습니다. 다만 seal key 가 될 수 없는 이름의 draft 는 여전히 seal 할 수 없으므로, 다른 이름으로
+   fork 해 seal 합니다.
+
+3. **같은 dataset 안에서 seal 저장 위치가 겹치는 버전 이름은 `409` 입니다.** seal 은 CAS key 를 만들 때
+   `/` 를 `_` 로 바꾸므로 `a/b` 와 `a_b` 는 같은 key 에 스냅샷을 씁니다. 그래서 나중에 seal 한 쪽이 먼저
+   seal 한 버전의 스냅샷을 덮어써 그 버전의 `to_df()` 가 실패할 수 있었습니다(sealed 불변 위반).
+   - 겹치는 두 번째 이름의 생성(위 2 의 입구 중 clone 을 뺀 셋 — clone 은 새 dataset 이라 겹칠 상대가
+     없습니다)이 `409` 입니다. `/ingest/batch` 에 겹치는 두 이름을 함께 보내도 하나만 만들어지고 나머지
+     항목은 `409` 입니다.
+   - 이미 겹치는 쌍이 있으면, 한쪽이 sealed 일 때 다른 쪽의 seal 이 CAS 에 쓰기 전에 `409` 입니다.
+     두 draft 를 **동시에** seal 하는 경우는 막지 못합니다.
+   - 오류 문구에 겹치는 기존 버전 이름(앞 80자)이 들어 있습니다.
+
+**마이그레이션** — 없음. 롤백 안전(`0.1.18`, 차트 `0.3.14` 로 되돌릴 수 있습니다).
+
+**설정 키** — 없음
+
+**호환성** — SDK 로 `to_df()` 를 쓰면 SDK `0.1.18` 이상이 필요합니다. SDK `0.1.16`·`0.1.17` 을 이 이미지와
+함께 쓰면, 버전 이름에 한글·공백 등(ASCII 영숫자·`-_.~`·`/` 밖의 문자)이 있는 sealed 버전의 `to_df()` 가
+`404`("annotation 스냅샷 manifest을(를) CAS에서 받지 못했습니다(404)")로 실패합니다. **이 이미지 이전에
+seal 한 버전에도 해당합니다.** 이름에 `/`·`#` 가 든 버전은 그 SDK 로는 이 판과 무관하게 원래 다룰 수 없습니다.
+원인과 SDK 쪽 변경은 [SDK 변경 이력](https://int2nexus.github.io/cas-server/sdk/changelog.html).
+
+**운영 조치** — 업그레이드 전에 동작 변경 3 의 겹치는 쌍이 이미 있는지 확인하십시오.
+
+```sql
+SELECT dataset_id, replace(version, '/', '_') AS seal_key,
+       array_agg(version || ' [' || status || ']') AS versions
+FROM dataset_versions GROUP BY 1, 2 HAVING count(*) > 1;
+```
+
+결과가 있으면 그 쌍은 한쪽만 seal 할 수 있습니다. 둘 다 이미 sealed 라면 나중에 seal 된 쪽이 스냅샷을
+덮어쓴 상태이므로, 먼저 seal 된 버전의 `to_df()` 를 확인하십시오. 또 그런 쌍의 한쪽을 `delete_cas=true` 로
+지우면 두 버전이 함께 쓰는 manifest 가 지워져 **다른 쪽도 `to_df()` 가 깨집니다** — 정리할 때는
+`delete_cas` 를 생략(보존)하십시오.
+
 ## 0.3.14
 
 image: `int2jieun/nexus-server:0.1.16` → `0.1.18`

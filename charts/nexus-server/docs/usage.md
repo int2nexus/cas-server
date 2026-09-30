@@ -38,7 +38,7 @@ pip install --upgrade --extra-index-url https://int2nexus.github.io/cas-server/s
 python -c "import importlib.metadata as m; print(m.version('int2nexus-sdk'))" 
 ```
 
-이 문서는 서버 `0.1.18`(차트 `0.3.14`)과 SDK `0.1.17` 기준이다. SDK는 서버와 따로 발행되므로 위 명령으로 최신을 유지한다 — 문서의 기능이 없다는 에러가 나면 대개 SDK가 낮은 것이다. 버전별 변경은 [차트 CHANGELOG](../CHANGELOG.md)와 [SDK 변경 이력](https://int2nexus.github.io/cas-server/sdk/changelog.html)에 있다.
+이 문서는 서버 `0.1.19`(차트 `0.3.15`)와 SDK `0.1.18` 기준이다. SDK는 서버와 따로 발행되므로 위 명령으로 최신을 유지한다 — 문서의 기능이 없다는 에러가 나면 대개 SDK가 낮은 것이다. 버전별 변경은 [차트 CHANGELOG](../CHANGELOG.md)와 [SDK 변경 이력](https://int2nexus.github.io/cas-server/sdk/changelog.html)에 있다.
 
 ### 2.2 연결 설정
 
@@ -349,6 +349,10 @@ for r in (r for r in results if not r.ok):
     print("  FAIL:", r.error)
 ```
 
+결과는 **넣은 순서**이고 `r.index`가 큐에서의 위치다. 준비 단계의
+CAS 조회가 401/403이면 아무것도 적재하지 않고 `NexusCasError`를 올리며, 큐는 남아 있어 고친 뒤 다시
+`flush()`하면 된다.
+
 > **`flush(workers=)`의 상한은 한 사람이 아니라 동시에 적재하는 전원의 합에 걸린다.**
 > 서버 기본값(`database.maxConnections=16`, `ingest.batchItemConcurrency=3`)에서 그 합이
 > **4**다. 넘치면 서버가 `429` + `Retry-After`로 돌려주고 SDK가 물러났다 다시
@@ -356,7 +360,7 @@ for r in (r for r in results if not r.ok):
 > `database.maxConnections`를 함께 올려야 한다. `nx.upload(workers=)`는 CAS로 직접 가므로
 > 이 상한과 무관하다.
 
-- `image` - `nx.upload`가 돌려준 `CasRef`, 또는 그 이미지의 CAS URL을 직접 넣는다(`http://<cas>/<bucket>/<key>`).  
+- `image` - `nx.upload`가 돌려준 `CasRef`, 또는 그 이미지의 CAS URL을 직접 넣는다(`http://<cas>/<bucket>/<key>`). 호스트 뒤 경로 전체가 bucket/key이고 `%XX`는 풀어서 읽는다 — 서버가 돌려준 인코딩된 URL을 그대로 넣어도 된다. `#`·`?`도 key의 일부로 보므로 쿼리가 붙은 URL(presigned 등)은 넣지 않는다.  
 - `annotation`은 Sample 등록 시점에 같이 넣는 게 자연스럽다(나중에 따로 고치는 방법은 §5.1).  
 생략하면 SDK가 최소 `meta`(filename·format_version, ref에 크기가 있으면 width/height)를 만들어 등록한다.
 - `assets`는 image 외 추가 모달리티(depth map 등)를 담는 범용 dict(`{role: ref}`).  
@@ -560,11 +564,13 @@ PUT    /api/v1/datasets/favorites/layout              그룹 순서·소속·그
 이미지 파일명(stem)으로 annotation 파일을 매핑하는 패턴:
 
 ```python
+from urllib.parse import unquote
+
 ann_dir = Path(r"...\annotations")    # 파일명 stem이 이미지와 1:1
 
 patches = {}
 for s in ds.list_samples():
-    stem = Path(s["assets"]["image"]["cas_url"]).stem
+    stem = Path(unquote(s["assets"]["image"]["cas_url"])).stem   # URL은 key를 퍼센트 인코딩한다
     p = ann_dir / f"{stem}.json"
     if p.exists():
         patches[s["sample_id"]] = json.loads(p.read_text(encoding="utf-8"))
@@ -927,6 +933,12 @@ ses.close()
 ## 7. 버전 관리
 ### 7.1 Draft 버전
 처음 버전 생성 시 Draft 상태이며 자유롭게 수정 가능한 작업 중 상태이다. 
+
+**버전 이름 규칙.** 버전을 만드는 모든 경로(`load_or_create`·`fork`·`Subset.to_version`·`clone`·적재 중 자동 생성)가 같은 규칙으로 검사한다.
+- `%`·백슬래시·ASCII 제어문자가 들어 있거나, UTF-8로 961바이트를 넘거나, 비어 있거나 공백뿐이거나, `.`·`..`이면 `400`이다(seal 스냅샷의 CAS key가 될 수 없거나 URL로 가리킬 수 없는 이름).
+- `/`·`#`·`?`·공백·한글은 쓸 수 있다.
+- **같은 dataset 안에서 `/`와 `_`만 다른 두 이름은 공존할 수 없다**(`409`) — seal 스냅샷의 CAS key가 `/`를 `_`로 바꿔 만들어지므로 `a/b`와 `a_b`는 같은 위치에 저장되기 때문이다. 오류 문구에 겹치는 기존 버전 이름이 들어 있다.
+
 이 상태에서 할 수 있는 일:
 - 샘플 추가/등록, Annotation 추가, 버전 삭제
 - 같은 Dataset의 다른 버전에서 샘플 재사용(재적재 없이 참조만 연결)
@@ -954,7 +966,7 @@ target.import_samples(
 검수가 끝난 draft 버전을 봉인해 불변 상태로 전환한다(draft → sealed, 단방향 - 되돌릴 수 없음). seal 시 annotation을 NDJSON 스냅샷으로 CAS에 박제하고 manifest hash를 기록한다.
 
 ```python
-ds.seal()                       # 이미 sealed면 서버 409(NexusError) 전파
+ds.seal()                       # 이미 sealed면 서버 409(NexusError) 전파 — 저장 위치가 겹치는 sealed 버전(§7.1)이 있어도 409
 ds.seal(if_sealed="ignore")     # 이미 sealed면 현재 상태 그대로 반환(멱등 — 재실행 편의)
 ```
 - seal 이후로는 해당 버전에서 샘플 추가/삭제/annotation 추가 및 버전 삭제 동작이 전부 막히고(409 — 버전 삭제의 응답 코드와 관리자 HTTP 예외는 §8.3), to_df()로 학습 소비가 가능해진다.
@@ -971,7 +983,8 @@ Seal 하면 그 시점 상태로 불변 스냅샷이 된다. 이후:
 `ds.to_df()`는 sealed 버전의 GT annotation 스냅샷(NDJSON)을 pandas DataFrame으로 로드한다.  
 각 행 = 한 샘플 = `{sample_id, meta, <group_key>:[instances...]}`.  
 seal 시 이 스냅샷은 여러 NDJSON 샤드로 나뉘어 CAS에 저장되고, nexus는 그 샤드들의 위치를 가리키는 manifest만 갖고 있다.  
-`to_df()`는 nexus 서버에 manifest만 한 번 조회한 뒤, 실제 annotation 데이터(샤드 NDJSON)는 CAS에서 직접 다운로드해 DataFrame으로 조립한다 - 대량의 annotation을 읽어도 nexus 서버에 부하가 몰리지 않는다.
+`to_df()`는 nexus 서버에 manifest만 한 번 조회한 뒤, 실제 annotation 데이터(샤드 NDJSON)는 CAS에서 직접 다운로드해 DataFrame으로 조립한다 - 대량의 annotation을 읽어도 nexus 서버에 부하가 몰리지 않는다.  
+읽기만 하는 워커는 dataset id를 알면 `nx.Dataset.open(dataset_id, version)`으로 연다 — `load_or_create`와 달리 아무것도 만들지 않고, 없으면 `NexusError`(`status_code=404`)다. 접속된 CAS 클라이언트가 필요하면 `nx.cas_client()`를 쓴다.
 
 ```python
 df = ds.to_df()                              # 모든 group_key
@@ -1016,6 +1029,7 @@ new_ds = ds.clone("my-dataset-copy", "v0")
 - 원본의 tags/description을 복사해 새 dataset을 만들고, 항상 **Draft**로 시작한다(복제 직후 바로 이어서 patch/추가 작업이 가능하다). Asset은 참조만 재사용해 CAS 재업로드가 없다.
 - 실패하면 서버가 만들던 대상을 롤백한다. 단 복사 중에 누가 대상을 seal했거나 버전을 붙였으면 롤백하지 않고 사유를 job의 `error`에 남긴다.
 - 동시 복제가 전역 상한(3)을 넘으면 서버가 `429`를 주고 SDK가 물러났다 자동으로 재시도한다. 끝내 넘으면 `NexusError(status_code=429)`다.
+- `new_version`에도 §7.1의 버전 이름 규칙이 적용된다(어기면 `400`).
 - **대상 이름의 dataset이 이미 있으면 `409`다.** 기존 dataset에 버전을 더하려면 그 핸들에서 `import_samples`를 쓴다.
 - `clone(..., timeout=초)`를 주면 그 안에 끝나지 않을 때 기다리기를 그만두고 job id를 담은 `NexusError`를 던진다. job은 취소되지 않고 서버에서 계속 돈다.
 
@@ -1100,7 +1114,7 @@ except NexusError as e:
 ```
 
 - `e.status_code`(`int | None`)와 `e.server_message`(`str | None`)로 서버가 보낸 실제 에러 사유를 프로그램적으로 분기할 수 있다. `str(e)`에도 같은 내용이 포함되지만(사람이 읽는 용도), 상태코드로 분기하려면 이 두 속성을 쓴다.
-- `flush`/`patch_annotations`의 배치 호출은 건당 결과를 `IngestResult(ok, sample, sample_id, error, status_code)`로 모아서 반환한다 — `strict=True`면 실패가 하나라도 있을 때 `NexusBatchError(failures=[...])`를 던진다.
+- `flush`/`patch_annotations`의 배치 호출은 건당 결과를 `IngestResult(ok, sample, sample_id, error, status_code, index)`로 모아서 반환한다 — `strict=True`면 실패가 하나라도 있을 때 `NexusBatchError(failures=[...])`를 던진다.
 
 ### 9.1 401과 403을 구분한다
 
@@ -1136,11 +1150,13 @@ except NexusError as e:
 |`nx.CasRef(bucket, key, hash_hex=, size=, content_type=, width=, height=)`|파일 참조|
 |`nx.annotation_sessions(status=, dataset_id=, mine=, limit=)`|CVAT 편집 세션 목록(전역, 기본 진행 중인 것만). 한 번에 최대 50건(`limit=` 최대 200)이고 자동 페이지 순회는 하지 않는다|
 |`nx.annotation_session(session_id)`|세션 id로 다시 잡기|
+|`nx.cas_client()` → CasClient|현재 연결의 CAS 클라이언트(연결마다 하나를 재사용)|
 
 ### Dataset
 |||
 |---|---|
 |`Dataset.load_or_create(name, version, tags=, description=, fork_from=, sample_ids=, group_kinds=)`|dataset/버전 생성 또는 조회. `group_kinds`는 객체 모델의 그룹 종류 선언|
+|`Dataset.open(dataset_id, version)`|이미 있는 dataset의 버전을 id로 연다. 아무것도 만들지 않고, 없으면 `NexusError`(`status_code=404`)([7.4](#74-dataframe-변환))|
 |`.dataset_id` / `.version`|이 핸들이 가리키는 dataset UUID · 버전 문자열(저수준 호출에 그대로 쓴다)|
 |`.add(sample)` / `.flush()`|	샘플 등록|
 |`.list_samples()` / `.get_sample(id)`|	조회|
@@ -1194,4 +1210,4 @@ except NexusError as e:
 |`client.change_password(current, new)`|본인 비밀번호 변경(현재 비밀번호 재확인)|
 |`client.delete_account(password)` → dict|본인 계정 **완전 삭제** — 되돌릴 수 없다. 담당하던 dataset은 담당자만 해제되고 남는다([8.2](#82-담당자-이전))|
 |`NexusError`, `NexusAuthError`, `NexusCasError`, `NexusIngestError`, `NexusBatchError`, `NexusValidationError`|	예외 타입(`.status_code`, `.server_message`). `NexusValidationError`는 객체 모델 `save()` 검증 실패(`status_code` 없음)|
-|`IngestResult(ok, sample, sample_id, error, status_code)`|	배치 처리 건별 결과|
+|`IngestResult(ok, sample, sample_id, error, status_code, index)`|	배치 처리 건별 결과|
