@@ -6,11 +6,11 @@
 #
 # ── 문서 ─────────────────────────────────────────────────────────────────────
 #   아키텍처 (스토리지 모델·백엔드·API 명세)
-#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.39/charts/cas-server/docs/architecture.md
+#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.40/charts/cas-server/docs/architecture.md
 #   사용법 (배포·키 관리·AWS CLI/boto3 예제)
-#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.39/charts/cas-server/docs/usage.md
+#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.40/charts/cas-server/docs/usage.md
 #   차트 README
-#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.39/charts/cas-server/README.md
+#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.40/charts/cas-server/README.md
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── 이미지 ────────────────────────────────────────────────────────────────────
@@ -33,7 +33,7 @@ image:
   #  - 해시별 쓰기 락 테이블의 즉시 회수. GC 실행 시에만 회수되므로,
   #    gc.enabled: false 배포에서는 유휴 바닥값이 상승한다 (gc 섹션 주석 참고)
   #  - auth.metricsToken. 그 토큰으로 스크레이프하면 401 이 된다
-  tag: "0.1.32"
+  tag: "0.1.33"
   # digest 로 핀하려면 여기에 넣으십시오 (`sha256:...`). 값이 있으면 tag 대신 이것이
   # 쓰이고, 렌더 결과가 `repository@sha256:...` 가 됩니다.
   #
@@ -227,6 +227,12 @@ config:
   # 체크섬을 트레일러가 아니라 요청 헤더로 보내면(평문 HTTP·presigned·
   # aws s3api --checksum-*) 대조하지 않고 form="header" 로 세기만 한다.
   integrityCheck: log
+
+  # ── 로그 형식 (cas-server 이미지 0.1.33 이상. 그 이하 이미지는 이 키를 무시하고 text 로 낸다) ──
+  #   text  사람이 읽는 텍스트. ANSI 색은 extraEnv 에 NO_COLOR=1 을 넣어 끈다
+  #   json  한 줄에 JSON 객체 하나. 색 코드가 없고, 요청 span 필드(method·uri·
+  #         request_id·key_id)가 "span" 에 실린다(README 「로그」)
+  logFormat: text
 
   # ── 업로드 상한 (cas-server 이미지 0.1.16 이상 필요. image.tag 확인할 것) ───────────────────────────────────────
   # 운영 OOM 의 마지막 방어선이다. 상한을 넘는 업로드는 503 SlowDown +

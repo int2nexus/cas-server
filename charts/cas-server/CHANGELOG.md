@@ -84,6 +84,36 @@ cas-server 는 기동 시 `sqlx::migrate!` 로 `migrations/` 를 적용합니다
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.1.40
+
+image: `int2jieun/cas-server:0.1.33`
+digest: `sha256:8b521c42a1ec2e3ea8c8e03a0b8b639599037d09523e5c2774a10b3059a1eabf`
+
+**동작 변경** — `CopyObject` 의 `x-amz-copy-source` 해석을 고쳤습니다(아래). 로그는 `config.logFormat` 기본값 `text` 에서 이전과 같습니다
+**마이그레이션** — 없음. **롤백 하한은 `0.1.28` 그대로입니다**
+**설정 키** — `config.logFormat` 추가(`text`·`json`, 기본 `text`)
+
+**`CopyObject` 의 소스를 S3 와 같이 해석합니다.**
+
+- `x-amz-copy-source: /bucket/key?versionId=X` 가 그 버전을 복사합니다. 이전에는
+  `?versionId=X` 까지 key 로 보아 `404` 였습니다.
+- 소스 `GetObject` 인가를 **복사하는 key 전체**로 판정합니다. 이전에는 key 에 `%3F`(`?`)가
+  있으면 그 앞까지만 인가해, prefix 에 `?` 가 든 `deny` 정책을 복사로 우회할 수 있었습니다.
+  prefix 에 `?` 가 없는 정책의 판정은 이전과 같습니다.
+- `?versionId=` 와 `x-amz-copy-source-version-id` 를 함께 주고 값이 다르면 `400` 입니다.
+- `?` 뒤가 `versionId=<값>` 하나가 아니면 `400` 입니다. key 안의 `?` 를 `%3F` 로 인코딩하지 않고
+  보내면 이제 `400` 입니다 — 이전에는 key 로 받았습니다.
+- 디코드 결과가 UTF-8 이 아닌 소스(`%FF` 등)는 `400` 입니다. 그런 key 는 만들어질 수 없습니다.
+
+**로그를 JSON 으로 낼 수 있습니다.**
+
+`config.logFormat: json` 이면 한 줄에 JSON 객체 하나로 냅니다. 색 코드가 없고, 요청 span
+필드(`method`·`uri`·`request_id`·`key_id`)는 `span` 객체에 실립니다. 줄의 모양은 README
+「로그」에 있습니다. 이미지 `0.1.32` 이하는 이 키를 무시하고 `text` 로 냅니다.
+
+`text` 의 색 코드는 이미지 `0.1.32` 이하에서도 `extraEnv` 에 `NO_COLOR=1` 을 넣어 끌 수 있습니다.
+README 「로그」에 함께 적었습니다.
+
 ## 0.1.39
 
 image: `int2jieun/cas-server:0.1.32`
