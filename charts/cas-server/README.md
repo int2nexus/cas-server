@@ -5,9 +5,9 @@ HTTP API를 제공한다.
 
 ## 문서
 
-- [아키텍처](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.39/charts/cas-server/docs/architecture.md)
+- [아키텍처](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.40/charts/cas-server/docs/architecture.md)
   — 스토리지 모델(CAS·dedup·GC), 백엔드 구성, S3 호환 API 명세, 에러 코드
-- [사용법](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.39/charts/cas-server/docs/usage.md)
+- [사용법](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.40/charts/cas-server/docs/usage.md)
   — 배포 절차, 웹 UI 키 관리, AWS CLI/boto3 예제, 내부 API
 - [변경 이력](CHANGELOG.md)
   — 버전별 동작 변경·마이그레이션·설정 키. 각 항목은 해당 GitHub Release 본문과 동일하다
@@ -49,7 +49,7 @@ kubectl apply -f sealed-secret.yaml -n <namespace>
 배포에서 그 값이 없으면 스크레이프가 `401`** 이다. 용도는 [메트릭 스크레이프](#메트릭-스크레이프) 참고.
 
 `secrets.secretMasterKey`를 비우면 NoAuth 모드(인증 없음, 내부망 전용)로 동작한다. 상세 절차와 값 교체
-방법은 [`examples/sealed-secret.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.39/charts/cas-server/examples/sealed-secret.yaml) 참고.
+방법은 [`examples/sealed-secret.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.40/charts/cas-server/examples/sealed-secret.yaml) 참고.
 
 ## 설치
 
@@ -57,7 +57,7 @@ kubectl apply -f sealed-secret.yaml -n <namespace>
 helm install cas-server int2nexus/cas-server -n <namespace> -f values-prod.yaml
 ```
 
-`values-prod.yaml`은 직접 작성하거나 [`examples/values-prod.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.39/charts/cas-server/examples/values-prod.yaml)을
+`values-prod.yaml`은 직접 작성하거나 [`examples/values-prod.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.40/charts/cas-server/examples/values-prod.yaml)을
 내려받아 값을 채운 뒤 사용하세요(이 레포를 clone했다면 `charts/cas-server/examples/values-prod.yaml`).
 
 ### S3 / MinIO 모드 values 예시
@@ -169,6 +169,7 @@ storage:
 | `config.multipartTtlSecs` | `86400` | GC 가 미완료 멀티파트를 만료로 보는 기준(초). **운영에서 줄이지 말 것** — 진행 중인 업로드가 `5xx` 로 실패한다 |
 | `config.consoleEnabled` | `true` | `/_ui` 와 콘솔용 `/_api/*` 마운트 여부. `false` 여도 `/_api/gc/*` 는 남으므로 GC CronJob 은 그대로 동작한다 |
 | `config.integrityCheck` | `log` | 클라이언트가 선언한 체크섬을 받은 바이트와 대조(이미지 `0.1.29` 이상). `off`·`log`·`enforce`. **기본값은 세고 기록만 하고 업로드를 거절하지 않는다.** `enforce` 로 올리기 전에 `cas_integrity_mismatch_total` 이 0 인지 확인할 것 — 오탐이 곧 업로드 실패다. 아래 참고 |
+| `config.logFormat` | `text` | 로그 형식(이미지 `0.1.33` 이상). `text`·`json`. 아래 「로그」 참고 |
 | `replicaCount` | `1` | **1을 유지할 것.** 늘리면 GC와 PUT 사이 durability 보호가 깨진다 (아래 참고) |
 | `updateStrategy.type` | `Recreate` | 롤아웃 중 구·신 파드가 겹치지 않게 한다. 기본값 `RollingUpdate`는 `replicas=1`에서도 `maxSurge=1`이라 겹침 창이 생기고, 그 창에서 위 durability 보호가 깨진다. 대가는 롤아웃 중 짧은 중단 |
 | `startupProbe.failureThreshold` | `60` | 기동 허용 시간 = `periodSeconds`(10초) × 이 값 = 600초 |
@@ -560,7 +561,7 @@ DB 도 타지 않습니다. 그 이전 이미지에서는 `blobs` 전량을 안�
 
 주기는 데이터 크기가 아니라 **회수 대상이 쌓이는 속도**로 정하십시오. 스캔 비용은 회수할
 blob 이 0건이든 수천 건이든 같습니다. 판단 기준과 미루는 비용 계산은
-[docs/usage.md](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.39/charts/cas-server/docs/usage.md) 의 "주기를 정하는 기준" 을 참고하십시오.
+[docs/usage.md](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.40/charts/cas-server/docs/usage.md) 의 "주기를 정하는 기준" 을 참고하십시오.
 
 `gc.phases` 는 이미지 `0.1.20` 이상이 해석합니다. **`sweep` 은 `0.1.25` 이상**이라,
 `0.1.20`~`0.1.24` 에 보내면 서버가 `400` 으로 거절하고 그 Job 이 실패합니다.
@@ -1331,6 +1332,50 @@ per-hash 뮤텍스에 의존합니다. 파드가 둘 이상이면 이 락이 공
 생기는 중단이고, durability를 그 대가로 사는 편이 낫다고 판단했습니다. 무중단이 더
 중요해서 `RollingUpdate`로 되돌린다면 위 겹침 위험을 감수하는 것이므로 그 결정을
 기록으로 남기세요.
+
+## 로그
+
+로그는 표준출력으로 나갑니다. 형식은 `config.logFormat` 으로 정합니다.
+
+```
+text   사람이 읽는 텍스트. ANSI 색 코드가 섞입니다. extraEnv 에 NO_COLOR=1 을 넣으면 빠집니다
+json   한 줄에 JSON 객체 하나(이미지 0.1.33 이상). 색 코드가 없습니다
+```
+
+`extraEnv` 는 기본값에 덧붙지 않고 통째로 교체됩니다. `NO_COLOR` 를 넣을 때 기본값의
+`RUST_LOG` 줄도 함께 적으십시오.
+
+설정을 읽지 못해 기동이 멈추는 오류도 `config.logFormat` 의 형식으로 나갑니다. 그 값 자체가
+틀렸으면(`text`·`json` 밖) `text` 로 나갑니다.
+
+기동 첫 줄 「적용된 설정」의 `config` 는 `text` 에서는 서버 내부 표기이고, `json` 에서는
+`/_api/config-effective` 응답과 같은 JSON 을 **문자열로** 담습니다. 필드 단위로 보려면 그
+문자열을 한 번 더 JSON 으로 파싱하십시오.
+
+### 한 요청의 줄
+
+S3 요청 하나가 `info` 에서 세 줄을 남깁니다. 세 줄 모두 요청 span(`method`·`uri`·
+`request_id`·`key_id`)을 함께 싣습니다 — `text` 에서는 줄 머리의 `request{...}` 이고,
+`json` 에서는 `span` 객체입니다.
+
+```
+authn ok    인증 성공
+authz       key_id · action · result(allow/deny)   CopyObject 는 대상·소스 두 줄
+response    status · latency
+```
+
+인증을 거친 요청은 `response` 줄 하나에 key · 요청 · 상태가 모두 있습니다.
+
+```json
+{"timestamp":"...","level":"INFO","fields":{"message":"response","status":200,"latency":"..."},"target":"cas_server::api::router","span":{"key_id":"CASK...","method":"PUT","request_id":"...","uri":"/bucket/a%25b","name":"request"},"spans":[...]}
+```
+
+- `uri` 는 쿼리까지 싣고, presigned 요청의 `X-Amz-Signature` 값은 가립니다.
+- span 의 `key_id` 는 인증에 성공한 요청에만 실립니다. 인증에 실패한 요청은 `authn fail` 경고
+  줄을 남기며, 그 줄의 `key_id`·`peer`·`ua`·`reason` 이 호출자를 좁히는 필드입니다.
+- `auth.anonymousGet` 이 켜져 있으면(기본값) 객체 GET·HEAD 는 인증을 거치지 않으므로
+  `authn ok` 대신 `anonymous GET` 줄을 남기고, span 에 `key_id` 가 실리지 않습니다. 서명이
+  붙은 요청이면 그 줄의 `key_id` 필드에 키가 있고, 서명이 없으면 `-` 입니다.
 
 ## 헬스체크
 
