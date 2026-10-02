@@ -6,16 +6,16 @@
 #
 # ── 문서 ─────────────────────────────────────────────────────────────────────
 #   아키텍처 (도메인 모델·버전 관리·스냅샷 구조)
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.15/charts/nexus-server/docs/architecture.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.16/charts/nexus-server/docs/architecture.md
 #   사용법 (설치·SDK 연결·Dataset 워크플로우)
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.15/charts/nexus-server/docs/usage.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.16/charts/nexus-server/docs/usage.md
 #   차트 README
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.15/charts/nexus-server/README.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.16/charts/nexus-server/README.md
 # ─────────────────────────────────────────────────────────────────────────────
 
 image:
   repository: int2jieun/nexus-server
-  tag: "0.1.19"
+  tag: "0.1.20"
   # digest 로 핀하려면 여기에 넣으십시오 (`sha256:...`). 값이 있으면 tag 대신 이것이
   # 쓰이고, 렌더 결과가 `repository@sha256:...` 가 됩니다.
   #
@@ -367,6 +367,15 @@ resources:
     memory: "1Gi"
 
 terminationGracePeriodSeconds: 30
+
+# 파드를 종료할 때 SIGTERM 전에 기다리는 초(preStop). 이미지 0.1.20 부터 서버가 SIGTERM 을 받으면 곧바로
+# 새 연결을 받지 않는다(graceful shutdown). 그런데 Service 엔드포인트·ingress upstream 에서 파드가 빠지는 것은
+# 그보다 늦어, 그 사이 들어온 요청이 닫힌 파드로 가 502 가 될 수 있다 — SDK 는 다시 보내지만 웹 UI·스크립트는
+# 아니다. 이 시간 동안 파드는 평소처럼 응답하고, 그 뒤에 SIGTERM 을 받는다. terminationGracePeriodSeconds 에
+# 포함되므로 그보다 충분히 작게 둔다 — 진행 중 요청을 마칠 시간은 terminationGracePeriodSeconds 에서 이 값을
+# 뺀 만큼이다(기본 30 - 5 = 25 초). 큰 버전의 seal 처럼 오래 걸리는 요청을 교체 중에도 돌리면 둘을 함께 올린다.
+# 정수 초만 받는다(2.5 같은 값은 preStop 을 렌더하지 않는다). 0 이면 끈다. values 에 이 키가 없으면 5 로 렌더한다.
+preStopSleepSeconds: 5
 
 # ── 프로브 ───────────────────────────────────────────────────────────────────
 # 셋으로 갈린다:

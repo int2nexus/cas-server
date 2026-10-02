@@ -121,7 +121,7 @@ Dataset은 Sample과 Dataset Version을 포함하는 관리 범위이다. 접근
 Dataset Version은 특정 시점의 Dataset 상태를 나타내는 논리적 스냅샷이다.  
 Version에는 여러 Sample이 포함될 수 있으며, 하나의 Sample은 여러 Version에서 재사용될 수 있다.  
 Version은 Draft 상태에서 수정할 수 있으며, Seal되면 불변(Immutable)이 된다.  
-Version 이름은 Seal 스냅샷의 CAS key(`manifests/{dataset}/{version}.json` 등, `/`는 `_`로 바뀐다)와 API 경로에 그대로 쓰인다. 그래서 key가 될 수 없는 이름(`%`·백슬래시·제어문자, 지나치게 긴 이름)과 URL로 가리킬 수 없는 이름(빈 이름·공백뿐인 이름·`.`·`..`)은 만들 때 거부하고, 같은 Dataset 안에서 `/`와 `_`만 다른 두 이름(`a/b`와 `a_b`)은 같은 스냅샷 위치를 쓰게 되므로 공존시키지 않는다. 이미 겹친 쌍이 있으면 한쪽이 Sealed일 때 다른 쪽의 Seal을 거부한다 — 나중 Seal이 먼저 Seal된 스냅샷을 덮어쓰면 Sealed 불변이 깨지기 때문이다.  
+Version 이름은 Seal 스냅샷의 CAS key(`manifests/{dataset_id}/{version}.json` 등 — Dataset 은 이름이 아니라 바뀌지 않는 id 로 들어가고, Version 이름의 `/`는 `_`로 바뀐다)와 API 경로에 그대로 쓰인다. 그래서 key가 될 수 없는 이름(`%`·백슬래시·제어문자, 지나치게 긴 이름)과 URL로 가리킬 수 없는 이름(빈 이름·공백뿐인 이름·`.`·`..`)은 만들 때 거부하고, 같은 Dataset 안에서 `/`와 `_`만 다른 두 이름(`a/b`와 `a_b`)은 같은 스냅샷 위치를 쓰게 되므로 공존시키지 않는다. 이미 겹친 쌍이 있으면 한쪽이 Sealed일 때 다른 쪽의 Seal을 거부한다 — 나중 Seal이 먼저 Seal된 스냅샷을 덮어쓰면 Sealed 불변이 깨지기 때문이다.  
 Version의 생성과 상태 변화는 다음 장에서 자세히 설명한다.
 
 ### 3.4 Sample
@@ -470,6 +470,14 @@ sequenceDiagram
 원본 Asset은 클라이언트가 CAS에 직접 업로드하며, Nexus에는 Asset 참조 정보와 메타데이터, Annotation만 등록된다.  
 Ingest가 완료되면 Sample은 DatasetVersion에 포함되고 이후 검색과 Version 관리의 대상이 된다.
 
+**재전송과 멱등 키**(서버 `0.1.20`+). 등록 요청은 선택적으로 멱등 키(`idempotency_key`)를 싣는다. 같은 Dataset 에서 같은 키·같은
+내용이 다시 오면 Nexus는 새 Sample 을 만들지 않고 처음 결과를 돌려준다(`replayed`). 응답을 받지 못한 클라이언트(서버·CAS
+교체 중의 SDK)가 중복 걱정 없이 다시 보낼 수 있게 하기 위해서다. 판정은 두 자리다 — 이미 기록된 키는 CAS 조회와 Sealed 검사보다
+먼저 확인해 그대로 돌려주고, 새 키는 Sample 을 만든 뒤 같은 트랜잭션의 커밋 직전에 기록해 같은 키의 동시 요청 중 하나만
+남긴다. 키가 같고 내용이 다르면 거부한다(409). 내용 비교는 받은 JSON 을 기준으로 한다 — 서버가 모르는 필드도
+포함하고, 키 순서와 공백은 무시하며, 멱등 키 자신은 뺀다. 서버가 해석한 값이 아니라 받은 JSON 을 보기 때문에 서버 판이 바뀌어도
+같은 요청은 같게 판정된다. 키가 없는 요청은 이전과 같이 처리한다.
+
 ### 7.2 검색 
 등록된 Sample은 Explorer를 통해 검색하고 조회할 수 있다.  
 조회 결과는 요청한 DatasetVersion을 기준으로 구성되며, Version에 해당하는 Annotation 상태가 함께 제공된다.
@@ -525,6 +533,7 @@ DatasetVersion  Sample
 |dataset_schema_*|Dataset에서 관측된 Annotation Schema|
 |subsets|저장된 검색 조건(View)|
 |dataset_favorites|사용자 즐겨찾기|
+|ingest_idempotency|등록 멱등 키 기록 — Dataset 범위의 키와 처음 만든 Sample(§7.1)|
 |users|사용자 계정|
 
 ### 8.2 Annotation Versioning
@@ -727,6 +736,7 @@ Nexus는 단순한 기능 구현보다 일관된 데이터 모델과 운영 단�
 |CAS Garbage Collection은 트랜잭션 밖에서 병렬 처리	|트랜잭션 내 동기 처리, 또는 별도 큐|	DB 트랜잭션 범위를 최소화하고, 후보를 병렬로 처리해 응답 지연을 줄이기 위해(단, 응답은 GC 완료를 기다림)|
 |CAS 객체 삭제는 생략 시 보존|	생략 시 삭제|	실패 방향이 비대칭이기 때문 — 잘못된 보존은 되돌릴 수 있는 스토리지 비용이지만 잘못된 삭제는 바이트를 되돌릴 수 없이 파괴한다. 지우려면 `delete_cas=true`를 명시한다|
 |Batch 작업은 건별 독립 처리|	전체를 하나의 트랜잭션으로 처리	|일부 실패가 전체 작업에 영향을 주지 않도록 하기 위해|
+|재전송 중복은 클라이언트가 정한 멱등 키로 막음|	서버가 내용(이미지 key 등)으로 중복을 추정|	같은 이미지가 정당하게 여러 Sample 일 수 있어 내용만으로는 「같은 요청」을 가릴 수 없기 때문이다. 키는 Dataset 범위라 다른 Dataset 과 부딪치지 않고, Sample id 는 계속 서버가 만든다|
 
 이러한 결정들은 모두 단순성(Simple), 재현성(Reproducibility), 운영 용이성(Operability) 을 우선한다는 동일한 설계 원칙에 기반한다.
 

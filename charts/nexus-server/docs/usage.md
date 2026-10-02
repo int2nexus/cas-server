@@ -38,7 +38,7 @@ pip install --upgrade --extra-index-url https://int2nexus.github.io/cas-server/s
 python -c "import importlib.metadata as m; print(m.version('int2nexus-sdk'))" 
 ```
 
-이 문서는 서버 `0.1.19`(차트 `0.3.15`)와 SDK `0.1.18` 기준이다. SDK는 서버와 따로 발행되므로 위 명령으로 최신을 유지한다 — 문서의 기능이 없다는 에러가 나면 대개 SDK가 낮은 것이다. 버전별 변경은 [차트 CHANGELOG](../CHANGELOG.md)와 [SDK 변경 이력](https://int2nexus.github.io/cas-server/sdk/changelog.html)에 있다.
+이 문서는 서버 `0.1.20`(차트 `0.3.16`)와 SDK `0.1.19` 기준이다. SDK는 서버와 따로 발행되므로 위 명령으로 최신을 유지한다 — 문서의 기능이 없다는 에러가 나면 대개 SDK가 낮은 것이다. 버전별 변경은 [차트 CHANGELOG](../CHANGELOG.md)와 [SDK 변경 이력](https://int2nexus.github.io/cas-server/sdk/changelog.html)에 있다.
 
 ### 2.2 연결 설정
 
@@ -115,6 +115,8 @@ nx.connect()
 
 - **CAS 임시 자격증명(STS)** — `nx.connect(cas_sts=nx.CasSts(token_file=...))`(cas-server 이미지 `0.1.28`+, [2.4](#24-cas-임시-자격증명-sts)).
 - **운영자가 발급한 키** — `cas_key_id`/`cas_secret` 인자, `CAS_KEY_ID`/`CAS_SECRET` 환경변수, 또는 설정 파일. CAS region 이 기본값(`cas-default`)이 아닌 배포는 `cas_region`(`CAS_REGION`)도 맞춰야 서명이 통과한다.
+
+**서버 교체 중 대기**(SDK `0.1.19`+). nexus-server·cas-server 를 교체하는 동안 SDK 는 **첫 실패부터 120 초**까지 기다렸다가 다시 보낸다. 서버에 닿지 않은 실패(연결 거부·연결 타임아웃·DNS)는 모든 요청을 다시 보내고, `502`·`503`·`504`·응답 도중 끊김처럼 처리됐을지 모르는 실패는 다시 보내도 결과가 같은 요청(조회, 그리고 멱등 키가 붙은 `flush`)만 다시 보낸다. seal·생성·삭제 같은 쓰기는 이때 다시 보내지 않으므로 교체 중에는 실패로 올라온다. nexus 가 스스로 낸 `503`·`504`(CVAT 미구성 등)는 기다리지 않는다. 시간은 `nx.connect(retry_timeout=초)`, 환경변수 `NEXUS_RETRY_TIMEOUT`, 설정 파일 키 `retry_timeout` 으로 바꾸고(우선순위는 인자 > 환경변수 > 파일), `0` 이면 SDK `0.1.18` 의 동작으로 돌아간다(nexus 는 다시 보내지 않고, CAS 는 3 회까지). `CasClient(...)` 를 직접 만들어도 환경변수를 읽는다. 무엇을 다시 보내는지는 [3.4](#34-샘플-생성과-등록)와 [SDK 변경 이력](https://int2nexus.github.io/cas-server/sdk/changelog.html)에 있다. `nx.connect()` 의 첫 로그인은 기다리지 않는다.
 
 
 ### 2.3 로봇 토큰으로 연결
@@ -365,6 +367,22 @@ CAS 조회가 401/403이면 아무것도 적재하지 않고 `NexusCasError`를 
 생략하면 SDK가 최소 `meta`(filename·format_version, ref에 크기가 있으면 width/height)를 만들어 등록한다.
 - `assets`는 image 외 추가 모달리티(depth map 등)를 담는 범용 dict(`{role: ref}`).  
 `image`외 새 모달리티(thermal, lidar 등)가 필요하면 필드 추가 없이 이 dict에 role을 추가한다.
+
+**서버 교체 중의 적재**(SDK `0.1.19`+, 서버 이미지 `0.1.20`+). `flush` 는 샘플마다 멱등 키(`idempotency_key`)를 실어
+보낸다. 응답을 받지 못한 요청은 서버가 멱등 키를 처리한다고 알린 경우(`X-Nexus-Idempotency` 헤더)에만 다시 보내고, 서버는
+이미 들어간 샘플을 새로 만들지 않고 기존 결과를 돌려준다 — 그 결과는 `r.ok` 이고 `r.replayed` 가 `True` 다. 그래서
+cas-server·nexus-server 를 교체하는 동안에도 적재가 실패하지 않고 기다렸다가 이어지며, 샘플이 중복되지 않는다.
+
+- **`flush` 는 실패한 샘플을 큐에 되돌리지 않는다.** 기다리는 시간(`retry_timeout`)을 넘겨 실패로 끝난 샘플을 다시 보내려면
+  **같은 `Sample` 객체**를 다시 넣는다: `ds.add([r.sample for r in results if not r.ok])`. 같은 객체는 키와 처음 보낸 본문을
+  기억하고 있어 중복 없이 이어진다. `Sample` 을 새로 만들면 새 키가 되어 이미 들어간 것이 중복될 수 있다. 이 기억은 프로세스
+  메모리에만 있다.
+- 키는 `(dataset 이름, version)` 마다 따로다. 다시 보내기 전에 `ds.update(name=...)` 로 이름을 바꾸지 않는다.
+- 이미지를 CAS URL 로 넘겨 `flush` 가 CAS 에 `HEAD` 를 보내는 경우도 같은 시간만큼 기다린다.
+- 서버 이미지 `0.1.19` 이하는 멱등 키를 모르므로, 서버에 닿은 뒤 응답을 받지 못한 `/ingest/batch` 는 다시 보내지 않고 실패로
+  돌려준다(연결 자체가 안 된 요청은 다시 보낸다). 그 서버에서 실패한 샘플을 다시 넣으면 이미 들어간 것이 중복될 수 있다.
+  **서버를 `0.1.20` 으로 올리는 교체 한 번은 적재를 멈춘다**(차트 `0.3.16` CHANGELOG 의 호환성·운영 조치).
+- `NexusClient.ingest_batch` 를 직접 부르면 키가 붙지 않는다 — item 마다 `idempotency_key` 를 넣어야 다시 보낸다.
 
 #### GT 파일만 있고 이미지는 이미 CAS에 있을 때
 
@@ -1114,7 +1132,7 @@ except NexusError as e:
 ```
 
 - `e.status_code`(`int | None`)와 `e.server_message`(`str | None`)로 서버가 보낸 실제 에러 사유를 프로그램적으로 분기할 수 있다. `str(e)`에도 같은 내용이 포함되지만(사람이 읽는 용도), 상태코드로 분기하려면 이 두 속성을 쓴다.
-- `flush`/`patch_annotations`의 배치 호출은 건당 결과를 `IngestResult(ok, sample, sample_id, error, status_code, index)`로 모아서 반환한다 — `strict=True`면 실패가 하나라도 있을 때 `NexusBatchError(failures=[...])`를 던진다.
+- `flush`/`patch_annotations`의 배치 호출은 건당 결과를 `IngestResult(ok, sample, sample_id, error, status_code, index, replayed)`로 모아서 반환한다 — `strict=True`면 실패가 하나라도 있을 때 `NexusBatchError(failures=[...])`를 던진다. `replayed`는 멱등 재전송으로 서버가 기존 결과를 돌려준 건이고 성공으로 센다([3.4](#34-샘플-생성과-등록)).
 
 ### 9.1 401과 403을 구분한다
 
@@ -1133,7 +1151,7 @@ except NexusError as e:
 | `forbidden` | 역할이 모자라거나(`viewer`가 쓰기 시도), 계정이 정지됐거나, **로봇 토큰으로 삭제를, 로봇·OIDC 토큰으로 `refresh`를 시도했다** |
 | `pending_approval` | 승인 게이트가 켜진 배포에서 아직 승인되지 않은 계정이다 |
 
-**정상 동작 중에 갑자기 403이 날 수 있다.** 관리자가 역할을 낮추거나 계정을 정지하면 이미 발급된 토큰도 캐시 수명(기본 5초) 안에 막히기 때문이다. 오래 도는 적재 스크립트라면 이 경우를 잡아 중단하는 편이 낫다 — SDK는 401만 재시도하고 403은 그대로 올린다.
+**정상 동작 중에 갑자기 403이 날 수 있다.** 관리자가 역할을 낮추거나 계정을 정지하면 이미 발급된 토큰도 캐시 수명(기본 5초) 안에 막히기 때문이다. 오래 도는 적재 스크립트라면 이 경우를 잡아 중단하는 편이 낫다 — SDK는 403을 재시도하지 않고 그대로 올린다(다시 보내는 것은 401 재로그인, `429`, 서버 부재뿐이다).
 
 `flush`와 `patch_annotations` 배치는 권한 때문에 거부된 건이 있으면 조용히 넘기지 않고 예외를 던진다. 남의 dataset에 적재를 시도하다 일부만 들어가는 상황을 막기 위해서다.
 
@@ -1141,7 +1159,7 @@ except NexusError as e:
 ### 최상위 함수
 |||
 |---|---|
-|`nx.connect(nexus_url=, email=, password=, robot_token=, cas_url=, cas_key_id=, cas_secret=, save_cas_credentials=False, cas_sts=, oidc=)`|서버 연결. `robot_token=`이면 로그인하지 않는다. `save_cas_credentials`는 아무 일도 하지 않는다(시그니처 호환용 — `True`로 주면 경고한다). `cas_sts=nx.CasSts(...)`이면 CAS 임시 자격증명(STS) 모드. `oidc=nx.OidcAuth(token_file=)`/`(token_provider=)`이면 외부 IdP(OIDC) 토큰으로 nexus에 인증 — `email`/`password`·`robot_token`과 함께 못 쓴다|
+|`nx.connect(nexus_url=, email=, password=, robot_token=, cas_url=, cas_key_id=, cas_secret=, save_cas_credentials=False, cas_sts=, oidc=, retry_timeout=)`|서버 연결. `retry_timeout`은 서버 부재를 첫 실패부터 기다리는 초(기본 120, `0`이면 끔, SDK `0.1.19`+, [2.2](#22-연결-설정)). `robot_token=`이면 로그인하지 않는다. `save_cas_credentials`는 아무 일도 하지 않는다(시그니처 호환용 — `True`로 주면 경고한다). `cas_sts=nx.CasSts(...)`이면 CAS 임시 자격증명(STS) 모드. `oidc=nx.OidcAuth(token_file=)`/`(token_provider=)`이면 외부 IdP(OIDC) 토큰으로 nexus에 인증 — `email`/`password`·`robot_token`과 함께 못 쓴다|
 |`nx.list_datasets(q=, name=, description=, tags=, sort=, order=, favorite=, mine=, unowned=, limit=, cursor=)`|dataset 목록 검색. `limit`을 주지 않으면 커서를 자동 순회해 전체를 모은다([4.6](#46-데이터셋-목록-조회))|
 |`nx.upload(paths, bucket, prefix="", workers=8, overwrite=False)` → {경로: CasRef}|파일 업로드. `overwrite=True`면 같은 key에 다른 내용이 있어도 에러 대신 덮어씀|
 |`nx.probe(refs, workers=8, strict=False, max_header_bytes=65536)` → [CasRef]|업로드 없이 CAS 객체의 이미지 크기만 채움(앞부분만 읽음, 순서 보존)|
@@ -1210,4 +1228,4 @@ except NexusError as e:
 |`client.change_password(current, new)`|본인 비밀번호 변경(현재 비밀번호 재확인)|
 |`client.delete_account(password)` → dict|본인 계정 **완전 삭제** — 되돌릴 수 없다. 담당하던 dataset은 담당자만 해제되고 남는다([8.2](#82-담당자-이전))|
 |`NexusError`, `NexusAuthError`, `NexusCasError`, `NexusIngestError`, `NexusBatchError`, `NexusValidationError`|	예외 타입(`.status_code`, `.server_message`). `NexusValidationError`는 객체 모델 `save()` 검증 실패(`status_code` 없음)|
-|`IngestResult(ok, sample, sample_id, error, status_code, index)`|	배치 처리 건별 결과|
+|`IngestResult(ok, sample, sample_id, error, status_code, index, replayed)`|	배치 처리 건별 결과. `replayed`는 멱등 재전송으로 기존 결과를 받은 성공 건|
