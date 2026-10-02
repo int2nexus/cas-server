@@ -9,6 +9,67 @@ pip install --extra-index-url https://int2nexus.github.io/cas-server/sdk/simple/
 `scripts/publish_sdk.py` 는 `sdk/pyproject.toml` 의 버전과 같은 `## <버전>` 절이 이 파일에 없으면
 빌드하지 않고 멈춥니다. 최신 버전이 위로 오게 적습니다.
 
+## 0.1.19
+
+**서버 부재(연결 실패·502·503·504)를 기다렸다 다시 보냅니다.** cas-server·nexus-server 를 교체하는 동안(수십 초~2 분)
+적재가 실패로 끝나지 않고 이어집니다. nexus-server `0.1.20` 과 함께 쓸 때 `/ingest/batch` 재전송도 중복 없이 됩니다.
+
+- **`retry_timeout`** — 한 요청이 **첫 실패부터** 기다리는 초. 기본 120. `nx.connect(retry_timeout=)`, 환경변수
+  `NEXUS_RETRY_TIMEOUT`, 설정 파일 키 `retry_timeout`(우선순위 인자 > 환경변수 > 파일). `0` 이면 끕니다(0.1.18 동작).
+  `CasClient(...)`·`NexusClient(...)` 를 직접 만들어도 환경변수를 읽습니다. 숫자가 아니면 `ValueError`.
+- **다시 보내는 것.** 요청이 서버에 닿지 않은 실패(연결 거부·연결 타임아웃·DNS)는 모든 요청을. 처리됐을지 모르는 실패
+  (응답 도중 끊김·읽기 타임아웃·프록시의 502·503·504, nexus 가 낸 502)는 다시 보내도 결과가 같은 요청만 — `GET`·`HEAD`,
+  annotation·subset·즐겨찾기 `PUT`, `buckets/ensure`, explorer·facet 개수 `POST`, 그리고 `/ingest`·`/ingest/batch`
+  (서버가 `X-Nexus-Idempotency` 를 알렸고 모든 item 에 키가 있을 때만). nexus 가 스스로 낸 503·504(CVAT·OIDC 미구성 등)는
+  다시 보내지 않습니다. 401 재로그인·429 백오프는 그대로이고 nexus 요청의 429 는 부재 시간을 먹지 않습니다(CAS 는 아래). 응답 본문을 읽다 끊긴 경우
+(`ChunkedEncodingError`)도 처리됐을지 모르는 실패라 안전한 요청만 다시 보냅니다. TLS·인증서 오류
+  (`SSLError`)는 서버 부재가 아니라 다시 보내지 않습니다(CAS 는 종전처럼 3 회까지만). `nx.connect()` 의 첫 로그인은
+  기다리지 않습니다 — 적재 도중의 요청만 기다립니다.
+- **CAS.** `CasClient.put`·`nx.upload`·`head`·`get` 이 같은 상한을 씁니다. `flush` 가 CAS 를 부르는 호출도 여기에
+  들어갑니다 — bucket·key·hash·size·content_type 다섯 값이 다 있지 않은 ref(CAS URL, `{bucket, key}` 만 있는 ref,
+  `meta.filename` 으로 가리킨 이미지)에 보내는 `HEAD`, CAS ref 로 넘긴 annotation 의 `GET`, 그리고 `nx.probe` 의 범위
+  `GET` 입니다. 그래서 이미지를 CAS URL 로 넘기는 적재도 cas-server 교체 동안 등록이 멈추지 않고 기다렸다가 이어집니다.
+  `HEAD` 404(객체 없음)는 다시 보내지 않고 곧바로 실패합니다. STS 모드는 쓸 수 있는 임시 자격증명이 없을 때만 STS 를
+  같은 상한까지 기다립니다(남은 수명이 60 초보다 길면 종전처럼 캐시를 씁니다). **CAS(`DeadlineRetry`)의 429·503 대기는
+`retry_timeout` 예산을 먹고**, 서버가 준 `Retry-After` 도 예산에 맞춰 자르지 않습니다. CAS 500 은 예산 전체 동안 다시
+보냅니다(대상은 종전과 같고 이제 시간으로 묶입니다).
+- **멱등 키.** `flush` 가 item 마다 `idempotency_key`(UUID)를 싣습니다. 키는 `Sample` 이 `(dataset, version)` 마다 들고,
+  성공하면 지웁니다 — 성공한 `Sample` 을 **다음 `flush`** 에 다시 넣으면 0.1.18 처럼 새 샘플이 생깁니다. 같은 `flush` 에
+  같은 객체를 두 번 넣으면 같은 키가 두 번 가서 샘플 1 개 + `replayed` 1 건이 됩니다. 응답을 못 받고 끝난 샘플은 처음 보낸
+  본문을 기억해 두었다가 다음 `flush` 에서 **그대로** 다시 보냅니다(그 사이 `Sample` 내용을 바꿔도 기억한 본문이 갑니다 —
+  내용을 바꾸려면 새 `Sample` 을 만드십시오). 서버가 기존 결과를 돌려주면 `IngestResult.replayed` 가 `True` 이고 성공으로
+  셉니다. 요약 줄에 `replayed N` 이 붙습니다.
+- **실패한 샘플을 다시 보내는 법.** `flush` 는 실패한 샘플을 큐에 되돌려 놓지 않습니다. 직접 다시 넣으십시오 —
+  `ds.add([r.sample for r in results if not r.ok])`. 키와 기억한 본문은 **같은 `Sample` 객체**가 들고 있어서, 새
+  `Sample` 을 만들면 새 키가 되어 중복될 수 있습니다. 이 상태는 프로세스 메모리에만 있어 프로세스를 재시작하면
+  사라집니다. `copy.copy`·`copy.deepcopy`·`dataclasses.replace` 로 만든 복제본은 키·본문 없이 새 샘플로 시작합니다.
+- **수정: 생성한 뒤 바꾼 `Sample` 이 반영됩니다.** 생성한 뒤 `Sample` 의 `image`·`assets`·`annotation` 을 바꾸면(다시 대입하거나
+  `s.assets["depth"] = ref` 처럼 그 자리에서 바꾸면) 0.1.18 까지는 `flush` 가 생성 때의 값을 보냈습니다. 이제 `flush` 가 그때의
+  값을 씁니다. 생성 뒤에 로컬 경로를 대입하면 그 샘플은 준비 단계에서 실패로 드러납니다. 위의 기억한 본문은 이 경우에도
+  나중 수정보다 우선합니다.
+- **애매한 실패와 재전송 사이에 `ds.update(name=...)` 로 dataset 이름을 바꾸지 마십시오.** 키는 `(dataset 이름, version)`
+  마다 따로 두므로, 이름을 바꾼 핸들로 다시 넣으면 기억한 본문이 쓰이지 않고 새 키로 나갑니다. 처음 요청이 이미
+  커밋됐다면 그 샘플은 조용히 중복됩니다. 이름을 바꾸기 전에 다시 보내십시오.
+- **서버에 `ingest.verify_assets=true` 이면** cas-server 를 교체하는 동안 새 item 은 여전히 실패합니다(서버 자신의
+  CAS HEAD 에는 재시도가 없어 502 로 item 이 실패하고, SDK 는 이를 확정 item 오류로 봅니다). 이미 기록된 키만 CAS 없이
+  재전송됩니다. 기본값(false)은 영향이 없습니다.
+- **`NexusClient.ingest_batch`·`ingest` 를 직접 부르면 키가 붙지 않습니다.** 재전송을 원하면 item 마다 `idempotency_key` 를
+  넣으십시오.
+
+**호환성.** nexus-server `0.1.19` 이하는 `idempotency_key` 를 무시하고 `X-Nexus-Idempotency` 를 내지 않으므로, 그 서버에서는
+`/ingest/batch` 를 다시 보내지 않습니다(0.1.18 과 같게 실패로 돌려줍니다). 그 서버에서 실패한 샘플을 다시 넣으면 이미
+커밋된 것이 중복될 수 있습니다 — 옛 서버는 키로 가려내지 못합니다. **nexus-server 를 `0.1.20` 으로 올리는 교체 한
+번은 적재를 멈추십시오** — 옛 파드와 새 파드가 섞인 동안 재전송이 옛 파드로 가면 중복됩니다. nexus-server `0.1.19`
+이하는 `X-Request-Id` 도 내지 않아, 그 서버가 스스로 낸 503(예: CVAT 미구성)도 프록시가 낸 것으로 보고 안전한 요청은
+`retry_timeout` 동안 기다린 뒤 실패합니다.
+
+**의존성.** `urllib3>=1.26` 을 명시합니다(CAS 재시도가 1.26 에 들어온 `Retry(other=)` 를 씁니다). `requests>=2.31` 이
+허용하던 1.25 이하가 설치된 환경은 이 판을 설치할 때 urllib3 가 올라갑니다.
+
+```
+pip install --extra-index-url https://int2nexus.github.io/cas-server/sdk/simple/ int2nexus-sdk==0.1.19
+```
+
 ## 0.1.18
 
 **id 로 기존 dataset 버전을 여는 `Dataset.open` 과, 접속된 CAS 클라이언트를 얻는 `nx.cas_client()` 를
