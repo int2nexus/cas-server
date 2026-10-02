@@ -184,6 +184,15 @@ spec:
           # /_internal/health → DB ping
           readinessProbe:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
+          {{- /* 키가 없는 values(통째로 바꿔 쓰는 배포)에서도 기본 5 초가 들어가게 hasKey 로 본다. 0 이면 끈다. */}}
+          {{- $preStop := ternary .Values.preStopSleepSeconds 5 (hasKey .Values "preStopSleepSeconds") }}
+          {{- if gt (int $preStop) 0 }}
+          # SIGTERM 전에 엔드포인트에서 빠질 시간을 준다(values 의 preStopSleepSeconds 주석).
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "{{ int $preStop }}"]
+          {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       {{- with .Values.nodeSelector }}

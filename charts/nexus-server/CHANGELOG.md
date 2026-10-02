@@ -81,6 +81,71 @@ nexus-server 는 마이그레이션이 바이너리에 임베드되어 **기동 
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.3.16
+
+image: `int2jieun/nexus-server:0.1.19` → `0.1.20`
+digest: `sha256:e81b9e0a273da0f582a9c8b8ef4184a6e645e0d475c7f89686f1308ab3bf912b`
+
+**호환성** — **`0.1.19` 이하에서 이 판으로 올리는 교체 한 번은 적재를 멈추십시오.** 롤링 교체 중에는 옛 파드와 새
+파드가 함께 요청을 받습니다. SDK `0.1.19` 가 새 파드에서 멱등 지원을 확인한 뒤 다시 보낸 요청이 옛 파드로 가면, 옛
+파드는 멱등 키를 모르므로 샘플이 중복됩니다. 아래 마이그레이션 026 의 락 창도 같은 시점입니다. 그 뒤의 교체(0.1.20 →
+이후)에는 해당하지 않습니다. 서버가 특정 SDK 버전을 요구하지는 않습니다 — 재전송은 SDK `0.1.19` 이상에서만 동작하고,
+옛 SDK 는 지금처럼 동작합니다.
+
+**동작 변경** — 넷입니다.
+
+1. **`/ingest`·`/ingest/batch` 가 선택 필드 `idempotency_key` 를 받습니다.** 1~128 자의 출력 가능한 ASCII(공백 제외)이고,
+   벗어나면 그 item 만 `400` 입니다. 같은 dataset 에서 같은 키·같은 내용을 다시 보내면 새로 만들지 않고 기존 결과를
+   `replayed: true` 와 함께 돌려줍니다(단건 `/ingest` 는 처음과 같은 `201`). 같은 키에 다른 내용이면 `409`(배치는 item
+   의 `status: 409`)이고, 메시지에 처음 요청이 이미 적재됐을 수 있으니 조회해 확인하라는 안내가 붙습니다. 이미 커밋된
+   키의 재전송은 CAS 조회(`ingest.verify_assets`)와 sealed 검사보다 먼저 끝나므로, CAS 가 없거나 그 사이 버전이 seal 돼도
+   `replayed` 성공입니다. **키가 없는 요청의 성공 응답은 바이트 단위로 이전과 같습니다** — `replayed` 는 `false` 면 싣지
+   않습니다. 형식이 틀린 요청은 이전처럼 `422` 지만 오류 문구의 위치 정보(line·column)가 빠지고, 같은 필드가 두 번 오면
+   마지막 값을 씁니다(받은 JSON 을 해시하려고 한 번 `Value` 로 읽기 때문입니다).
+
+2. **모든 응답에 헤더 둘이 붙습니다.** `X-Request-Id` — 요청이 보낸 값이 1~128 자 출력 가능한 ASCII 면 그대로, 아니면
+   서버가 UUIDv7 을 만듭니다. 요청 로그의 `request_id` 와 같은 값입니다. `X-Nexus-Idempotency: 1` — 멱등 키 지원 표시로,
+   SDK `0.1.19` 가 이 헤더를 본 서버에만 `/ingest/batch` 를 다시 보냅니다. 인증 실패 `401`·매칭되지 않은 `404`·
+   `/_internal/*` 에도 붙습니다. 프록시가 응답에 `X-Request-Id` 를 스스로 붙이는 구성이면, SDK 가 그 프록시의 `503`·`504`
+   를 nexus 가 낸 것으로 보고 기다리지 않습니다(중복은 생기지 않습니다).
+
+3. **SIGTERM·SIGINT 에 graceful shutdown 합니다.** 신호를 받으면 새 연결을 받지 않고, 진행 중인 요청을 끝까지 처리한 뒤
+   종료합니다. 서버 쪽 타임아웃은 없고 상한은 `terminationGracePeriodSeconds`(넘으면 SIGKILL)입니다. 이전 판은 컨테이너
+   PID 1 이 핸들러 없는 SIGTERM 을 받지 않아, 유예 시간이 끝날 때 SIGKILL 로 처리 중이던 요청이 끊겼습니다. 로그 두 줄이
+   남습니다: `종료 신호 수신 — 새 연결을 받지 않는다 signal="SIGTERM"`, `종료 완료 elapsed_ms=<신호부터>`.
+
+4. **백그라운드 작업은 종료를 기다리지 않습니다.** CVAT 세션 생성과 clone job 은 HTTP 연결이 비는 즉시 프로세스와 함께
+   끊깁니다(이전 판은 SIGKILL 까지 약 30 초를 더 벌었습니다). 끊긴 clone job 은 기존 주기 정리가 `failed` 로 걷고 대상을
+   되돌립니다. **CVAT `creating` 세션은 기동 때 한 번, `cvat.stale_creating_secs`(기본 1800 초)를 넘은 것만 정리합니다** —
+   새 파드는 곧바로 뜨므로 끊긴 세션은 다음 재기동까지 `creating` 으로 남습니다. `close`(로봇 토큰 포함)로 잠금을 풀거나
+   `DELETE`(사람 계정 `editor` 이상)로 지우고 다시 만들 수 있습니다.
+
+**마이그레이션** — `026_ingest_idempotency`(새 표 `ingest_idempotency`). 기존 행을 스캔하지 않지만, FK 를 만드는 동안
+`datasets`·`samples` 에 SHARE ROW EXCLUSIVE 락이 잡혀 그동안 적재 쓰기가 막힙니다. `lock_timeout` 3 초로 끊으므로, 큰
+dataset 의 삭제나 clone 롤백이 도는 중이면 기동이 실패하고 그 작업이 끝난 뒤 재기동에서 들어갑니다 — 위 **호환성** 의
+적재 멈춤 창에 함께 올리십시오. **롤백**: 026 이 적용된 DB 에서 `0.1.19` 이하 이미지는 기동을 거부합니다. 되돌리려면
+`DROP TABLE ingest_idempotency;` 와 `DELETE FROM _sqlx_migrations WHERE version = 26;` 을 함께 실행합니다. 샘플은 그대로이고
+멱등 기록만 사라집니다.
+
+**설정 키** — 차트: `preStopSleepSeconds`(기본 `5`). 파드를 종료할 때 SIGTERM 전에 이만큼 기다립니다. 서버가 SIGTERM 에
+곧바로 새 연결을 닫게 되면서, Service 엔드포인트·ingress upstream 에서 파드가 빠지기 전에 들어온 요청이 `502` 가 될 수
+있어서입니다(SDK 는 다시 보내지만 웹 UI·스크립트는 아닙니다). `terminationGracePeriodSeconds` 에 포함됩니다. `0` 이면
+끕니다. **values 에 이 키가 없어도 `5` 로 렌더합니다** — values 를 통째로 바꿔 쓰는 배포에도 들어갑니다. 서버 설정 키
+변경은 없습니다.
+
+**운영 조치** — `0.1.19` 이하에서 이 판으로 올리는 교체 한 번은 적재(SDK `flush`·적재 잡)와 큰 dataset 의 삭제·clone 을
+멈춘 상태에서 진행하십시오(위 **호환성**·**마이그레이션**). 그 뒤의 교체에는 해당하지 않습니다. `preStopSleepSeconds` 만큼
+`terminationGracePeriodSeconds` 안에서 진행 중 요청에 남는 시간이 줄어드므로, 큰 버전의 seal 처럼 오래 걸리는 요청을 교체
+중에도 돌리는 배포는 `terminationGracePeriodSeconds` 를 함께 올리십시오.
+
+**주의**
+- `ingest_idempotency` 는 멱등 키를 실은 적재의 샘플 수와 1:1 로 자랍니다. 보존 기간은 없고 샘플·dataset 삭제에 따라
+  지워집니다(soft delete 는 행을 남기며, 그 샘플의 키가 다시 오면 삭제된 `sample_id` 를 `replayed` 로 돌려줍니다).
+- `/ingest/batch` 처리 동안 item 마다 받은 JSON 과 해석한 값을 함께 들고 있어, 배치 처리 중 메모리가 대략 두 배입니다.
+  큰 배치를 보내는 배포는 `resources.limits.memory` 여유를 확인하십시오.
+- `ingest.verify_assets=true` 인 배포는 cas-server 를 교체하는 동안 새 item 이 `502` 로 실패합니다(서버의 CAS 조회에는
+  재시도가 없습니다). 이미 기록된 키의 재전송만 CAS 없이 끝납니다. 기본값(`false`)은 해당하지 않습니다.
+
 ## 0.3.15
 
 image: `int2jieun/nexus-server:0.1.18` → `0.1.19`
