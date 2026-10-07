@@ -18,6 +18,25 @@ h2{border-bottom:1px solid #d0d7de;padding-bottom:4px;margin-top:2em}
 </code></pre>
 <p><code>scripts/publish_sdk.py</code> 는 <code>sdk/pyproject.toml</code> 의 버전과 같은 <code>## &lt;버전&gt;</code> 절이 이 파일에 없으면
 빌드하지 않고 멈춥니다. 최신 버전이 위로 오게 적습니다.</p>
+<h2>0.1.20</h2>
+<p><strong>seal 이 서버의 동시 seal 상한에 걸리면 기다렸다 다시 보냅니다.</strong> nexus-server <code>0.1.21</code> 부터 파드마다 동시에 도는 seal 의
+수에 상한이 있고(<code>code: seal_busy</code>), 같은 버전의 seal 이 이미 진행 중이면 어느 파드든 거절합니다(<code>code: seal_in_progress</code>).
+두 경우 모두 seal 을 시작하지 않고 <code>429</code> 와 <code>Retry-After: 10</code> 으로 돌아오므로 다시 보내도 중복 seal 이 생기지 않습니다.
+<code>seal_in_progress</code> 를 기다린 끝에는 보통 앞 seal 이 끝나 <code>409 already_sealed</code> 가 옵니다(<code>if_sealed="ignore"</code> 면 그 버전을 돌려줍니다).</p>
+<ul>
+<li><strong><code>ds.seal(wait=)</code>·<code>NexusClient.seal(..., wait=)</code></strong> — 그 <code>429</code> 를 기다리는 최대 초. 기본 600. <code>Retry-After</code> 보다 일찍
+  다시 보내지 않고, <code>Retry-After</code> 가 15 초 이하면 다시 묻는 간격은 최대 15 초(지터 포함 22.5 초)입니다. 넘기면 <code>NexusError(status_code=429)</code>. <code>0</code> 이면
+  기다리지 않고, 0 이상의 유한한 숫자가 아니면(음수·<code>nan</code>·<code>inf</code>·<code>bool</code>·<code>None</code>·문자열) <code>ValueError</code>. 기다린 시간만 세고 seal 자체의 소요는 세지 않습니다(그쪽은 <code>timeout</code> 입니다).
+  기다리는 도중 서버 교체로 연결이 끊겨 다시 보내도(<code>retry_timeout</code>) 기다린 합은 이어서 세므로 <code>wait</code> 를 넘기지 않습니다.</li>
+<li><strong>seal 도중 읽기 타임아웃은 실패가 아닙니다.</strong> 서버 <code>0.1.21</code> 의 seal 은 연결이 끊겨도 끝까지 계속되고 SDK 는 이 타임아웃(기본 120 초)을 다시 보내지 않으므로, <code>if_sealed="ignore"</code> 로 다시 호출하거나 버전 상태를 확인하십시오.</li>
+<li><strong>버전 설명</strong> — <code>ds.seal(description=)</code>(seal 과 함께 기록, <code>None</code> 은 지움)·<code>ds.set_description(text)</code>(sealed 버전도 됨, <code>None</code>·<code>""</code> 은 지움)·<code>ds.description</code>(부를 때마다 서버에서 읽음)·<code>NexusClient.update_version</code>. 서버 <code>0.1.21</code> 이 필요합니다 — <code>0.1.20</code> 이하 서버는 seal 본문을 무시해 설명이 저장되지 않고, <code>set_description</code> 의 PATCH 는 <code>405</code> 입니다. <code>description</code> 을 주지 않으면 seal 은 종전처럼 본문 없이 나갑니다. <code>if_sealed="ignore"</code> 로 불렀는데 이미 sealed 인 버전이면 준 <code>description</code> 은 적용되지 않습니다 — 그때는 <code>ds.set_description()</code> 을 쓰십시오.</li>
+<li><strong><code>seal(wait=)</code> 는 <code>numpy</code> 정수·<code>fractions.Fraction</code> 같은 <code>numbers.Real</code> 도 받습니다.</strong> 유한한 0 이상 값이면 되고 <code>bool</code>·<code>nan</code>·<code>inf</code>·음수·<code>None</code>·문자열은 종전대로 <code>ValueError</code> 입니다.</li>
+<li><strong>seal 밖의 429 는 그대로입니다.</strong> <code>/ingest/batch</code> 등은 종전처럼 8 회까지만 다시 보냅니다(<code>Retry-After: 1</code> 이면 약 90~140 초). <code>0.1.19</code> 이하도
+  seal 의 <code>429</code> 를 이 8 회로 다시 보내므로(seal 의 <code>Retry-After: 10</code> 이면 약 126~189 초), 앞의 seal 이 그보다 길면 <code>429</code> 로 끝납니다.</li>
+<li><strong><code>ds.seal(if_sealed="ignore")</code> 가 sealed 가 아닌 버전을 돌려주지 않습니다.</strong> 종전에는 <code>409</code> 면 무엇이든 「이미 sealed」로
+  보고 버전을 조회해 돌려줬습니다. 서버는 seal 저장 위치가 다른 sealed 버전과 겹칠 때(<code>a/b</code> 와 <code>a_b</code>)도 <code>409</code> 를 내고, 그때
+  버전은 <code>draft</code> 입니다. 이제 조회한 버전이 <code>sealed</code> 일 때만 돌려주고, 아니면(그 사이 버전이 지워진 경우 포함) 원래의 <code>409</code> 를 올립니다.</li>
+</ul>
 <h2>0.1.19</h2>
 <p><strong>서버 부재(연결 실패·502·503·504)를 기다렸다 다시 보냅니다.</strong> cas-server·nexus-server 를 교체하는 동안(수십 초~2 분)
 적재가 실패로 끝나지 않고 이어집니다. nexus-server <code>0.1.20</code> 과 함께 쓸 때 <code>/ingest/batch</code> 재전송도 중복 없이 됩니다.</p>

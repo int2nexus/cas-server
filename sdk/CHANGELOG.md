@@ -9,6 +9,26 @@ pip install --extra-index-url https://int2nexus.github.io/cas-server/sdk/simple/
 `scripts/publish_sdk.py` 는 `sdk/pyproject.toml` 의 버전과 같은 `## <버전>` 절이 이 파일에 없으면
 빌드하지 않고 멈춥니다. 최신 버전이 위로 오게 적습니다.
 
+## 0.1.20
+
+**seal 이 서버의 동시 seal 상한에 걸리면 기다렸다 다시 보냅니다.** nexus-server `0.1.21` 부터 파드마다 동시에 도는 seal 의
+수에 상한이 있고(`code: seal_busy`), 같은 버전의 seal 이 이미 진행 중이면 어느 파드든 거절합니다(`code: seal_in_progress`).
+두 경우 모두 seal 을 시작하지 않고 `429` 와 `Retry-After: 10` 으로 돌아오므로 다시 보내도 중복 seal 이 생기지 않습니다.
+`seal_in_progress` 를 기다린 끝에는 보통 앞 seal 이 끝나 `409 already_sealed` 가 옵니다(`if_sealed="ignore"` 면 그 버전을 돌려줍니다).
+
+- **`ds.seal(wait=)`·`NexusClient.seal(..., wait=)`** — 그 `429` 를 기다리는 최대 초. 기본 600. `Retry-After` 보다 일찍
+  다시 보내지 않고, `Retry-After` 가 15 초 이하면 다시 묻는 간격은 최대 15 초(지터 포함 22.5 초)입니다. 넘기면 `NexusError(status_code=429)`. `0` 이면
+  기다리지 않고, 0 이상의 유한한 숫자가 아니면(음수·`nan`·`inf`·`bool`·`None`·문자열) `ValueError`. 기다린 시간만 세고 seal 자체의 소요는 세지 않습니다(그쪽은 `timeout` 입니다).
+  기다리는 도중 서버 교체로 연결이 끊겨 다시 보내도(`retry_timeout`) 기다린 합은 이어서 세므로 `wait` 를 넘기지 않습니다.
+- **seal 도중 읽기 타임아웃은 실패가 아닙니다.** 서버 `0.1.21` 의 seal 은 연결이 끊겨도 끝까지 계속되고 SDK 는 이 타임아웃(기본 120 초)을 다시 보내지 않으므로, `if_sealed="ignore"` 로 다시 호출하거나 버전 상태를 확인하십시오.
+- **버전 설명** — `ds.seal(description=)`(seal 과 함께 기록, `None` 은 지움)·`ds.set_description(text)`(sealed 버전도 됨, `None`·`""` 은 지움)·`ds.description`(부를 때마다 서버에서 읽음)·`NexusClient.update_version`. 서버 `0.1.21` 이 필요합니다 — `0.1.20` 이하 서버는 seal 본문을 무시해 설명이 저장되지 않고, `set_description` 의 PATCH 는 `405` 입니다. `description` 을 주지 않으면 seal 은 종전처럼 본문 없이 나갑니다. `if_sealed="ignore"` 로 불렀는데 이미 sealed 인 버전이면 준 `description` 은 적용되지 않습니다 — 그때는 `ds.set_description()` 을 쓰십시오.
+- **`seal(wait=)` 는 `numpy` 정수·`fractions.Fraction` 같은 `numbers.Real` 도 받습니다.** 유한한 0 이상 값이면 되고 `bool`·`nan`·`inf`·음수·`None`·문자열은 종전대로 `ValueError` 입니다.
+- **seal 밖의 429 는 그대로입니다.** `/ingest/batch` 등은 종전처럼 8 회까지만 다시 보냅니다(`Retry-After: 1` 이면 약 90~140 초). `0.1.19` 이하도
+  seal 의 `429` 를 이 8 회로 다시 보내므로(seal 의 `Retry-After: 10` 이면 약 126~189 초), 앞의 seal 이 그보다 길면 `429` 로 끝납니다.
+- **`ds.seal(if_sealed="ignore")` 가 sealed 가 아닌 버전을 돌려주지 않습니다.** 종전에는 `409` 면 무엇이든 「이미 sealed」로
+  보고 버전을 조회해 돌려줬습니다. 서버는 seal 저장 위치가 다른 sealed 버전과 겹칠 때(`a/b` 와 `a_b`)도 `409` 를 내고, 그때
+  버전은 `draft` 입니다. 이제 조회한 버전이 `sealed` 일 때만 돌려주고, 아니면(그 사이 버전이 지워진 경우 포함) 원래의 `409` 를 올립니다.
+
 ## 0.1.19
 
 **서버 부재(연결 실패·502·503·504)를 기다렸다 다시 보냅니다.** cas-server·nexus-server 를 교체하는 동안(수십 초~2 분)
