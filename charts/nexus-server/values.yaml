@@ -6,16 +6,16 @@
 #
 # ── 문서 ─────────────────────────────────────────────────────────────────────
 #   아키텍처 (도메인 모델·버전 관리·스냅샷 구조)
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.16/charts/nexus-server/docs/architecture.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.17/charts/nexus-server/docs/architecture.md
 #   사용법 (설치·SDK 연결·Dataset 워크플로우)
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.16/charts/nexus-server/docs/usage.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.17/charts/nexus-server/docs/usage.md
 #   차트 README
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.16/charts/nexus-server/README.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.17/charts/nexus-server/README.md
 # ─────────────────────────────────────────────────────────────────────────────
 
 image:
   repository: int2jieun/nexus-server
-  tag: "0.1.20"
+  tag: "0.1.21"
   # digest 로 핀하려면 여기에 넣으십시오 (`sha256:...`). 값이 있으면 tag 대신 이것이
   # 쓰이고, 렌더 결과가 `repository@sha256:...` 가 됩니다.
   #
@@ -36,25 +36,23 @@ imagePullSecrets: []
 #      요청 처리 중 동기로 커밋되고, 느린 부분(CVAT project 생성·이미지 다운로드)만
 #      background로 넘어간다. HTTP 요청은 정확히 하나의 레플리카로만 라우팅되므로 같은
 #      세션이 두 번 준비되는 일은 일어날 수 없다.
-#   2. 기동 시 각 레플리카가 방치된 creating 세션을 정리하는데(cvat.staleCreatingSecs
-#      초과분), 이 UPDATE는 지금도 creating이고 기준을 넘은 행만 매칭하는 단일 조건문
+#   2. 각 레플리카가 주기적으로 방치된 creating 세션을 정리하는데(진행 기록이
+#      cvat.staleCreatingSecs 초과분), 이 UPDATE는 지금도 creating이고 기준을 넘은 행만 매칭하는 단일 조건문
 #      이다. 먼저 실행한 레플리카의 트랜잭션이 커밋되면 그 행은 더 이상 creating이
 #      아니므로 다음 레플리카가 같은 문장을 돌려도 매칭되는 행이 없다. 부수효과는 행
 #      UPDATE뿐이고 CVAT 호출은 없다.
 #
 # 그래도 실제로 걸리는 조건이 둘 있다.
 #
-#   커넥션 산술: 레플리카마다 자기 풀을 새로 연다. replicaCount × (database.maxConnections + 1)이
-#   Postgres max_connections를 넘지 않아야 한다는 불변식은 이미 아래 database 섹션에
-#   있다 — 여기서 다시 계산하지 말고 그 값을 그대로 따를 것.
+#   커넥션 산술: 레플리카마다 자기 풀을 새로 연다. Postgres max_connections 에 대한 불변식(교체 중
+#   최대 파드 수 기준)은 아래 database 섹션에 있다 — 여기서 다시 계산하지 말고 그 값을 그대로 따를 것.
 #
-#   레플리카 2개 이상에서만 나오는 엣지 케이스: 기동 정리는 staleCreatingSecs를 넘은
-#   creating 세션을 failed로 표시한다. 레플리카 1개면 이게 항상 맞다 — 재시작했다는
-#   건 그 background task가 실제로 사라졌다는 뜻이기 때문이다. 레플리카가 여럿이면,
-#   레플리카 B가 부팅하면서 레플리카 A가 **지금 실제로 준비 중인** 세션을 (그 준비가
-#   staleCreatingSecs를 넘겨 오래 걸리고 있다면) failed로 잘못 표시할 수 있다. 결과는
-#   잘못 failed된 세션과 로그 한 줄이지 데이터 손실이 아니다. 레플리카를 여럿 쓰고 CVAT
-#   세션이 큰 경우 cvat.staleCreatingSecs를 실제 준비 시간보다 넉넉히 올릴 것.
+#   creating 세션 정리(이미지 0.1.21~): 준비 작업이 60 초마다 진행 기록을 남기고, 각 레플리카가 5 분마다
+#   그 기록이 cvat.staleCreatingSecs 넘게 멈춘 세션만 failed 로 바꾼다. 다른 레플리카가 준비 중인 살아 있는
+#   세션은 건드리지 않는다.
+#
+#   seal: 파드마다 seal.maxConcurrent 개까지 돈다(2 대면 전체 2 배). 같은 버전 중복은 DB 잠금으로
+#   파드와 무관하게 막힌다. 메모리 한도는 파드마다 resources 지침대로 잡는다.
 replicaCount: 1
 
 nameOverride: ""
@@ -88,7 +86,10 @@ cas:
 #   서버가 이것을 강제한다(아래 admissionWaitMs) — 넘긴 적재는 무한 대기 대신 429다. 즉 이 식은 처리량 기준이지 안전 기준이 아니다.
 #
 #   처리량을 더 원하면 둘을 함께 올릴 것(예: 40 / 8).
-#   replicaCount>1이면 replicaCount × (maxConnections + 1) 이 Postgres max_connections 이하여야 함(+1 은 readiness 전용 커넥션).
+#   Postgres max_connections 는 (교체 중 최대 파드 수) × (maxConnections + 1) 이상이어야 함(+1 은 readiness
+#   전용 커넥션). 이 차트는 교체 전략을 지정하지 않아 쿠버네티스 기본 maxSurge 25%(올림)를 따르고, 종료 중인
+#   파드는 maxSurge 계산에서 빠지지만 끝날 때까지 커넥션을 쥔다. 그래서 교체 중 최대 파드 수는
+#   replicaCount 1 이면 2, 2 면 4 다(2 × 17 = 34, 4 × 17 = 68).
 database:
   # 적재가 쓸 수 있는 자리 = 이 값 - 4(조회·관리·seal 몫). readiness 전용 커넥션이 이
   # 풀 밖에 하나 더 붙으므로 Postgres 쪽 계산은 replica당 이 값 + 1.
@@ -106,6 +107,21 @@ ingest:
   # 키우면 큰 배치가 잘릴 확률이 줄지만 상류 프록시 읽기 타임아웃(nexus-client nginx
   # 기본 60초)까지 붙잡혀 있는 시간도 는다.
   admissionWaitMs: ""
+
+# ── seal ─────────────────────────────────────────────────────────────
+seal:
+  # 이 파드에서 동시에 도는 seal 의 상한. 비우면 이미지 기본값 1(이미지 0.1.21~).
+  # 넘친 seal 은 시작하지 않고 429(code: seal_busy, Retry-After: 10). 같은 버전의 seal 이 이미 돌고
+  # 있으면 어느 파드든 429(code: seal_in_progress).
+  # 이미 sealed 인 버전은 상한과 무관하게 409(code: already_sealed).
+  # 아래 resources 의 메모리 지침은 seal 하나를 전제로 한다 — 올리면 limits.memory 도 그 배수만큼 올린다.
+  # seal 하나는 풀(database.maxConnections)에서 최대 둘(잠금 1 + 작업 1)을 적재 몫 밖의 예약 4 에서 쓴다.
+  # **예약 4 는 고정이다** — maxConnections 를 올려도 늘어나는 것은 적재 자리뿐이다. 그래서 상한 1 이면
+  # 적재가 포화일 때 조회·관리 몫이 둘 남고, 2 면 0 이 될 수 있다(조회·관리 요청이 풀 대기로 실패).
+  # 상한은 1~2 로 두고, 2 로 올린다면 그 대가를 알고 올린다. 3 이상이면 기동 로그에 경고가 남는다.
+  # seal 하나가 도는 동안 잠금 커넥션 하나가 Postgres 에서 idle in transaction 으로 보인다(정상).
+  # 정수로 적는다(따옴표 없이 적어도 큰 수가 지수 표기로 바뀌지 않는다). 0 이면 기동이 실패한다.
+  maxConcurrent: ""
 
 # ── 인증 ─────────────────────────────────────────────────────────────
 # 아래 jwt·auth 값은 **비우면 이미지 기본값**이다. 아무것도 안 고쳐도 된다.
@@ -238,7 +254,7 @@ auth:
 # 나머지 엔드포인트와 달리 JWT가 아니라 별도 bearer를 받는다 — 스크레이퍼는 로그인할 수
 # 없고, JWT를 쓰게 하면 모니터링 스택이 카탈로그 전체를 읽는 계정을 들고 있어야 한다.
 #
-# 내는 지표 이름 열넷:
+# 내는 지표 이름 열여섯:
 #   nexus_db_pool_connections            워크로드 풀의 현재 커넥션 수(상한이 아니다)
 #   nexus_db_pool_idle_connections       그중 유휴. 현재 - 유휴 = 사용 중
 #   nexus_db_pool_acquire_timeouts_total 풀 획득 타임아웃 누적 — 이 값이 오르기
@@ -246,6 +262,10 @@ auth:
 #   nexus_ingest_permits_total           적재 자리 수(maxConnections - 4)
 #   nexus_ingest_permits_available       그중 비어 있는 자리
 #   nexus_ingest_rejected_total          유입 제어가 429로 돌려보낸 누적 건수
+#   nexus_seal_permits_total             파드당 동시 seal 자리 수(seal.maxConcurrent, 이미지 0.1.21~)
+#   nexus_seal_permits_available         그중 비어 있는 자리. total - available = 지금 도는 seal 수
+#                                        (요청이 끊긴 seal 은 axum_http_requests_pending 에 안 잡힌다 —
+#                                        진행 중인 seal 은 이 둘로만 보인다)
 #   nexus_robot_tokens_active            폐기되지 않았고 만료 전인 로봇 토큰 수
 #   nexus_robot_tokens_expiring_soon     그중 7일 안에 만료되는 것
 #   nexus_robot_token_min_expires_in_seconds  가장 가까운 만료까지 남은 초.
@@ -289,7 +309,7 @@ cvat:
   projectNamePrefix: "nexus"   # CVAT project 이름 접두사 — 다른 프로젝트와 구분용
   segmentSize: ""              # job 분할 크기. 비우면 CVAT 기본 동작
   maxSessionSamples: ""        # 세션당 샘플 상한(서버 기본 2000)
-  staleCreatingSecs: ""        # 준비 중 방치된 세션을 정리하는 기준(초, 서버 기본 1800)
+  staleCreatingSecs: ""        # 준비 작업의 진행 기록이 이 시간 넘게 멈춘 creating 세션을 failed 로(초, 서버 기본 1800, 180 미만은 180)
 
 # ── 비밀 Secret 참조 ─────────────────────────────────────────────────
 # 이 Secret(아래 4키 보유)을 sealed-secret으로 미리 주입해야 한다:
@@ -326,18 +346,17 @@ ingress:
 # 어림 계산. N = seal 할 버전 중 가장 큰 것의 샘플 수, A = 샘플 하나에 붙는 에셋 수(최소 1,
 # 이미지만 올리면 1, depth·thermal 을 따로 등록하면 그만큼):
 #
-#     seal 피크  ≈  N × A × 1 KB
-#     limits.memory  ≥  그 값 × 3
+#     limits.memory  ≥  N × A × 3 KiB  +  512 MiB
 #
-#   N = 10만,  A = 1  →  피크 약 0.1 GB  →  한도 0.5Gi 면 충분(기본 1Gi 안)
-#   N = 50만,  A = 1  →  피크 약 0.5 GB  →  한도 2Gi
-#   N = 100만, A = 1  →  피크 약 1.0 GB  →  한도 3Gi
-#   N = 200만, A = 2  →  피크 약 4.0 GB  →  한도 12Gi
+# 3 KiB 는 같은 크기의 seal 을 거듭했을 때의 샘플당 증가분(실측 약 2.7 KiB)을 올림한 값이고, 512 MiB 는
+# 기동 직후 값과 적재·조회 몫이다. CAS key 가 길면 더 크다(측정 조건은 CHANGELOG 0.3.17 주의).
 #
-# 3 배로 잡는 이유가 셋이다. ⑴ CAS key 가 길면 그 문자열이 manifest 에 두 번(구조체와 JSON)
-# 실려 1 KB 가정이 커진다 — 경로를 그대로 key 로 쓰면 100 자를 넘기 쉽다. ⑵ 피크가 짧게
-# 스치는 값이 아니라 업로드가 끝날 때까지 유지된다. ⑶ 같은 파드가 그 시간에도 적재·조회를
-# 받는다.
+#   N = 10만,  A = 1  →  약 0.8 GiB → 한도 1Gi
+#   N = 50만,  A = 1  →  약 1.9 GiB → 한도 2Gi
+#   N = 130만, A = 1  →  약 4.2 GiB → 한도 5Gi
+#   N = 130만, A = 2  →  약 7.9 GiB → 한도 8Gi
+#
+# 이 식은 seal 하나를 전제로 한다(seal.maxConcurrent 기본 1). 상한을 올리면 N × A × 3 KiB 를 그 수만큼 더한다.
 #
 # **한 번 seal 한 파드의 RSS 는 피크에서 잘 안 내려온다**(할당자가 해제분을 OS 에 바로
 # 돌려주지 않는다). 큰 seal 을 한 번만 돌릴 계획이어도 한도는 상시값으로 잡는 편이 맞다.

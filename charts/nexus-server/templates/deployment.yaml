@@ -131,6 +131,22 @@ spec:
             - name: NEXUS__INGEST__ADMISSION_WAIT_MS
               value: {{ .Values.ingest.admissionWaitMs | quote }}
             {{- end }}
+            {{- /* 빈 문자열("")만 "설정 안 함"이다(0 은 서버가 기동을 거부해야 하므로 그대로 흘려보낸다).
+                   .Values.seal 이 없는 옛 values 로도 렌더되게 seal 이 있을 때만 읽는다(직접 경로로 적어야
+                   scripts/check-unrendered-values.py 가 참조로 센다). */}}
+            {{- $sealMax := "" }}
+            {{- if .Values.seal }}{{- $sealMax = .Values.seal.maxConcurrent }}{{- end }}
+            {{- /* values 파일의 숫자는 float64 로 읽혀 큰 정수가 "1e+06" 으로 렌더되고 서버가 파싱하지 못한다.
+                   정수인 float 만 int64 로 바꾼다(소수·문자열은 그대로 흘려 서버가 거부하게 둔다). */}}
+            {{- if kindIs "float64" $sealMax }}
+            {{- if eq $sealMax (floor $sealMax) }}
+            {{- $sealMax = int64 $sealMax }}
+            {{- end }}
+            {{- end }}
+            {{- if and (not (kindIs "invalid" $sealMax)) (ne ($sealMax | toString) "") }}
+            - name: NEXUS__SEAL__MAX_CONCURRENT
+              value: {{ $sealMax | quote }}
+            {{- end }}
             {{- if .Values.cvat.baseUrl }}
             {{- /* baseUrl이 있을 때만 주입한다. 빈 값이라도 넣으면 cvat 섹션이 생겨,
                    CvatConfig에 serde default가 없는 구 이미지(≤ 0.1.0)가 기동에 실패한다. */}}

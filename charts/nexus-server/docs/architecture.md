@@ -177,16 +177,22 @@ Seal이 완료되면
 - Snapshot(Manifest)이 생성된다.
 - 이후 학습과 평가의 기준이 된다.  
 
+Seal 은 Version 하나를 통째로 읽어 직렬화하므로 메모리를 가장 많이 쓰는 작업이다. 그래서 서버는 파드마다 동시에 도는 Seal 수에 상한(`seal.max_concurrent`, 기본 1)을 두고, 같은 Version 의 Seal 은 DB 잠금으로 파드와 무관하게 하나만 돌린다(서버 `0.1.21`+). 판정 순서는 이미 Sealed 인가(409 `already_sealed`) → 같은 Version 의 Seal 이 도는가(429 `seal_in_progress`) → 파드 상한이 찼는가(429 `seal_busy`)이다. 넘친 요청은 기다리게 하지 않고 시작하지 않은 채 `429`(`Retry-After: 10`)로 돌려보낸다 — 기다리게 하면 프록시의 응답 대기 상한에 먼저 걸리고, 시작하지 않았으므로 다시 보내도 중복되지 않는다. 진행 중 거절을 `409` 가 아니라 `429` 로 내는 것은 `409` 가 「이미 Sealed」의 뜻으로 쓰이고 있기 때문이다.
+
+Seal 은 요청과 분리된 태스크로 돈다. 클라이언트나 프록시가 연결을 끊어도 Seal 은 끝까지 진행되고, 끊긴 쪽은 Version 상태를 조회해 결과를 확인한다. 같은 Version 잠금은 Seal 이 끝날 때까지 커넥션 하나를 쥔다(Postgres 에서는 `idle in transaction` 으로 보인다). 서버 종료(SIGTERM)는 연결이 끊긴 채 도는 Seal 을 기다리지 않으므로 그 Seal 은 Draft 로 남는다 — Version 을 Sealed 로 바꾸는 쓰기가 맨 마지막이라 반쯤 Sealed 인 상태는 없다.
+
 Seal 과정에서 생성되는 Snapshot 구조는 7장에서 설명한다.
 
 ### 4.4 Fork
 Sealed Version은 직접 수정할 수 없다.  
 기존 Version을 변경하려면 새로운 Draft Version을 생성(Fork)하여 작업한다.  
 새 Draft는 부모 Version의 Sample 구성을 그대로(또는 지정한 Sample만) 이어받으며, 이후 필요한 Sample과 Annotation만 변경한다.  
-이를 통해 이전 Version은 그대로 유지되며 새로운 Version만 변경된다.
+이를 통해 이전 Version은 그대로 유지되며 새로운 Version만 변경된다.  
+Version 설명은 Fork 로 이어받지 않는다 — 설명은 그 Version 에 대한 메모이고 새 Draft 는 다른 Version 이다(Fork 요청에 새 설명을 줄 수는 있다).
  
 ### 4.5 버전 불변성
 Seal된 Version은 변경되지 않는다.  
+단 Version 설명(`description`)은 예외다 — 메모라 Manifest 와 그 해시에 들어가지 않으므로 Sealed Version 에서도 고칠 수 있고 재현성에 영향이 없다(§4.8).  
 - 동일 Version 은 언제나 동일한 데이터셋을 의미하며,
 - 언제든 동일한 학습 환경을 재현할 수 있다.  
 
@@ -199,7 +205,10 @@ Draft Version 은 `editor` 이상의 사람 계정이 `?confirm=<버전>` 을 �
 이때 삭제 요청에 `delete_cas=true`를 명시적으로 지정한 경우에만, 더 이상 어디에서도 참조되지 않는 원본 파일에 대해 CAS에 삭제 요청을 보내 CAS 내부 GC 로직에 의해 정리될 수 있도록 한다. `delete_cas`는 기본값이 `false`(보존)이므로, 별도로 지정하지 않으면 CAS 객체는 그대로 남는다. **Sealed Version 을 지울 때 `delete_cas=true`면 그 버전의 manifest 는 지우되, 샤드 NDJSON 본문(annotation 실데이터)은 내용 주소로 다른 버전과 공유될 수 있으므로 지우지 않는다.**
 
 ### 4.7 Clone (비동기 복제)
-Fork 가 같은 Dataset 안에서 새 Version 을 만드는 것이라면, Clone 은 (Dataset, Version) 을 **새 Dataset** 으로 통째 복제한다. `POST /datasets/{id}/versions/{version}/clone-jobs` 가 job 을 만들고 즉시 201 을 반환하며, 실제 복사는 백그라운드에서 진행된다 — 대규모 Dataset 을 동기로 복사하면 프록시 타임아웃에 걸리기 때문이다(CVAT 세션과 같은 구조). 진행 상태는 `GET /clone-jobs/{job_id}` 로 폴링하고(`copied_count`/`total_count`), `DELETE /clone-jobs/{job_id}` 로 협조적으로 취소한다(다음 청크 경계에서 멈춘다). 대상은 원본 tags/description 을 복사하고 항상 Draft 로 시작하며, Asset 참조(bucket/key/hash)는 재사용하므로 CAS 재업로드 없이 Sample·Sample Asset·Instance 행만 복제된다. 실패·취소, 그리고 재시작으로 중단된 job 모두 만들던 대상 Dataset 을 롤백한다. 중단된 job(진행이 10분 넘게 멈춘 job)의 정리는 주기 태스크가 하며(기동 직후 한 번, 이후 5분마다) 서버 기동을 기다리게 하지 않는다 — 대형 대상의 롤백이 startupProbe 예산을 먹지 않게 하기 위해서다. 롤백은 대상이 **job 이 만든 모양 그대로(Draft Version 하나, 또는 아직 Version 없음)일 때만** 한다 — 복사 중에도 대상은 보통의 Draft Dataset 이라, 그 사이 누가 Seal 했거나 Version 을 붙였으면 지우지 않고 남긴다(Sealed 보호를 우회하지 않기 위해서다). 롤백을 거부했거나 실패하면 그 사유를 job 에 기록한다. 서버 부하 방어를 위해 동시 실행 job 수에 전역 상한을 둔다(초과 시 409 가 아니라 429). 생성·취소는 `editor` 이상, 조회는 로그인한 사용자면 된다.
+Fork 가 같은 Dataset 안에서 새 Version 을 만드는 것이라면, Clone 은 (Dataset, Version) 을 **새 Dataset** 으로 통째 복제한다. `POST /datasets/{id}/versions/{version}/clone-jobs` 가 job 을 만들고 즉시 201 을 반환하며, 실제 복사는 백그라운드에서 진행된다 — 대규모 Dataset 을 동기로 복사하면 프록시 타임아웃에 걸리기 때문이다(CVAT 세션과 같은 구조). 진행 상태는 `GET /clone-jobs/{job_id}` 로 폴링하고(`copied_count`/`total_count`), `DELETE /clone-jobs/{job_id}` 로 협조적으로 취소한다(다음 청크 경계에서 멈춘다). 대상은 원본 Dataset 의 tags/description 과 원본 Version 의 설명을 복사하고 항상 Draft 로 시작하며, Asset 참조(bucket/key/hash)는 재사용하므로 CAS 재업로드 없이 Sample·Sample Asset·Instance 행만 복제된다. 실패·취소, 그리고 재시작으로 중단된 job 모두 만들던 대상 Dataset 을 롤백한다. 중단된 job(진행이 10분 넘게 멈춘 job)의 정리는 주기 태스크가 하며(기동 직후 한 번, 이후 5분마다) 서버 기동을 기다리게 하지 않는다 — 대형 대상의 롤백이 startupProbe 예산을 먹지 않게 하기 위해서다. 롤백은 대상이 **job 이 만든 모양 그대로(Draft Version 하나, 또는 아직 Version 없음)일 때만** 한다 — 복사 중에도 대상은 보통의 Draft Dataset 이라, 그 사이 누가 Seal 했거나 Version 을 붙였으면 지우지 않고 남긴다(Sealed 보호를 우회하지 않기 위해서다). 롤백을 거부했거나 실패하면 그 사유를 job 에 기록한다. 서버 부하 방어를 위해 동시 실행 job 수에 전역 상한을 둔다(초과 시 409 가 아니라 429). 생성·취소는 `editor` 이상, 조회는 로그인한 사용자면 된다.
+
+### 4.8 Version 설명
+Version 마다 설명(`description`, 최대 10,000 자) 하나를 둔다(서버 `0.1.21`+). Version 을 만들 때, Seal 할 때(Seal 이 성공할 때만 기록된다), 그리고 `PATCH /datasets/{dataset_id}/versions/{version}` 으로 쓰고, `null`·빈 문자열은 지움이다. 설명은 메모다 — Manifest 와 그 해시에 들어가지 않으므로 **Sealed Version 에서도 고칠 수 있고** 재현성에 영향이 없다. 쓰기 권한은 다른 카탈로그 쓰기와 같이 `editor` 이상이다(로봇 포함). Fork 는 설명을 복사하지 않고 Clone 은 복사한다. Seal 과 Version PATCH 두 경로만 요청 본문 상한이 256 KiB 다(넘으면 413).
 
 ## 5. Annotation Versioning
 ### 5.1 개요
@@ -307,6 +316,8 @@ sequenceDiagram
 | `closed` | 작업 종료. Sample 잠금이 해제된 상태 |
 | `failed` | 준비 실패. 사유가 함께 기록된다 |
 
+준비 작업은 진행 중임을 60 초마다 세션에 기록한다. 각 파드는 5 분마다(기동 직후 포함) 이 기록이 `cvat.stale_creating_secs`(기본 1800 초, 하한 180 초)보다 오래 멈춘 `creating` 세션을 `failed` 로 바꾼다(서버 `0.1.21`+). 판정이 생성 시각이 아니라 진행 기록이므로 다른 파드가 지금 준비 중인 세션은 건드리지 않고, 파드 교체로 준비가 끊긴 세션은 다음 재기동을 기다리지 않고 정리된다. 정리는 조건부 UPDATE 하나라 여러 파드가 동시에 돌려도 한 번만 적용된다.
+
 #### 5.5.2 편집 범위
 CVAT은 2D 이미지 편집기이므로, 왕복이 무손실인 컴포넌트만 내보낸다.
 
@@ -335,6 +346,10 @@ CVAT Shape ID는 라벨 변경 후에도 유지되므로, 속성이 비어 있�
 같은 Version 안에서 하나의 Sample은 동시에 하나의 활성 세션(`creating`·`open`)에만 속할 수 있다.
 두 세션이 같은 Sample을 편집하면 나중에 회수한 결과가 앞의 결과를 덮어쓰기 때문이다.
 이미 다른 활성 세션이 점유한 Sample로 세션을 생성하면 요청이 거부되며, 어느 세션이 점유 중인지 함께 반환된다.
+
+세션이 잡은 Sample 은 세션 생성 트랜잭션 안에서 별도 표(`annotation_session_samples`)에 기록되고, 겹침 검사는 이 표를 본다(서버 `0.1.21`+). 그래서 아직 준비 중(`creating`)인 세션의 Sample 도 생성 순간부터 잠긴다 — 준비 후반부에 기록되는 frame 표만 보면 그 전까지 같은 Sample 로 두 번째 세션을 만들 수 있다. 같은 Version 의 세션 생성은 잠금으로 직렬화된다.
+
+생성 요청의 `sample_ids` 는 그 Version 에 링크된 삭제되지 않은 Sample 이어야 한다. 아니면 CVAT 을 호출하기 전에 `400` 으로 거절하므로 CVAT Project·Task 가 생기지 않는다. 중복 id 는 하나로 합친다.
 
 잠금은 세션을 종료(`close`)하거나 삭제할 때, 또는 세션이 `failed`가 되면 해제된다.
 
@@ -411,7 +426,8 @@ Shard Manifest 위치·해시"]
 
 Main Manifest는 Seal 시 CAS에 저장되며, Snapshot의 구성과 출처를 추적할 수 있도록 한다.  
 일반적인 조회에서는 Main Manifest를 매번 읽지 않는다. PostgreSQL의 DatasetVersion에는 Snapshot 조회에 필요한 시작점이 함께 저장되며, Nexus는 이를 기준으로 클라이언트에 조회 정보를 제공한다.  
-즉, Database는 Snapshot 데이터를 직접 저장하지 않고,  CAS에 저장된 Snapshot을 찾아가기 위한 메타데이터만 관리한다.
+즉, Database는 Snapshot 데이터를 직접 저장하지 않고,  CAS에 저장된 Snapshot을 찾아가기 위한 메타데이터만 관리한다.  
+Main Manifest 는 같은 내용이면 같은 바이트가 되도록 순서를 고정한다 — Sample 은 (생성 시각, `sample_id`) 순, 한 Sample 의 Asset 은 역할(role) 이름순이다(서버 `0.1.21`+).
 
 ### 6.4 Snapshot 조회
 Snapshot 조회 시 Nexus는 DatasetVersion에 연결된 Snapshot 정보를 클라이언트에 반환한다.  
@@ -476,7 +492,7 @@ Ingest가 완료되면 Sample은 DatasetVersion에 포함되고 이후 검색과
 먼저 확인해 그대로 돌려주고, 새 키는 Sample 을 만든 뒤 같은 트랜잭션의 커밋 직전에 기록해 같은 키의 동시 요청 중 하나만
 남긴다. 키가 같고 내용이 다르면 거부한다(409). 내용 비교는 받은 JSON 을 기준으로 한다 — 서버가 모르는 필드도
 포함하고, 키 순서와 공백은 무시하며, 멱등 키 자신은 뺀다. 서버가 해석한 값이 아니라 받은 JSON 을 보기 때문에 서버 판이 바뀌어도
-같은 요청은 같게 판정된다. 키가 없는 요청은 이전과 같이 처리한다.
+같은 요청은 같게 판정된다. 키가 없는 요청은 멱등 판정 없이 처리한다.
 
 ### 7.2 검색 
 등록된 Sample은 Explorer를 통해 검색하고 조회할 수 있다.  
@@ -525,7 +541,7 @@ DatasetVersion  Sample
 |테이블|역할|
 |---|---|
 |datasets|Dataset의 논리적 정체성|
-|dataset_versions|Version 상태와 Snapshot 정보|
+|dataset_versions|Version 상태·Snapshot 정보·설명|
 |samples|Sample 메타데이터|
 |sample_assets|Sample과 CAS Asset 연결|
 |instances|Annotation 데이터|
@@ -534,6 +550,8 @@ DatasetVersion  Sample
 |subsets|저장된 검색 조건(View)|
 |dataset_favorites|사용자 즐겨찾기|
 |ingest_idempotency|등록 멱등 키 기록 — Dataset 범위의 키와 처음 만든 Sample(§7.1)|
+|annotation_sessions|CVAT 편집 세션(상태·CVAT Project/Task)|
+|annotation_session_samples|세션이 잡은 Sample — 겹침 검사의 기준(§5.5.5)|
 |users|사용자 계정|
 
 ### 8.2 Annotation Versioning
@@ -604,7 +622,7 @@ API는 다음과 같은 원칙을 따른다.
 - 전면 인증  
 조회를 포함한 모든 엔드포인트가 인증을 요구한다. 예외는 회원 가입·로그인·프로브 두 경로·OpenAPI 문서와 Swagger UI 셸뿐이다(문서 경로는 설정으로 끌 수 있다). 데이터 변경 권한은 인증 위에 계정 역할(`admin`/`editor`/`viewer`)로 결정한다. 담당자(`owner_user_id`)는 담당자 이관을 빼면 인가에 관여하지 않는다 — 목록 필터와 인수 대기 관리에 쓰이는 값이다.
 - 일관된 오류 모델  
-HTTP 상태 코드와 함께 구체적인 오류 정보를 제공한다.
+HTTP 상태 코드와 함께 구체적인 오류 정보를 제공한다. 같은 상태 코드에 뜻이 여럿인 경우는 본문에 기계가 읽는 `code` 를 함께 싣는다(`{"error": ..., "code": ...}` — 지금은 Seal 의 `already_sealed`·`seal_key_collision`·`seal_busy`·`seal_in_progress`). `code` 가 없는 오류는 필드를 싣지 않는다.
 
 ## 10. 권한과 불변성 정책
 Nexus는 계정 역할로 무엇을 할 수 있는지를 정한다. 담당자는 담당자 이관을 빼면 인가에 관여하지 않는다.  
@@ -673,7 +691,7 @@ Token 자체는 발급 후 만료까지 무효화할 수 없다. 만료 시점�
 
 ### 10.3 Version 불변성
 DatasetVersion의 변경 가능 여부는 권한과 별개로 Version 상태에 의해 결정된다.  
-Draft 상태에서는 Sample과 Annotation을 수정할 수 있지만, Seal 이후에는 그 Version 에 대한 Sample 추가·unlink·Annotation 수정이 409 로 차단된다(버전 삭제의 관리자 예외는 §4.6). Sealed Version 에 하나라도 속한 Sample 은 Sample 자체의 삭제(`DELETE /samples/{sample_id}`)도 409 다. 지우도록 두면 Sealed Version 의 API 조회는 바뀌는데 CAS 스냅샷(SDK `to_df()` 가 읽는 것)은 그대로인 불일치가 생기기 때문이다.  
+Draft 상태에서는 Sample과 Annotation을 수정할 수 있지만, Seal 이후에는 그 Version 에 대한 Sample 추가·unlink·Annotation 수정이 409 로 차단된다(버전 삭제의 관리자 예외는 §4.6이고, Version 설명은 Sealed 에서도 고칠 수 있다 — §4.8). Sealed Version 에 하나라도 속한 Sample 은 Sample 자체의 삭제(`DELETE /samples/{sample_id}`)도 409 다. 지우도록 두면 Sealed Version 의 API 조회는 바뀌는데 CAS 스냅샷(SDK `to_df()` 가 읽는 것)은 그대로인 불일치가 생기기 때문이다.  
 즉, 역할은 누가 변경할 수 있는지를 결정하고, Version 상태는 변경이 가능한지를 결정한다. 두 정책은 서로 독립적으로 동작한다.
 
 **Seal이 고정하는 것은 Version의 구성과 Annotation, 그리고 그 시점 `meta`의 사본이다.** Seal은 Instance와 함께 각 Sample의 `meta`를 NDJSON 스냅샷에 기록해 CAS에 박제하고 해시로 고정한다. 그러나 DB의 `samples.meta`는 Sample 단위로 하나뿐이고 Version별로 분기되지 않는 살아 있는 값이라(Annotation만 CoW로 격리된다), API 조회(Explorer·Sample 조회)는 Sealed Version이어도 언제나 현재 값을 읽는다.
@@ -737,6 +755,9 @@ Nexus는 단순한 기능 구현보다 일관된 데이터 모델과 운영 단�
 |CAS 객체 삭제는 생략 시 보존|	생략 시 삭제|	실패 방향이 비대칭이기 때문 — 잘못된 보존은 되돌릴 수 있는 스토리지 비용이지만 잘못된 삭제는 바이트를 되돌릴 수 없이 파괴한다. 지우려면 `delete_cas=true`를 명시한다|
 |Batch 작업은 건별 독립 처리|	전체를 하나의 트랜잭션으로 처리	|일부 실패가 전체 작업에 영향을 주지 않도록 하기 위해|
 |재전송 중복은 클라이언트가 정한 멱등 키로 막음|	서버가 내용(이미지 key 등)으로 중복을 추정|	같은 이미지가 정당하게 여러 Sample 일 수 있어 내용만으로는 「같은 요청」을 가릴 수 없기 때문이다. 키는 Dataset 범위라 다른 Dataset 과 부딪치지 않고, Sample id 는 계속 서버가 만든다|
+|Seal 상한 초과는 대기 없이 429|	서버 안에서 줄 세워 대기|	대기 중에 프록시 응답 상한에 먼저 걸리고, 시작하지 않은 요청은 다시 보내도 중복되지 않는다. 대기는 클라이언트(SDK `seal(wait=)`)가 진다|
+|Seal 을 요청과 분리된 태스크로 실행|	요청 수명에 묶음|	프록시가 연결을 끊는 순간 Seal 이 중간에 멈추고, 큰 Version 일수록 끝까지 갈 수 없게 된다|
+|Version 설명은 Manifest 밖|	설명을 Manifest 에 포함|	설명을 고치려고 Fork·재Seal 할 이유가 없고, 설명이 해시를 흔들면 같은 데이터가 다른 Version 처럼 보인다|
 
 이러한 결정들은 모두 단순성(Simple), 재현성(Reproducibility), 운영 용이성(Operability) 을 우선한다는 동일한 설계 원칙에 기반한다.
 
