@@ -38,7 +38,7 @@ pip install --upgrade --extra-index-url https://int2nexus.github.io/cas-server/s
 python -c "import importlib.metadata as m; print(m.version('int2nexus-sdk'))" 
 ```
 
-이 문서는 서버 `0.1.20`(차트 `0.3.16`)와 SDK `0.1.19` 기준이다. SDK는 서버와 따로 발행되므로 위 명령으로 최신을 유지한다 — 문서의 기능이 없다는 에러가 나면 대개 SDK가 낮은 것이다. 버전별 변경은 [차트 CHANGELOG](../CHANGELOG.md)와 [SDK 변경 이력](https://int2nexus.github.io/cas-server/sdk/changelog.html)에 있다.
+이 문서는 서버 `0.1.21`(차트 `0.3.17`)와 SDK `0.1.20` 기준이다. SDK는 서버와 따로 발행되므로 위 명령으로 최신을 유지한다 — 문서의 기능이 없다는 에러가 나면 대개 SDK가 낮은 것이다. 버전별 변경은 [차트 CHANGELOG](../CHANGELOG.md)와 [SDK 변경 이력](https://int2nexus.github.io/cas-server/sdk/changelog.html)에 있다.
 
 ### 2.2 연결 설정
 
@@ -116,7 +116,7 @@ nx.connect()
 - **CAS 임시 자격증명(STS)** — `nx.connect(cas_sts=nx.CasSts(token_file=...))`(cas-server 이미지 `0.1.28`+, [2.4](#24-cas-임시-자격증명-sts)).
 - **운영자가 발급한 키** — `cas_key_id`/`cas_secret` 인자, `CAS_KEY_ID`/`CAS_SECRET` 환경변수, 또는 설정 파일. CAS region 이 기본값(`cas-default`)이 아닌 배포는 `cas_region`(`CAS_REGION`)도 맞춰야 서명이 통과한다.
 
-**서버 교체 중 대기**(SDK `0.1.19`+). nexus-server·cas-server 를 교체하는 동안 SDK 는 **첫 실패부터 120 초**까지 기다렸다가 다시 보낸다. 서버에 닿지 않은 실패(연결 거부·연결 타임아웃·DNS)는 모든 요청을 다시 보내고, `502`·`503`·`504`·응답 도중 끊김처럼 처리됐을지 모르는 실패는 다시 보내도 결과가 같은 요청(조회, 그리고 멱등 키가 붙은 `flush`)만 다시 보낸다. seal·생성·삭제 같은 쓰기는 이때 다시 보내지 않으므로 교체 중에는 실패로 올라온다. nexus 가 스스로 낸 `503`·`504`(CVAT 미구성 등)는 기다리지 않는다. 시간은 `nx.connect(retry_timeout=초)`, 환경변수 `NEXUS_RETRY_TIMEOUT`, 설정 파일 키 `retry_timeout` 으로 바꾸고(우선순위는 인자 > 환경변수 > 파일), `0` 이면 SDK `0.1.18` 의 동작으로 돌아간다(nexus 는 다시 보내지 않고, CAS 는 3 회까지). `CasClient(...)` 를 직접 만들어도 환경변수를 읽는다. 무엇을 다시 보내는지는 [3.4](#34-샘플-생성과-등록)와 [SDK 변경 이력](https://int2nexus.github.io/cas-server/sdk/changelog.html)에 있다. `nx.connect()` 의 첫 로그인은 기다리지 않는다.
+**서버 교체 중 대기**(SDK `0.1.19`+). nexus-server·cas-server 를 교체하는 동안 SDK 는 **첫 실패부터 120 초**까지 기다렸다가 다시 보낸다. 서버에 닿지 않은 실패(연결 거부·연결 타임아웃·DNS)는 모든 요청을 다시 보내고, `502`·`503`·`504`·응답 도중 끊김처럼 처리됐을지 모르는 실패는 다시 보내도 결과가 같은 요청(조회, 그리고 멱등 키가 붙은 `flush`)만 다시 보낸다. seal·생성·삭제 같은 쓰기는 이때 다시 보내지 않으므로 교체 중에는 실패로 올라온다. nexus 가 스스로 낸 `503`·`504`(CVAT 미구성 등)는 기다리지 않는다. 시간은 `nx.connect(retry_timeout=초)`, 환경변수 `NEXUS_RETRY_TIMEOUT`, 설정 파일 키 `retry_timeout` 으로 바꾸고(우선순위는 인자 > 환경변수 > 파일), `0` 이면 서버 부재를 기다리지 않는다(nexus 요청은 다시 보내지 않고, CAS 는 3 회까지). `CasClient(...)` 를 직접 만들어도 환경변수를 읽는다. 무엇을 다시 보내는지는 [3.4](#34-샘플-생성과-등록)와 [SDK 변경 이력](https://int2nexus.github.io/cas-server/sdk/changelog.html)에 있다. `nx.connect()` 의 첫 로그인은 기다리지 않는다.
 
 
 ### 2.3 로봇 토큰으로 연결
@@ -379,9 +379,6 @@ cas-server·nexus-server 를 교체하는 동안에도 적재가 실패하지 �
   메모리에만 있다.
 - 키는 `(dataset 이름, version)` 마다 따로다. 다시 보내기 전에 `ds.update(name=...)` 로 이름을 바꾸지 않는다.
 - 이미지를 CAS URL 로 넘겨 `flush` 가 CAS 에 `HEAD` 를 보내는 경우도 같은 시간만큼 기다린다.
-- 서버 이미지 `0.1.19` 이하는 멱등 키를 모르므로, 서버에 닿은 뒤 응답을 받지 못한 `/ingest/batch` 는 다시 보내지 않고 실패로
-  돌려준다(연결 자체가 안 된 요청은 다시 보낸다). 그 서버에서 실패한 샘플을 다시 넣으면 이미 들어간 것이 중복될 수 있다.
-  **서버를 `0.1.20` 으로 올리는 교체 한 번은 적재를 멈춘다**(차트 `0.3.16` CHANGELOG 의 호환성·운영 조치).
 - `NexusClient.ingest_batch` 를 직접 부르면 키가 붙지 않는다 — item 마다 `idempotency_key` 를 넣어야 다시 보낸다.
 
 #### GT 파일만 있고 이미지는 이미 CAS에 있을 때
@@ -492,7 +489,7 @@ print(r.json())    # {"updated": 1204}
 
 ### 4.3 태그 후보 목록
 
-4.2의 `exclude_tags`를 화면에 붙이려면 **어떤 태그가 있는지** 먼저 알아야 한다. `id`·`label` 같은 문자열 필드는 facet으로 후보를 고를 수 있는데 샘플 태그만 그 수단이 없었다. 같은 자리에 얹었다.
+4.2의 `exclude_tags`를 화면에 붙이려면 **어떤 태그가 있는지** 먼저 알아야 한다. `id`·`label` 후보와 같은 facet 경로에 `field=tags`로 받는다.
 
 SDK 메서드는 아직 없고 저수준으로 호출한다.
 
@@ -554,7 +551,7 @@ nx.list_datasets(sort="name", order="asc")       # 정렬
 
 ### 4.7 즐겨찾기 그룹
 
-즐겨찾기는 유저별 불리언(`ds.favorite()` / `ds.unfavorite()`)이었는데 그룹(폴더)과 순서가 붙었다. 전부 유저 스코프이고 SDK 메서드는 아직 없다.
+즐겨찾기(`ds.favorite()` / `ds.unfavorite()`)는 그룹(폴더)과 순서를 가진다. 전부 유저 스코프이고 SDK 메서드는 아직 없다.
 
 ```
 POST   /api/v1/datasets/favorites/groups              {"name": "촬영-2026"}
@@ -787,6 +784,7 @@ Draft 버전의 샘플을 **CVAT으로 보내 사람이 편집**하고, 그 결�
 | 내 역할이 **`editor` 이상** | `NexusError(403)` - 세션 생성은 쓰기다 |
 | 서버에 CVAT 연동 구성 | `NexusError(503)` |
 | CVAT이 CAS 이미지를 받을 수 있는 네트워크 | 세션이 `failed`가 되고 사유가 예외에 실린다 |
+| `sample_ids`가 모두 그 버전에 링크된 삭제되지 않은 샘플 | `NexusError(400)` - 해당 id를 최대 10개 나열한다. CVAT 호출 전에 거절하므로 project·task가 생기지 않는다(서버 이미지 `0.1.21`+). 중복 id는 하나로 합친다 |
 | 그 샘플을 잡고 있는 다른 세션 없음 | `NexusError(409)` - 어느 세션이 잡고 있는지 메시지에 담긴다 |
 
 **세션 생성·`pull`·`close`는 `editor` 이상이면 할 수 있다**(목록·조회는 로그인만 되면 된다). 담당자가 아니어도 되고, 세션을 만든 사람이 아니어도 된다.
@@ -811,6 +809,8 @@ print(ses.session_id)                       # 나중에 이어받을 때 필요
 ses = ds.create_annotation_session(ids, wait=False)   # status == "creating"
 ses.wait_open(timeout=1800)                           # 큰 세션은 넉넉히
 ```
+
+준비 작업의 진행 기록이 `cvat.staleCreatingSecs`(기본 1800초) 넘게 멈추면(서버 교체로 준비가 끊긴 경우 등) 서버가 그 세션을 `failed`로 정리한다(서버 이미지 `0.1.21`+). `wait_open`은 `failed`를 보면 사유와 함께 예외를 올린다.
 
 데이터에 아직 없는 라벨로 새로 그리게 하려면 함께 만들어 준다.
 
@@ -917,7 +917,7 @@ ds.annotation_sessions()                            # 이 dataset·version의 �
 ### 6.7 알아둘 것
 
 - CVAT으로 나가는 컴포넌트는 `bounding_box`/`polygon`/`polyline`/`keypoint_2d` **4종뿐**이다. 3D(`cuboid_3d` 등)·classification·scalar는 편집 대상이 아니며 **그대로 보존**된다.
-- 같은 버전 안에서 한 샘플은 하나의 활성 세션에만 속할 수 있다. 겹치면 세션 생성이 거부되고, 해당 세션을 `close()`하면 풀린다. 단 아직 준비 중(`creating`)인 세션과의 겹침은 잡히지 않으므로, `wait=False`로 연달아 만들 때는 대상이 겹치지 않게 한다(겹치면 나중에 반영한 쪽이 앞의 결과를 덮는다).
+- 같은 버전 안에서 한 샘플은 하나의 활성 세션(`creating`·`open`)에만 속할 수 있다. 겹치면 세션 생성이 `409`로 거부되고(준비 중인 세션 포함, 서버 이미지 `0.1.21`+), 해당 세션을 `close()`하면 풀린다.
 - sealed 버전에는 세션을 만들 수 없다.
 - 세션 삭제는 CVAT project를 통째로 지우므로 **회수하지 않은 편집도 함께 사라진다.**
 
@@ -957,6 +957,8 @@ ses.close()
 - `/`·`#`·`?`·공백·한글은 쓸 수 있다.
 - **같은 dataset 안에서 `/`와 `_`만 다른 두 이름은 공존할 수 없다**(`409`) — seal 스냅샷의 CAS key가 `/`를 `_`로 바꿔 만들어지므로 `a/b`와 `a_b`는 같은 위치에 저장되기 때문이다. 오류 문구에 겹치는 기존 버전 이름이 들어 있다.
 
+**버전 설명**(서버 이미지 `0.1.21`+). 버전 생성 HTTP 본문(`POST /datasets/{id}/versions`)에 선택 필드 `description`을 줄 수 있다(SDK의 `load_or_create`·`fork`에는 인자가 없고, 만든 뒤 `ds.set_description()`으로 쓴다, §7.7). fork는 원본 버전의 설명을 **복사하지 않는다**. clone(§7.6)은 원본 버전의 설명을 복사한다.
+
 이 상태에서 할 수 있는 일:
 - 샘플 추가/등록, Annotation 추가, 버전 삭제
 - 같은 Dataset의 다른 버전에서 샘플 재사용(재적재 없이 참조만 연결)
@@ -986,7 +988,23 @@ target.import_samples(
 ```python
 ds.seal()                       # 이미 sealed면 서버 409(NexusError) 전파 — 저장 위치가 겹치는 sealed 버전(§7.1)이 있어도 409
 ds.seal(if_sealed="ignore")     # 이미 sealed면 현재 상태 그대로 반환(멱등 — 재실행 편의)
+ds.seal(description="검수 완료, 2026-10 학습용")   # 버전 설명과 함께 seal (SDK `0.1.20`+, 서버 이미지 `0.1.21`+)
 ```
+- `description`은 **seal이 성공할 때만** 저장된다. `if_sealed="ignore"`로 불렀는데 이미 sealed인 버전이면 준 `description`은 적용되지 않는다 — 그때는 `ds.set_description()`(§7.7)을 쓴다.
+- **동시 seal 상한과 대기**(SDK `0.1.20`+, 서버 이미지 `0.1.21`+). 서버는 파드마다 동시에 도는 seal 수에 상한(`seal.maxConcurrent`, 기본 1)을 둔다. 상한이 차 있거나(`seal_busy`) 같은 버전의 seal이 이미 돌고 있으면(`seal_in_progress`) seal을 시작하지 않고 `429`(`Retry-After: 10`)로 답한다. 시작하지 않은 요청이라 다시 보내도 중복되지 않는다.
+  - `ds.seal(wait=600)`(기본)은 이 `429`를 최대 `wait`초 기다리며 다시 보내고, 넘기면 `NexusError(status_code=429)`다. `wait=0`이면 기다리지 않는다. 기다린 시간만 세고 seal 자체의 소요는 세지 않는다.
+- **seal은 연결이 끊겨도 서버에서 끝까지 돈다**(서버 이미지 `0.1.21`+). 프록시가 응답 대기 상한으로 연결을 끊어 `502`/`504`를 받았더라도 seal은 멈추지 않으므로, 그 버전의 상태를 조회해 sealed가 됐는지 확인한다. 서버 교체(SIGTERM) 중에 끊긴 seal은 draft로 남는다.
+- **읽기 타임아웃.** SDK의 기본 읽기 타임아웃은 120초다. seal이 그보다 오래 걸리는 대규모 버전은 `nx.connect(timeout=(10, 1800))`처럼 읽기 쪽 초를 늘린다. 타임아웃이 나도 seal은 서버에서 계속되고(위) SDK는 이 타임아웃을 다시 보내지 않으므로, 실패로 단정하지 말고 `ds.seal(if_sealed="ignore")`로 다시 부르거나 버전 상태를 확인한다.
+- **HTTP 오류 `code`**(`POST /datasets/{id}/versions/{v}/seal`). 응답 본문 `{"error": ..., "code": ...}`의 `code`로 분기한다.
+
+  | 상태 | `code` | 뜻 |
+  |---|---|---|
+  |`409`|`already_sealed`|이미 sealed인 버전|
+  |`409`|`seal_key_collision`|seal 저장 위치가 같은 다른 sealed 버전이 있음(§7.1)|
+  |`429`|`seal_busy`|이 파드의 동시 seal 상한이 참. 시작하지 않았음|
+  |`429`|`seal_in_progress`|같은 버전의 seal이 이미 돌고 있음|
+
+  이 `code`는 서버 이미지 `0.1.21`+에만 있다.
 - seal 이후로는 해당 버전에서 샘플 추가/삭제/annotation 추가 및 버전 삭제 동작이 전부 막히고(409 — 버전 삭제의 응답 코드와 관리자 HTTP 예외는 §8.3), to_df()로 학습 소비가 가능해진다.
 - 수정하고 싶으면 새 버전으로 `fork`(§7.5) 해서 새로운 draft 버전을 만든다.
 
@@ -1044,12 +1062,23 @@ fork가 같은 Dataset 안에서 새 버전을 만드는 것이라면, clone은 
 new_ds = ds.clone("my-dataset-copy", "v0")
 ```
 - **서버의 비동기 job으로 복제한다.** SDK가 `POST /datasets/{id}/versions/{version}/clone-jobs`로 시작하고 `GET /clone-jobs/{job_id}`로 완료까지 폴링하며(진행률 표시), 복사와 실패 시 롤백을 서버가 담당한다 — 대규모 Dataset도 클라이언트가 import를 수천 번 왕복하지 않는다.
-- 원본의 tags/description을 복사해 새 dataset을 만들고, 항상 **Draft**로 시작한다(복제 직후 바로 이어서 patch/추가 작업이 가능하다). Asset은 참조만 재사용해 CAS 재업로드가 없다.
+- 원본의 tags/description을 복사해 새 dataset을 만들고(서버 `0.1.21`+는 원본 **버전의 설명**도 복사한다, §7.7), 항상 **Draft**로 시작한다(복제 직후 바로 이어서 patch/추가 작업이 가능하다). Asset은 참조만 재사용해 CAS 재업로드가 없다.
 - 실패하면 서버가 만들던 대상을 롤백한다. 단 복사 중에 누가 대상을 seal했거나 버전을 붙였으면 롤백하지 않고 사유를 job의 `error`에 남긴다.
 - 동시 복제가 전역 상한(3)을 넘으면 서버가 `429`를 주고 SDK가 물러났다 자동으로 재시도한다. 끝내 넘으면 `NexusError(status_code=429)`다.
 - `new_version`에도 §7.1의 버전 이름 규칙이 적용된다(어기면 `400`).
 - **대상 이름의 dataset이 이미 있으면 `409`다.** 기존 dataset에 버전을 더하려면 그 핸들에서 `import_samples`를 쓴다.
 - `clone(..., timeout=초)`를 주면 그 안에 끝나지 않을 때 기다리기를 그만두고 job id를 담은 `NexusError`를 던진다. job은 취소되지 않고 서버에서 계속 돈다.
+
+### 7.7 버전 설명
+버전마다 메모 한 줄을 달 수 있다(서버 이미지 `0.1.21`+, SDK `0.1.20`+).
+```python
+ds.set_description("v2: 야간 이미지 추가, 오검출 라벨 정리")   # draft·sealed 모두 가능
+ds.description                                                # 부를 때마다 서버에서 읽는다
+ds.set_description(None)                                      # 지움 ("" 도 같다)
+```
+- 최대 10,000자. `viewer`는 쓸 수 없다(`403`), 없는 버전은 `404`다. seal·버전 PATCH 요청 본문은 256 KiB를 넘으면 `413`이고, 10,000자 초과나 JSON 객체가 아닌 본문은 `400`이다.
+- 설명은 메모다. manifest와 `manifest_hash`에 들어가지 않으므로 **sealed 버전도 수정할 수 있고** 재현성에 영향이 없다. 모든 `DatasetVersion` 응답에 `description` 필드가 있다(없으면 `null`).
+- HTTP: `PATCH /datasets/{dataset_id}/versions/{version}` 본문 `{"description": "..."}`. seal 본문 `{"description": "..."}`도 선택이다(본문이 없거나 `{}`이면 설명은 그대로).
 
 ## 8. 데이터셋 관리
 ### 8.1 정보 수정
@@ -1191,7 +1220,8 @@ except NexusError as e:
 |`.fork(new_version, sample_ids=, group_key=, label=, tags=, exclude_tags=, ...)`|	필터링된 fork(같은 dataset)|
 |`.clone(new_name, new_version, timeout=None)`|	통째 복제(서버 job, [7.6](#76-clone))|
 |`.update(name=, description=)`|	이름/설명 수정|
-|`.seal(if_sealed="error")`|	버전 확정|
+|`.seal(if_sealed="error", wait=600, description=)`|	버전 확정([7.2](#72-seal--버전-잠금)). 동시 seal 상한 `429`는 `wait`초까지 기다린다|
+|`.set_description(text)` / `.description`|	버전 설명 쓰기·읽기([7.7](#77-버전-설명))|
 |`.to_df(groups=, path=, format=, chunksize=)`|	DataFrame 변환|
 |`.delete(confirm=, delete_cas=)`|	버전 삭제. `confirm`은 버전 문자열(또는 `True`). `delete_cas` 미지정 시 대화형으로 한 번 묻고, 비대화형이면 CAS 원본을 유지한다([8.3](#83-삭제-정책))|
 |`.favorite()` / `.unfavorite()`|	즐겨찾기. 그룹·순서는 [4.7](#47-즐겨찾기-그룹) 참조|

@@ -81,6 +81,123 @@ nexus-server 는 마이그레이션이 바이너리에 임베드되어 **기동 
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.3.17
+
+image: `int2jieun/nexus-server:0.1.20` → `0.1.21`
+digest: `sha256:8e90103ec8be05be61ce2f0d0216a7cff04dbecca810acc3a8b93b48e85265fc`
+
+**동작 변경** — 여섯입니다.
+
+1. **seal 에 동시 실행 제한이 생겼습니다.** 아래 표의 `429` 는 seal 을 시작하지 않은 거절이라 다시 보내도 중복되지 않고,
+   `Retry-After: 10` 이 붙습니다. 판정은 표의 위에서 아래 순서입니다. 오류 본문에 `code` 가 붙는 것은 이 넷뿐이고
+   (`{"error": "...", "code": "..."}`), 그 밖의 오류 응답은 이전과 바이트 단위로 같습니다.
+
+   | `code` | 상태 | 조건 |
+   |---|---|---|
+   | `already_sealed` | `409` | 이미 sealed 인 버전. 메시지 `already sealed` 는 이전과 같습니다 |
+   | `seal_in_progress` | `429` | 같은 버전의 seal 이 어느 파드에서든 진행 중(DB 잠금으로 판정) |
+   | `seal_busy` | `429` | 이 파드에서 도는 seal 이 `seal.maxConcurrent`(기본 1)에 찼음 |
+   | `seal_key_collision` | `409` | seal 저장 위치가 같은 다른 sealed 버전이 있음(`a/b` 와 `a_b`) |
+
+   이전 판은 같은 버전 seal 두 건이 동시에 들어오면 둘 다 돌아 둘 다 `200` 이었습니다. 상한은 파드마다라 레플리카 2 대면
+   전체 2 배이고, 같은 버전의 중복만 파드와 무관하게 막힙니다.
+
+2. **seal 은 요청 연결이 끊겨도 끝까지 돕니다.** 프록시가 응답 대기 상한으로 연결을 끊어 클라이언트가 `504` 를 받아도 seal 은
+   계속되므로, 버전 상태를 조회해 sealed 가 됐는지 확인하십시오. 끝나면 서버 로그에 `seal 완료` 또는 `seal 실패` 한 줄이 남습니다.
+   연결이 끊긴 seal 은 `axum_http_requests_pending` 에 잡히지 않으므로 진행 중인 seal 수는 새 지표
+   `nexus_seal_permits_total` − `nexus_seal_permits_available` 로 봅니다. 파드 교체(SIGTERM) 때 연결이 끊긴 seal 은 기다리지 않고,
+   연결이 살아 있는 seal 도 `terminationGracePeriodSeconds`(기본 30, preStop 5 포함) 안에 끝나지 않으면 중단되어 draft 로 남습니다.
+   seal 도중 버전이 삭제되면 `500` 대신 `404` 입니다.
+
+3. **manifest 의 에셋 순서가 role 이름순으로 고정됩니다.** 이전 판은 샘플에 에셋이 둘 이상이면 같은 내용을 seal 해도
+   `manifest_hash` 가 판마다 달랐습니다. 에셋이 하나뿐인 버전의 manifest 는 바이트가 이전과 같고, 이미 sealed 된 버전은
+   바뀌지 않습니다. `0.3.9` 노트의 「이미 sealed 된 버전과 재현성이 같습니다」는 에셋이 하나인 버전에서만 성립했습니다.
+
+4. **CVAT 세션.**
+   - 겹침 검사가 준비 중(`creating`) 세션도 봅니다. 세션이 잡은 샘플을 생성 시점에 새 표 `annotation_session_samples` 에 기록해
+     검사하고, 같은 버전의 생성은 직렬화됩니다. 이 표에 행이 없는 세션(마이그레이션 027 시점에 준비 중이던 세션, 교체 중
+     `0.1.20` 파드가 만든 세션)은 이전처럼 준비 후반부(frame 기록 뒤)부터 잡힙니다.
+   - `sample_ids` 에 그 버전에 링크된 삭제되지 않은 샘플이 아닌 id 가 있으면 CVAT 호출 전에 `400` 입니다. 메시지에 id 를 최대
+     10 개 나열하고 나머지는 `외 N건` 으로 줄입니다. 이전 판은 `201` 뒤 세션이 `failed` 가 됐습니다. 중복 id 는 하나로 합칩니다.
+   - `creating` 세션 정리: 준비 작업이 60 초마다 진행 기록을 남기고, 각 파드가 300 초마다(기동 직후 포함) 그 기록이
+     `cvat.staleCreatingSecs` 넘게 멈춘 세션을 `failed` 로 바꿉니다. 이전 판은 기동 때 한 번, 생성 시각 기준이었습니다.
+     다른 파드의 살아 있는 준비는 건드리지 않고, 교체로 끊긴 준비는 재기동을 기다리지 않고 정리됩니다.
+
+5. **버전 설명(`description`).**
+   - 기록 경로: 버전 생성 본문과 seal 본문의 선택 필드 `description`, 새 `PATCH /datasets/{dataset_id}/versions/{version}`
+     (본문 `{"description": ...}`, 키가 없으면 `400`). 문자열 최대 10,000 자, `null`·`""` 은 지움, 권한 `editor` 이상(로봇 포함).
+     sealed 버전도 PATCH 로 고칠 수 있습니다(manifest·hash 와 무관).
+   - 모든 `DatasetVersion` 응답에 `description` 필드가 더해집니다(없으면 `null`).
+   - fork 는 원본 버전의 설명을 복사하지 않고, clone-jobs 는 복사합니다.
+   - seal 본문이 없거나 `null`·`{}` 이면 설명은 그대로이고 동작은 이전과 같습니다. 설명은 seal 이 성공할 때만 기록되고, 이미
+     sealed 면 `409` 라 적용되지 않습니다. JSON 객체가 아닌 seal 본문(`[]`·문자열·폼 인코딩)과 10,000 자 초과는 seal 시작 전에
+     `400` 입니다 — 이전 판은 seal 본문을 읽지 않았습니다.
+   - seal 과 버전 PATCH 의 요청 본문 상한은 256 KiB 이고, 넘으면 `413`(본문은 JSON 이 아닌 텍스트)입니다. 다른 경로는 이전처럼
+     상한이 없습니다.
+
+**마이그레이션** — 둘입니다(027·028). **이 버전은 마이그레이션 027·028 을 추가하며, 이미지 `0.1.20` 이하로 롤백할 수 없습니다**
+(롤백 가능한 하한은 `0.1.21`).
+
+- `027_annotation_session_samples` — **영향받는 테이블**: 신규 `annotation_session_samples`, FK 가 가리키는 `annotation_sessions`·`samples`.
+  **예상 소요시간**: `creating`·`open` 세션의 frame 행 수만큼 백필합니다(세션당 샘플 상한 기본 2000). FK 를 만들며 `samples` 에 잡는
+  SHARE ROW EXCLUSIVE 락이 마이그레이션 트랜잭션 끝(백필 포함)까지 유지되어 그동안 `samples` 쓰기(적재 포함)가 막힙니다.
+  진행 중인 적재(교체 중 옛 파드의 것 포함)·큰 dataset 삭제·clone 롤백 때문에 `lock_timeout` 3 초 안에 락을 얻지 못하면 기동이
+  실패하고 재기동 때 다시 시도합니다.
+- `028_dataset_version_description` — **영향받는 테이블**: `dataset_versions`(nullable 컬럼 `description` 추가).
+  **예상 소요시간**: 행 수와 무관하게 즉시. `lock_timeout` 3 초는 027 과 같습니다.
+- **롤백** — 아래 셋을 모두 실행하거나 업그레이드 전 `pg_dump` 스냅샷을 복원합니다. `_sqlx_migrations` 행이 남으면 `0.1.20` 이
+  기동을 거부하고, 표·컬럼이 남으면 다시 올릴 때 마이그레이션이 실패합니다. 사라지는 것은 버전 설명과 세션이 잡은 샘플 기록이고,
+  `0.1.20` 의 겹침 검사는 frame 표를 봅니다.
+
+  ```sql
+  ALTER TABLE dataset_versions DROP COLUMN description;
+  DROP TABLE annotation_session_samples;
+  DELETE FROM _sqlx_migrations WHERE version IN (27, 28);
+  ```
+
+**설정 키**
+- `seal.maxConcurrent`(신규, 서버 `seal.max_concurrent`, 환경변수 `NEXUS__SEAL__MAX_CONCURRENT`, 기본 `1`) — 파드당 동시 seal 상한.
+  차트 값을 비우면 환경변수를 주입하지 않고 이미지 기본값을 씁니다. `0` 이면 기동이 실패하고, `3` 이상이면 기동 로그에 경고가
+  남습니다(기동은 됩니다). `GET /api/v1/admin/config-effective` 의 `seal.max_concurrent` 로 확인합니다.
+- `cvat.staleCreatingSecs`(서버 `cvat.stale_creating_secs`, 기본 1800) — 키는 그대로이고 뜻이 바뀝니다(동작 변경 4). 180 미만이면
+  180 으로 올려 쓰고 기동 로그에 경고를 남깁니다(기동은 됩니다). `config-effective` 는 올린 뒤의 값을 보여 줍니다.
+
+**호환성**
+- SDK `0.1.20` 이상을 쓰십시오. `0.1.19` 이하는 seal 의 `429` 를 8 회(`Retry-After: 10` 이면 약 126~189 초)까지만 다시 보내 앞 seal
+  이 그보다 길면 `429` 로 끝나고, `ds.seal(if_sealed="ignore")` 가 `seal_key_collision` 의 `409` 에도 draft 버전을 돌려줍니다.
+- SDK `0.1.20` 의 버전 설명 기능은 서버 `0.1.21` 이 필요합니다. `0.1.20` 서버는 seal 본문을 무시해 설명이 저장되지 않고, PATCH 는 `405` 입니다.
+- `DatasetVersion` 응답을 추가 필드를 거부하는 스키마로 검증하는 클라이언트는 `description` 을 허용해야 합니다.
+- 차트 `0.3.17` 을 이미지 `0.1.20` 이하로 쓰면 `seal.maxConcurrent` 는 조용히 무시됩니다. `config-effective` 에 `seal` 이 없으면 그 상태입니다.
+- `0.1.20` 과 `0.1.21` 파드가 섞인 교체 중에는:
+  - `0.1.20` 파드로 간 seal 은 상한·같은 버전 잠금을 받지 않습니다.
+  - `0.1.20` 파드의 겹침 검사는 frame 표만 봐서, `0.1.21` 파드의 준비 중 세션과 겹치는 세션을 만들 수 있습니다.
+  - `0.1.21` 파드의 정리는 진행 기록을 남기지 않는 `0.1.20` 파드의 준비 중 세션을 마지막 갱신 시각(대개 생성 시각) 기준으로 판정해,
+    `cvat.staleCreatingSecs`(기본 1800 초) 넘은 것을 `failed` 로 바꿀 수 있습니다. 그 CVAT project 는 그 `0.1.20` 파드가 준비를 마칠 때 지웁니다.
+
+**운영 조치**
+- 027 의 락 창(위 **마이그레이션**)에 큰 적재·dataset 삭제·clone 이 겹치지 않는 시각에 올리고, 교체가 끝날 때까지 큰 seal 과 CVAT
+  세션 생성을 미루십시오(위 **호환성** 의 교체 중 항목).
+- `resources.limits.memory` 를 아래 **주의** 의 새 어림식으로 다시 확인하십시오.
+- `seal.maxConcurrent` 는 1~2 로 두십시오. seal 하나는 풀(`database.maxConnections`)에서 최대 둘(잠금 1 + 작업 1)을 적재 몫 밖의
+  예약 4 에서 씁니다. 예약 4 는 고정이라 `database.maxConnections` 를 올려도 늘지 않고, 적재가 포화일 때 조회·관리 몫은 상한 1 이면
+  2, 2 면 0 입니다(조회·관리 요청이 풀 대기로 실패). 상한을 올리면 `limits.memory` 도 그 수만큼 올리십시오.
+
+**주의**
+- **seal 메모리 어림식**: `limits.memory ≥ N × A × 3 KiB + 512 MiB`(N = 가장 큰 버전의 샘플 수, A = 샘플당 에셋 수, seal 하나 기준).
+  이전 식(`N × A × 1 KB` 의 3 배)은 폐기합니다. N = 130만이면 A = 1 에서 약 4.2 GiB(한도 5Gi), A = 2 에서 약 7.9 GiB(한도 8Gi)입니다.
+  3 KiB 는 이미지 `0.1.20`, A = 1, CAS key 48 자에서 같은 크기의 seal 을 거듭했을 때의 샘플당 증가분(약 2.7 KiB)을 올림한 값이고,
+  key 가 길면 더 큽니다. `0.1.21` 은 첫 seal 의 피크가 `0.1.20` 보다 작지만(30만 샘플·A = 1 에서 약 474 → 372 MiB), 같은 크기의
+  seal 을 거듭했을 때 기동 직후 값을 뺀 피크 증가분(약 762 MiB, `0.1.20` 은 약 784 MiB)은 그대로라 같은 식을 씁니다.
+- **교체 중 커넥션 합**: Postgres `max_connections` ≥ 교체 중 최대 파드 수 × (`database.maxConnections` + 1)이어야 합니다(+1 은 readiness
+  전용 커넥션). 이 차트는 교체 전략을 지정하지 않아 쿠버네티스 기본 maxSurge 25%(올림)를 따르고, 종료 중인 파드는 끝날 때까지
+  커넥션을 쥐므로 최대 파드 수는 `replicaCount` 1 이면 2, 2 면 4 입니다(`maxConnections` 16 이면 34, 68). 이 버전이 만든 제약은 아닙니다.
+- **`idle_in_transaction_session_timeout`**: seal 의 잠금 커넥션은 seal 내내 `idle in transaction` 으로 보입니다(정상). 이 타임아웃이
+  seal 보다 짧으면 잠금이 seal 도중 풀려 같은 버전의 seal 이 겹쳐 돌 수 있습니다(sealed 기록은 한 건만 남습니다). 설정한 배포는
+  seal 최대 소요보다 길게 두고, 이 상태를 경보하는 모니터링은 seal 마다 울린다는 것을 감안하십시오.
+- **seal 은 `dataset_versions` 에 AccessShareLock 을 seal 내내 쥡니다.** 이후 판에서 이 표에 AccessExclusiveLock 을 잡는
+  마이그레이션(`ALTER TABLE` 등)은 seal 이 도는 동안 `lock_timeout` 3 초에 걸려, 새 파드가 seal 이 끝날 때까지 재시작합니다. 그런
+  판은 seal 이 없는 시각에 올리십시오. 이 판의 028 은 해당하지 않습니다(`0.1.20` 파드는 이 락을 쥐지 않습니다).
+
 ## 0.3.16
 
 image: `int2jieun/nexus-server:0.1.19` → `0.1.20`

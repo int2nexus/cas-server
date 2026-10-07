@@ -4,9 +4,9 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
 
 ## 문서
 
-- [아키텍처](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.16/charts/nexus-server/docs/architecture.md)
+- [아키텍처](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.17/charts/nexus-server/docs/architecture.md)
   — 도메인 모델, Version 생명주기, Annotation CoW, 스냅샷·Manifest 구조
-- [사용법](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.16/charts/nexus-server/docs/usage.md)
+- [사용법](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.17/charts/nexus-server/docs/usage.md)
   — 설치, Python SDK 연결, Dataset 적재·검색·seal 워크플로우, API 레퍼런스
 - [변경 이력](CHANGELOG.md)
   — 버전별 동작 변경·마이그레이션·설정 키. 각 항목은 해당 GitHub Release 본문과 동일하다
@@ -22,7 +22,7 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
   선택 키가 셋 더 있고, 쓰는 기능이 있을 때만 넣는다 — CVAT annotation 편집 세션의
   `NEXUS__CVAT__PASSWORD`, superuser의 `NEXUS__AUTH__SUPERUSER_PASSWORD`,
   지표의 `NEXUS__METRICS__TOKEN`(values 스위치가 없다 — 이 키가 곧 스위치다).
-  전체 목록은 [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.16/charts/nexus-server/examples/secret.example.yaml).
+  전체 목록은 [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.17/charts/nexus-server/examples/secret.example.yaml).
 - **CVAT은 선택** — 설정하지 않아도 서버는 정상 동작한다. 세션 생성·결과 회수만 503이 되고 카탈로그·업로드·seal·조회는 영향이 없다.
 - **superuser도 선택** — 설정하지 않으면 관리자를 만들 부트스트랩 수단이 없다(`users.role = admin`은 백필하지 않는다). 다만 **CVAT과 달리 반쪽 설정은 조용히 꺼지지 않고 기동을 실패시킨다**(아래 참조).
 
@@ -56,7 +56,7 @@ kubectl create secret generic nexus-server -n <namespace> --dry-run=client -o ya
 kubectl apply -f sealed-nexus-server.yaml -n <namespace>
 ```
 
-평문 예시: [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.16/charts/nexus-server/examples/secret.example.yaml).
+평문 예시: [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.17/charts/nexus-server/examples/secret.example.yaml).
 Secret 이름은 `secret.existingSecret`(비우면 릴리즈 fullname, 기본 `nexus-server`)과 일치해야 한다.
 
 - `NEXUS__JWT__SECRET`은 직접 생성하는 임의의 비밀 키(로그인 JWT HS256 서명용)  
@@ -87,6 +87,7 @@ helm upgrade nexus-server int2nexus/nexus-server -n <namespace> \
 | `cas.baseUrl` | `http://cas-server:80` | CAS(cas-server) 주소 |
 | `cas.region` / `cas.defaultBucket` | `cas-default` / `data` | CAS region·기본 버킷 이름. 서버는 이 이름 뒤에 `-manifests`를 붙인 버킷에 seal 스냅샷을 저장한다(이 이름 자체에는 저장하지 않는다). 붙인 이름이 **S3 규칙**(소문자·숫자·`-`·`.`, 3~63자)을 따라야 하므로 이 값은 53자 이하 |
 | `database.maxConnections` | `16` | 워크로드 풀 상한. 적재가 쓸 수 있는 자리는 **이 값 - 4**(조회·관리·seal 몫)이고, readiness 전용 커넥션이 이 풀 **밖에** 하나 더 붙는다(Postgres 쪽 계산은 replica당 이 값 + 1). `ingest.batchItemConcurrency`와의 불변식은 [`values.yaml`](values.yaml) 주석 |
+| `seal.maxConcurrent` | `""` | 이 파드에서 동시에 도는 seal 의 상한(이미지 `0.1.21`~, 비우면 이미지 기본 `1`). 넘친 seal 은 시작하지 않고 **`429`**(`code: seal_busy`, `Retry-After: 10`). `0` 이면 기동이 실패한다. 메모리 지침(`resources`)은 seal 하나 기준이라 올리면 `limits.memory` 도 그 배수만큼 올린다. seal 하나는 풀에서 최대 둘을 예약 4(고정)에서 쓰므로 2 면 적재 포화 때 조회·관리 몫이 0 이 될 수 있다 — `database.maxConnections` 를 올려도 예약은 늘지 않는다 |
 | `ingest.admissionWaitMs` | `""` | 적재가 자리를 기다리는 상한(ms). 넘기면 대기가 아니라 **`429` + `Retry-After: 1`**. 비우면 서버 기본 3000. `0`이면 기다리지 않는다(자리가 비어 있으면 통과, 없으면 그 자리에서 `429`) |
 | `secret.existingSecret` | `""` | 비밀 Secret 이름(비우면 fullname) |
 | `service.type` / `service.nodePort` | `NodePort` / `30090` | 서비스 노출 |
@@ -169,13 +170,13 @@ requests.post(f"{base}/api/v1/admin/datasets/transfer-owner",
 - **사람 계정 만들기** — 공개 가입(`auth.registrationEnabled`)을 끈 배포에서도, 승인 대기(`auth.approvalRequired`)를 켠 배포에서도 만들 수 있고 **만든 계정은 만드는 순간 승인된다.** `role`은 `editor`/`viewer`만(`admin`은 `400` — 승격은 `users/role`). `issue_password: true`면 임시 비밀번호를 응답에 한 번만 싣고, 생략하면 **비밀번호로는 로그인할 수 없는 계정**이 된다(OIDC 신원을 붙여 쓸 사람용 — `admin/oidc-identities`로 매핑하고, 나중에 비밀번호가 필요하면 `users/password-reset`). 이미 있는 이메일·superuser 이메일은 `409`, 로봇 도메인 이메일은 `400`(로봇은 `admin/robots`).
 - **임시 비밀번호는 응답에 한 번만 실려 온다.** 서버 어디에도 저장되지 않으니 그 자리에서 전달하고, 받은 사람은 곧바로 `client.change_password(...)`로 바꾼다. 재설정해도 그 사람의 기존 토큰은 만료(`jwt.ttlHours`)까지 유효하다 — "잊어버림"을 푸는 도구지 "탈취 즉시 차단"이 아니다.
 - **계정 정지는 삭제가 아니다.** 이메일을 계속 점유하므로 그 주소로 재가입할 수 없고, `active: true`로 해제하면 그대로 돌아온다. 정지하면 로그인이 `403 forbidden`이 되고, **이미 발급된 토큰도 캐시 수명(`auth.revocationCacheTtlSecs`, 기본 5초) 안에 막힌다.**
-- **담당자 이전은 인가를 옮기지 않는다.** 이전 담당자도 계속 쓰고 지울 수 있다 — 역할이 `editor`이기 때문이다. 옮겨가는 것은 「다시 넘길 자격」 하나다. 담당자가 없는 dataset(`GET /datasets?unowned=true`)은 위험한 상태가 아니라 **인수 대기**이고, `editor` 이상이면 그대로 쓰고 지울 수 있다. 담당자가 있는 dataset을 넘기는 것은 담당자 본인이 한다([사용법 8.2](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.16/charts/nexus-server/docs/usage.md#82-담당자-이전)).
+- **담당자 이전은 인가를 옮기지 않는다.** 이전 담당자도 계속 쓰고 지울 수 있다 — 역할이 `editor`이기 때문이다. 옮겨가는 것은 「다시 넘길 자격」 하나다. 담당자가 없는 dataset(`GET /datasets?unowned=true`)은 위험한 상태가 아니라 **인수 대기**이고, `editor` 이상이면 그대로 쓰고 지울 수 있다. 담당자가 있는 dataset을 넘기는 것은 담당자 본인이 한다([사용법 8.2](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.17/charts/nexus-server/docs/usage.md#82-담당자-이전)).
 
 **로그인·가입·갱신·OIDC 교환의 `200` 응답은 모두 `{ token, user_id, email }`이다** — 로그인 화면이 실어 쓰는 토큰 필드는 `token`이다. 가입이 승인 대기(`auth.approvalRequired`)면 `202`이고 타입이 다르다.
 
 ### 로봇 계정 발급
 
-사람이 없는 워크로드(적재 잡·스케줄러·CI)용 계정이다. 쓰는 쪽은 [사용법 2.3](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.16/charts/nexus-server/docs/usage.md#23-로봇-토큰으로-연결)의 `nx.connect(robot_token=...)`로 붙는다.
+사람이 없는 워크로드(적재 잡·스케줄러·CI)용 계정이다. 쓰는 쪽은 [사용법 2.3](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.17/charts/nexus-server/docs/usage.md#23-로봇-토큰으로-연결)의 `nx.connect(robot_token=...)`로 붙는다.
 
 계정 생성(`POST /api/v1/admin/robots`, body `{"name": "...", "role": "editor", "display_name": "..."}`, `display_name`만 선택)의 이름은 소문자·숫자·하이픈 1~48자이고 하이픈으로 시작하거나 끝날 수 없다(`400`). **이름 검사가 `role` 검사보다 먼저 돈다** — 이름이 틀린 동안에는 `role` 오류를 볼 수 없다. 로봇의 `role`은 `editor`·`viewer`뿐이고 `admin`은 `400`이다 — `admin` 로봇의 장수명 토큰은 그대로 관리 평면 전권이 되기 때문이다. 경로의 `user_id`는 정수다(UUID를 넣으면 본문 검사 전에 `400`).
 
@@ -252,7 +253,7 @@ helm upgrade --install nexus-server int2nexus/nexus-server -n <namespace> \
 | `cvat.projectNamePrefix` | `nexus` | 생성되는 CVAT project 이름 접두사 |
 | `cvat.segmentSize` | `""` | job 분할 크기. 비우면 CVAT 기본 동작 |
 | `cvat.maxSessionSamples` | `""` | 세션당 샘플 상한(서버 기본 2000) |
-| `cvat.staleCreatingSecs` | `""` | 이 시간(초)을 넘긴 `creating` 세션을 기동 시 `failed`로 정리(서버 기본 1800) |
+| `cvat.staleCreatingSecs` | `""` | 준비 작업의 진행 기록(60 초마다)이 이 시간(초)보다 오래 멈춘 `creating` 세션을 `failed` 로 정리한다(서버 기본 1800). 각 파드가 5 분마다(기동 직후 포함) 검사하고, 다른 파드가 준비 중인 살아 있는 세션은 건드리지 않는다. 180 미만이면 180 으로 올려 쓰고 기동 로그에 경고를 남긴다(`config-effective` 에는 올린 값이 보인다). 이미지 `0.1.21`~ |
 
 ### 연결 확인
 
@@ -333,10 +334,11 @@ curl -H "Authorization: Bearer $METRICS_TOKEN" localhost:8090/_internal/metrics
 | DB 풀 | `nexus_db_pool_connections` · `_idle_connections` · `_acquire_timeouts_total` | **`_acquire_timeouts_total`이 오르기 시작하는 순간이 풀 포화의 시작점이다** — readiness는 전용 커넥션을 쓰므로 그 상황에서도 계속 200이고, 이 카운터가 유일한 신호다 |
 | 적재 유입 제어 | `nexus_ingest_permits_total` · `_available` · `nexus_ingest_rejected_total` | |
 | 로봇 토큰 | `nexus_robot_tokens_active` · `_expiring_soon` · `nexus_robot_token_min_expires_in_seconds` · `nexus_robot_accounts_without_active_token` | 이 넷만 DB를 조회한다(250ms 제한). 조회가 실패하거나 제한을 넘겨도 **사라지지 않고 직전 값으로 남으므로**(기동 후 한 번도 못 읽었으면 처음부터 없다), 알림에는 `and nexus_metrics_db_stats_ok == 1`을 함께 건다. `min_expires_in_seconds`는 활성 토큰이 없을 때 `+Inf`라 `< 임계값` 경보가 저절로 풀린다 |
+| seal | `nexus_seal_permits_total` · `_available` | 파드당 동시 seal 자리와 빈 자리(이미지 `0.1.21`~). **total − available 이 지금 도는 seal 수다** — 연결이 끊긴 seal 은 `axum_http_requests_pending` 에 잡히지 않으므로 진행 중인 seal 은 이 둘로만 보인다 |
 | 집계 성공 | `nexus_metrics_db_stats_ok` | 이번 스크레이프에서 위 넷을 실제로 읽었으면 `1`, 못 읽었으면 `0` |
 | HTTP 요청 | `axum_http_requests_total`(라벨 `method`·`status`·`endpoint`) · `axum_http_requests_duration_seconds`(히스토그램, 같은 라벨) · `axum_http_requests_pending`(`method`·`endpoint`) | 이름·라벨 키·지연 구간이 cas-server와 같다 |
 
-**HTTP 요청 지표의 `endpoint`는 요청 경로가 아니라 라우트 템플릿이다**(`/datasets/{dataset_id}`) — dataset id마다 시리즈가 생기지 않는다. 어느 라우트에도 매칭되지 않은 요청은 `unmatched` 하나로 모이고(cas-server는 이 경우 요청 경로를 적는다), 프로브·스크레이프 경로도 함께 세어진다. 응답 전에 끊긴 요청은 요청 수·지연에 잡히지 않는다(로그의 `요청이 취소됐다` 줄로 본다). 엔드포인트 하나만 5xx인 결함은 이렇게 본다.
+**HTTP 요청 지표의 `endpoint`는 요청 경로가 아니라 라우트 템플릿이다**(`/datasets/{dataset_id}`) — dataset id마다 시리즈가 생기지 않는다. 어느 라우트에도 매칭되지 않은 요청은 `unmatched` 하나로 모이고(cas-server는 이 경우 요청 경로를 적는다), 프로브·스크레이프 경로도 함께 세어진다. 응답 전에 끊긴 요청은 요청 수·지연에 잡히지 않는다(로그의 `요청이 취소됐다` 줄로 본다. seal 은 끊겨도 계속 돌며, 위 seal 지표로 본다). 엔드포인트 하나만 5xx인 결함은 이렇게 본다.
 
 ```promql
 sum by (endpoint) (rate(axum_http_requests_total{status=~"5.."}[5m]))
@@ -353,7 +355,8 @@ requests.get(f"{base}/api/v1/admin/config-effective", headers=h).json()
 #  "jwt": {"secret": "<set>", "ttl_hours": 24},
 #  "auth": {"superuser_email": "<set>", "approval_required": false,
 #           "revocation_cache_ttl_secs": 5, ...},
-#  "cvat": null}
+#  "cvat": null,
+#  "seal": {"max_concurrent": 1}, ...}
 ```
 
 **이것이 필요한 이유는 오타가 조용히 삼켜지기 때문이다.** 서버는 모르는 설정 키를 오류로 만들지 않는다 — `NEXUS__JWT__TTLHOURS`처럼 한 글자 틀린 env는 무시되고 기본값으로 기동한다. 경고도 없고 기동도 정상이라, 의도한 값이 실제로 걸렸는지 확인할 방법이 이 응답뿐이다.
