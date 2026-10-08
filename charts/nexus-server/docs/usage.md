@@ -38,7 +38,7 @@ pip install --upgrade --extra-index-url https://int2nexus.github.io/cas-server/s
 python -c "import importlib.metadata as m; print(m.version('int2nexus-sdk'))" 
 ```
 
-이 문서는 서버 `0.1.21`(차트 `0.3.17`)와 SDK `0.1.20` 기준이다. SDK는 서버와 따로 발행되므로 위 명령으로 최신을 유지한다 — 문서의 기능이 없다는 에러가 나면 대개 SDK가 낮은 것이다. 버전별 변경은 [차트 CHANGELOG](../CHANGELOG.md)와 [SDK 변경 이력](https://int2nexus.github.io/cas-server/sdk/changelog.html)에 있다.
+이 문서는 서버 `0.1.23`(차트 `0.3.18`)와 SDK `0.1.20` 기준이다. SDK는 서버와 따로 발행되므로 위 명령으로 최신을 유지한다 — 문서의 기능이 없다는 에러가 나면 대개 SDK가 낮은 것이다. 버전별 변경은 [차트 CHANGELOG](../CHANGELOG.md)와 [SDK 변경 이력](https://int2nexus.github.io/cas-server/sdk/changelog.html)에 있다.
 
 ### 2.2 연결 설정
 
@@ -981,6 +981,7 @@ target.import_samples(
     [s["sample_id"] for s in people],              # samples()의 dict에서 sample_id만 뽑는다
 )
 ```
+- **복사 도중 원본 샘플이 지워지면 요청 전체가 `400`이고 아무것도 복사되지 않는다**(서버 이미지 `0.1.23`+). 서버가 원본 샘플을 잠근 뒤 Asset을 읽으므로, 삭제된 원본의 CAS 객체를 가리키는 샘플이 만들어지지 않는다. 그 잠금이 요청이 끝날 때까지 유지되어, 그동안 같은 원본 샘플의 수정(태그·크기 보정·삭제 등)은 기다린다.
 
 ### 7.2 seal — 버전 잠금
 검수가 끝난 draft 버전을 봉인해 불변 상태로 전환한다(draft → sealed, 단방향 - 되돌릴 수 없음). seal 시 annotation을 NDJSON 스냅샷으로 CAS에 박제하고 manifest hash를 기록한다.
@@ -994,6 +995,7 @@ ds.seal(description="검수 완료, 2026-10 학습용")   # 버전 설명과 함
 - **동시 seal 상한과 대기**(SDK `0.1.20`+, 서버 이미지 `0.1.21`+). 서버는 파드마다 동시에 도는 seal 수에 상한(`seal.maxConcurrent`, 기본 1)을 둔다. 상한이 차 있거나(`seal_busy`) 같은 버전의 seal이 이미 돌고 있으면(`seal_in_progress`) seal을 시작하지 않고 `429`(`Retry-After: 10`)로 답한다. 시작하지 않은 요청이라 다시 보내도 중복되지 않는다.
   - `ds.seal(wait=600)`(기본)은 이 `429`를 최대 `wait`초 기다리며 다시 보내고, 넘기면 `NexusError(status_code=429)`다. `wait=0`이면 기다리지 않는다. 기다린 시간만 세고 seal 자체의 소요는 세지 않는다.
 - **seal은 연결이 끊겨도 서버에서 끝까지 돈다**(서버 이미지 `0.1.21`+). 프록시가 응답 대기 상한으로 연결을 끊어 `502`/`504`를 받았더라도 seal은 멈추지 않으므로, 그 버전의 상태를 조회해 sealed가 됐는지 확인한다. 서버 교체(SIGTERM) 중에 끊긴 seal은 draft로 남는다.
+- **CAS 업로드가 전송 중에 손상되면 seal이 실패한다**(서버 이미지 `0.1.23`+). 서버는 스냅샷을 올릴 때 본문 해시를 함께 보내 CAS가 저장 전에 대조하게 하고, 다르면 seal은 nexus의 `502`(본문 `cas error: ... InvalidDigest`)로 끝나며 버전은 **draft로 남는다**. 일시적인 손상이면 다시 `ds.seal()`하면 된다. 프록시가 낸 `502`와 구별하려 애쓸 필요는 없다 — 어느 쪽이든 버전 상태를 조회해 sealed면 끝난 것이고, draft면 다시 seal한다.
 - **읽기 타임아웃.** SDK의 기본 읽기 타임아웃은 120초다. seal이 그보다 오래 걸리는 대규모 버전은 `nx.connect(timeout=(10, 1800))`처럼 읽기 쪽 초를 늘린다. 타임아웃이 나도 seal은 서버에서 계속되고(위) SDK는 이 타임아웃을 다시 보내지 않으므로, 실패로 단정하지 말고 `ds.seal(if_sealed="ignore")`로 다시 부르거나 버전 상태를 확인한다.
 - **HTTP 오류 `code`**(`POST /datasets/{id}/versions/{v}/seal`). 응답 본문 `{"error": ..., "code": ...}`의 `code`로 분기한다.
 
@@ -1064,6 +1066,7 @@ new_ds = ds.clone("my-dataset-copy", "v0")
 - **서버의 비동기 job으로 복제한다.** SDK가 `POST /datasets/{id}/versions/{version}/clone-jobs`로 시작하고 `GET /clone-jobs/{job_id}`로 완료까지 폴링하며(진행률 표시), 복사와 실패 시 롤백을 서버가 담당한다 — 대규모 Dataset도 클라이언트가 import를 수천 번 왕복하지 않는다.
 - 원본의 tags/description을 복사해 새 dataset을 만들고(서버 `0.1.21`+는 원본 **버전의 설명**도 복사한다, §7.7), 항상 **Draft**로 시작한다(복제 직후 바로 이어서 patch/추가 작업이 가능하다). Asset은 참조만 재사용해 CAS 재업로드가 없다.
 - 실패하면 서버가 만들던 대상을 롤백한다. 단 복사 중에 누가 대상을 seal했거나 버전을 붙였으면 롤백하지 않고 사유를 job의 `error`에 남긴다.
+- **복제 도중 원본 샘플이 지워지면 job은 실패로 끝나고 대상을 롤백한다**(서버 이미지 `0.1.23`+). 복사 중인 청크의 원본 샘플은 그 청크가 끝날 때까지 잠겨, 같은 샘플의 수정이 잠시 기다린다.
 - 동시 복제가 전역 상한(3)을 넘으면 서버가 `429`를 주고 SDK가 물러났다 자동으로 재시도한다. 끝내 넘으면 `NexusError(status_code=429)`다.
 - `new_version`에도 §7.1의 버전 이름 규칙이 적용된다(어기면 `400`).
 - **대상 이름의 dataset이 이미 있으면 `409`다.** 기존 dataset에 버전을 더하려면 그 핸들에서 `import_samples`를 쓴다.
@@ -1131,6 +1134,10 @@ Dataset 삭제는 버전 단위로 수행한다. `ds.delete()`로 버전을 삭�
 - **SDK 저수준 `client.delete_version(...)`:** 기본값이 **`delete_cas=False`(보존)**다. 지우려면 `delete_cas=True`를 명시한다.
 
 **남아 있는** sealed 버전이 참조하는 객체는 `delete_cas` 값과 무관하게 **항상 보존**된다. 관리자가 sealed 버전을 지우면 그 버전만 붙잡던 객체는 `delete_cas=true`일 때 GC 대상이 된다.
+
+- **썸네일**(`thumb/<key>`, §3.3)은 원본 객체를 지울 때 에셋 role과 무관하게(depth 같은 이미지 에셋 포함), **원본 삭제가 성공했을 때만** 함께 지운다(서버 이미지 `0.1.23`+).
+- **삭제는 연결이 끊겨도 서버에서 끝까지 돈다**(서버 이미지 `0.1.23`+, seal과 같다). 큰 버전을 지우다 프록시가 연결을 끊어 `502`/`504`를 받았어도 DB 삭제와 CAS 정리는 계속되므로, 다시 지우지 말고 버전을 조회해 `404`(이미 지워짐)인지 확인한다.
+- CAS 삭제는 best-effort다. CAS가 거절해 지우지 못한 객체는 남고 다시 정리되지 않는다 — 운영 쪽에서는 지표 `nexus_cas_delete_failures_total`로 보인다.
 
 `confirm`에는 **삭제할 버전 문자열**을 준다(`True`면 현재 버전). 서버가 경로의 버전과 정확히 비교해 어긋나면 400이다 — dataset 이름이 아니다.
 

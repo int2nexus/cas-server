@@ -6,16 +6,16 @@
 #
 # ── 문서 ─────────────────────────────────────────────────────────────────────
 #   아키텍처 (도메인 모델·버전 관리·스냅샷 구조)
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.17/charts/nexus-server/docs/architecture.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.18/charts/nexus-server/docs/architecture.md
 #   사용법 (설치·SDK 연결·Dataset 워크플로우)
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.17/charts/nexus-server/docs/usage.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.18/charts/nexus-server/docs/usage.md
 #   차트 README
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.17/charts/nexus-server/README.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.18/charts/nexus-server/README.md
 # ─────────────────────────────────────────────────────────────────────────────
 
 image:
   repository: int2jieun/nexus-server
-  tag: "0.1.21"
+  tag: "0.1.23"
   # digest 로 핀하려면 여기에 넣으십시오 (`sha256:...`). 값이 있으면 tag 대신 이것이
   # 쓰이고, 렌더 결과가 `repository@sha256:...` 가 됩니다.
   #
@@ -47,7 +47,7 @@ imagePullSecrets: []
 #   커넥션 산술: 레플리카마다 자기 풀을 새로 연다. Postgres max_connections 에 대한 불변식(교체 중
 #   최대 파드 수 기준)은 아래 database 섹션에 있다 — 여기서 다시 계산하지 말고 그 값을 그대로 따를 것.
 #
-#   creating 세션 정리(이미지 0.1.21~): 준비 작업이 60 초마다 진행 기록을 남기고, 각 레플리카가 5 분마다
+#   creating 세션 정리: 준비 작업이 60 초마다 진행 기록을 남기고, 각 레플리카가 5 분마다
 #   그 기록이 cvat.staleCreatingSecs 넘게 멈춘 세션만 failed 로 바꾼다. 다른 레플리카가 준비 중인 살아 있는
 #   세션은 건드리지 않는다.
 #
@@ -110,7 +110,7 @@ ingest:
 
 # ── seal ─────────────────────────────────────────────────────────────
 seal:
-  # 이 파드에서 동시에 도는 seal 의 상한. 비우면 이미지 기본값 1(이미지 0.1.21~).
+  # 이 파드에서 동시에 도는 seal 의 상한. 비우면 이미지 기본값 1.
   # 넘친 seal 은 시작하지 않고 429(code: seal_busy, Retry-After: 10). 같은 버전의 seal 이 이미 돌고
   # 있으면 어느 파드든 429(code: seal_in_progress).
   # 이미 sealed 인 버전은 상한과 무관하게 409(code: already_sealed).
@@ -254,7 +254,7 @@ auth:
 # 나머지 엔드포인트와 달리 JWT가 아니라 별도 bearer를 받는다 — 스크레이퍼는 로그인할 수
 # 없고, JWT를 쓰게 하면 모니터링 스택이 카탈로그 전체를 읽는 계정을 들고 있어야 한다.
 #
-# 내는 지표 이름 열여섯:
+# 내는 지표 이름 열아홉:
 #   nexus_db_pool_connections            워크로드 풀의 현재 커넥션 수(상한이 아니다)
 #   nexus_db_pool_idle_connections       그중 유휴. 현재 - 유휴 = 사용 중
 #   nexus_db_pool_acquire_timeouts_total 풀 획득 타임아웃 누적 — 이 값이 오르기
@@ -262,10 +262,16 @@ auth:
 #   nexus_ingest_permits_total           적재 자리 수(maxConnections - 4)
 #   nexus_ingest_permits_available       그중 비어 있는 자리
 #   nexus_ingest_rejected_total          유입 제어가 429로 돌려보낸 누적 건수
-#   nexus_seal_permits_total             파드당 동시 seal 자리 수(seal.maxConcurrent, 이미지 0.1.21~)
+#   nexus_seal_permits_total             파드당 동시 seal 자리 수(seal.maxConcurrent)
 #   nexus_seal_permits_available         그중 비어 있는 자리. total - available = 지금 도는 seal 수
 #                                        (요청이 끊긴 seal 은 axum_http_requests_pending 에 안 잡힌다 —
 #                                        진행 중인 seal 은 이 둘로만 보인다)
+#   nexus_cas_delete_failures_total      삭제의 CAS 정리에서 지우지 못한 객체 누적.
+#                                        라벨 kind = asset·thumbnail·snapshot, 셋 다 0 부터.
+#                                        오르면 그 객체는 다시 정리되지 않는다
+#   nexus_jemalloc_allocated_bytes       할당자(jemalloc)가 애플리케이션에 내준 바이트.
+#   nexus_jemalloc_resident_bytes        할당자가 쥔 물리 페이지. resident - allocated 가
+#                                        대략 할당자가 붙든 몫이다
 #   nexus_robot_tokens_active            폐기되지 않았고 만료 전인 로봇 토큰 수
 #   nexus_robot_tokens_expiring_soon     그중 7일 안에 만료되는 것
 #   nexus_robot_token_min_expires_in_seconds  가장 가까운 만료까지 남은 초.
@@ -348,8 +354,8 @@ ingress:
 #
 #     limits.memory  ≥  N × A × 3 KiB  +  512 MiB
 #
-# 3 KiB 는 같은 크기의 seal 을 거듭했을 때의 샘플당 증가분(실측 약 2.7 KiB)을 올림한 값이고, 512 MiB 는
-# 기동 직후 값과 적재·조회 몫이다. CAS key 가 길면 더 크다(측정 조건은 CHANGELOG 0.3.17 주의).
+# 3 KiB 는 같은 크기의 seal 을 거듭했을 때의 샘플당 증가분 실측에 여유를 둔 값이고, 512 MiB 는 기동 직후
+# 값과 적재·조회 몫이다. CAS key 가 길면 더 크다(측정 조건과 값은 CHANGELOG).
 #
 #   N = 10만,  A = 1  →  약 0.8 GiB → 한도 1Gi
 #   N = 50만,  A = 1  →  약 1.9 GiB → 한도 2Gi
@@ -358,8 +364,10 @@ ingress:
 #
 # 이 식은 seal 하나를 전제로 한다(seal.maxConcurrent 기본 1). 상한을 올리면 N × A × 3 KiB 를 그 수만큼 더한다.
 #
-# **한 번 seal 한 파드의 RSS 는 피크에서 잘 안 내려온다**(할당자가 해제분을 OS 에 바로
-# 돌려주지 않는다). 큰 seal 을 한 번만 돌릴 계획이어도 한도는 상시값으로 잡는 편이 맞다.
+# 반복 seal 의 샘플당 최대 증가분 실측은 약 1.5 KiB 라 식의 샘플당 항(3 KiB)이 그 약 2 배이지만, 측정이 한
+# 호스트(14 CPU)의 것이라 CPU 수가 다른 노드의 값을 받기 전에는 낮추지 않는다.
+#
+# seal 이 끝나고 유휴가 되면 파드 RSS 는 내려온다. 한도는 seal 피크로 잡는다 — 내려오는 것은 seal 이 끝난 뒤다.
 #
 # 한도를 넘기면 그 파드가 OOMKill 된다. **카탈로그는 안전하다** — 버전을 sealed 로 바꾸는
 # DB 쓰기가 맨 마지막이라 버전은 draft 로 남고, 재시도하면 이미 올라간 샤드는 내용 해시가
@@ -387,7 +395,7 @@ resources:
 
 terminationGracePeriodSeconds: 30
 
-# 파드를 종료할 때 SIGTERM 전에 기다리는 초(preStop). 이미지 0.1.20 부터 서버가 SIGTERM 을 받으면 곧바로
+# 파드를 종료할 때 SIGTERM 전에 기다리는 초(preStop). 서버는 SIGTERM 을 받으면 곧바로
 # 새 연결을 받지 않는다(graceful shutdown). 그런데 Service 엔드포인트·ingress upstream 에서 파드가 빠지는 것은
 # 그보다 늦어, 그 사이 들어온 요청이 닫힌 파드로 가 502 가 될 수 있다 — SDK 는 다시 보내지만 웹 UI·스크립트는
 # 아니다. 이 시간 동안 파드는 평소처럼 응답하고, 그 뒤에 SIGTERM 을 받는다. terminationGracePeriodSeconds 에
