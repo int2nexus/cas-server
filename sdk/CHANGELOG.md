@@ -9,6 +9,29 @@ pip install --extra-index-url https://int2nexus.github.io/cas-server/sdk/simple/
 `scripts/publish_sdk.py` 는 `sdk/pyproject.toml` 의 버전과 같은 `## <버전>` 절이 이 파일에 없으면
 빌드하지 않고 멈춥니다. 최신 버전이 위로 오게 적습니다.
 
+## 0.1.21
+
+**FiftyOne 식 조회·집계 메서드를 더합니다.** 서버 변경 없이 기존 경로 위에서 돕니다. nexus-server `0.1.21`·`0.1.23` 에서 실측했습니다. 쓰는 서버 경로가 처음 들어간 판은 `len(ds)` 가 `0.1.7`, `count_values`·`count_sample_tags` 가 `0.1.10`, `set_values`·admin 의 sealed 삭제가 `0.1.18` 이고, 나머지는 그보다 오래됐습니다.
+필드는 서버와 같은 경로 문법입니다 — meta 는 `"meta.<키>"`, 샘플 속성은 `"tags"`·`"split"`·`"sample_id"`. FiftyOne 의 `values("x")` 는 `values("meta.x")` 로 옮깁니다.
+
+- **`ds.iter_samples(*, page_size=1000, **필터)`** — `AnnotatedSample` 을 하나씩 내는 제너레이터입니다. annotation 을 항상 전부 싣고, 받은 샘플의 `meta`·`tags`·그룹을 고친 뒤 `save()` 하면 바뀐 것만 저장됩니다. 그룹은 `ds.declare_group_kinds()`(또는 `load_or_create(group_kinds=)`)로 선언한 것만 타입 객체가 되고 나머지는 원본 그대로 왕복합니다. 필터는 `ds.samples()` 와 같은 키워드(`split`·`tags`·`exclude_tags`·`meta`·`group_key`·`label`·`confidence_min`/`max`·`track_id`·`sample_ids`)이고 `include_annotations` 는 받지 않습니다 — annotation 없이 만든 샘플에 그룹을 넣고 저장하면 서버의 그 그룹이 통째로 교체되기 때문입니다(가벼운 순회는 `values()` 나 `ds.samples(include_annotations=False)`). 서버에는 `page_size` 만큼씩 꺼낼 때 묻고, 순서는 `sample_id` 내림차순입니다. `page_size` 는 1~1000 정수만 받고 그 밖은 `ValueError`, 모르는 필터 키워드와 `include_annotations` 는 `TypeError` 입니다 — 제너레이터라서 이 오류는 호출할 때가 아니라 첫 샘플을 꺼낼 때 납니다. 「바뀐 것만 저장」은 nexus-server `0.1.18` 이상이고, 그보다 옛 서버에서는 `RuntimeWarning` 과 함께 annotation 통째 교체로 저장합니다(종전 `load_sample()` 과 같습니다).
+- **`AnnotatedSample.tags`·`AnnotatedSample.split`** — `iter_samples`·`shuffle`·`ds.load_sample()` 로 받은 샘플은 태그(고칠 수 있는 리스트)와 split(읽기 전용)을 듭니다. `save()` 는 바뀐 그룹·meta 를 저장한 뒤 더해진 태그를 붙이고 빠진 태그를 뗍니다(순서만 바뀐 것은 변경이 아닙니다). 태그를 바꿨는데 핸들의 버전이 sealed 면 아무것도 보내지 않고 `NexusError(409)` 입니다(sealed 라는 답은 핸들이 기억해 다시 묻지 않습니다). 샘플이 그 사이 삭제됐으면 `NexusError(404)` 입니다. 태그를 바꾼 `save()` 뒤에는 `s.tags` 가 서버에 저장된 값(중복 없음, 서버가 정한 순서)으로 바뀝니다 — 서버는 기존 태그 뒤에 새 태그를 붙이지만, 새 태그가 여럿이면 그들끼리의 순서는 넣은 순서와 다를 수 있습니다. 태그를 모두 떼려면 `s.tags = []` 로 두십시오 — `None` 은 `NexusValidationError` 입니다. 두 저장은 한 트랜잭션이 아니어서 태그 단계가 실패하면 meta·그룹은 이미 저장된 상태이고, 다시 `save()` 하면 태그만 보냅니다. **meta 와 태그는 샘플에 붙어 있어** 같은 샘플을 공유하는 다른 버전의 조회에도 바뀐 값이 보입니다(sealed 버전의 seal 스냅샷 — `to_df()` 가 읽는 것 — 은 그대로입니다).
+- **`ds.load_sample(sample_id)`** — 샘플 단건 조회로 바꿔 `tags`·`split` 까지 읽습니다. annotation 은 종전과 같지만, 그룹 이름이 `sample_id`·`split`·`tags`·`created_at`·`image_url`·`thumbnail_url` 중 하나와 같으면 그 그룹은 서버 응답에서 그 이름의 필드에 가려 보이지 않습니다(`iter_samples`·`shuffle` 도 같습니다). 이 SDK 는 그런 그룹을 건드리지 않습니다 — nexus-server `0.1.18` 미만이라 통째 교체로 저장할 때도 서버에 저장된 값을 읽어 그대로 함께 보냅니다(이 읽기는 `0.1.5` 이상이 필요합니다).
+- **`ds.name`** — dataset 이름. 핸들이 아는 이름이라 이 핸들의 `update(name=)` 과 `ds.refresh()` 가 갱신합니다.
+- **`ds.refresh()`** — `dataset_id` 로 dataset 을 다시 읽어 `ds.name` 을 갱신하고 핸들을 돌려줍니다. 다른 곳에서 이름이 바뀌었을 때 씁니다. dataset 이 없으면 `NexusError(404)` 입니다.
+- **`len(ds)`** — 버전의 샘플 수(필터 없는 정확한 수)를 서버에 묻습니다. **`bool(ds)` 는 항상 `True`** 이고 서버를 부르지 않습니다 — 빈 버전의 핸들도 `if ds:` 에서 참입니다.
+- **`ds.values(field, **필터)`** — 샘플마다 값 하나를 `sample_id` 내림차순 리스트로 돌려줍니다. 키가 없으면 `None`, `"tags"` 는 리스트입니다. `field` 는 `"meta.<키>"`·`"tags"`·`"split"`·`"sample_id"` 만 받고 그 밖은 `ValueError` 입니다. 필터는 `iter_samples` 와 같습니다.
+- **`ds.distinct(field, **필터)`** — 정렬된 고유 값 리스트입니다(`field` 규칙은 `values` 와 같습니다). 필터가 있으면 걸린 샘플을 훑어 모읍니다(값 분포 조회는 필터를 받지 않습니다). `None` 은 빼고 배열 값은 원소를 펼치며, 객체 값이 있으면 `ValueError`, 값이 없는 키는 `[]` 입니다. 숫자는 숫자 순서로 정렬되고 `1` 과 `1.0` 은 하나입니다. 필터 없이 부를 때 스칼라 타입이 둘 이상 섞인 `meta` 필드(문자열·숫자·불리언 중 둘 이상)는 값이 모두 문자열(`"3"`·`"true"`)로 나옵니다. 값이 `None` 이거나 빈 리스트인 필터 인자는 필터로 치지 않습니다.
+- **`ds.count_values(field)`** — `{값: 샘플 수}`(인스턴스 수가 아닙니다). `field` 는 `"tags"`·`"meta.<문자열·불리언 키>"`·`"group_key"`·`"<그룹>.label"`·`"<그룹>.component.type"` 이고 그 밖은 서버가 `400` 입니다. 키는 서버가 준 문자열입니다(불리언은 `"true"`/`"false"`). 값 종류가 500 을 넘으면 개수가 큰 쪽만 오고 `RuntimeWarning` 을 냅니다. 서버가 제한 시간 안에 못 세면 0 건으로 돌려주지 않고 `NexusError` 를 냅니다.
+- **`ds.count_sample_tags()`** — 샘플 태그별 샘플 수. `count_values("tags")` 와 같습니다.
+- **`ds.get_field_schema()`** — `{"meta.<키>": 타입 문자열}`. dataset 에서 관측된 키만 담고 버전과 무관합니다(다른 버전에서만 쓰인 키도 나옵니다). 관측만 된 숫자 필드는 정수여도 `"float"` 이고, 배열·객체만 관측된 필드는 빠집니다(서버 쪽 과제, 일정 미정).
+- **`ds.tags`·`ds.add_tag(*tags)`·`ds.remove_tag(*tags)`** — dataset 태그를 읽고 더하고 뺍니다. `ds.tags` 는 부를 때마다 서버에서 읽는 **튜플**이라 `ds.tags.append(t)` 는 `AttributeError` 입니다(리스트였다면 아무 일도 안 하고 지나갑니다). `add_tag`/`remove_tag` 는 갱신된 태그 튜플을 돌려주고, 인자가 없거나 리스트 하나를 넘기면(`add_tag(["a", "b"])`) 요청 전에 `ValueError` 입니다 — `add_tag("a", "b")` 또는 `add_tag(*리스트)` 로 부르십시오.
+- **`ds.set_values("meta.<키>", {sample_id: 값})`** — 샘플마다 meta 키 하나를 씁니다. 값 `None` 은 그 키를 지우고 다른 meta 키는 그대로 둡니다. 적용한 건수를 돌려줍니다. 샘플마다 요청 하나이고 일괄 트랜잭션이 아닙니다 — 실패하면 그 자리에서 멈추고, 올라오는 예외의 `applied`(앞서 적용된 건수 — 되돌리지 않습니다)와 `failed_sample_id` 로 알려 줍니다. 서버 오류는 `NexusError`(인증 오류면 `NexusAuthError` 그대로)이고, 응답을 못 받은 실패(읽기 타임아웃 등)도 `NexusError` 입니다 — 그때 실패한 샘플은 적용됐을 수도 있습니다(다시 보내도 결과가 같습니다). 그 밖의 예외는 종류를 바꾸지 않고 두 속성만 붙습니다. sealed 버전은 첫 건의 `409` 에서 멈춥니다. `field` 는 `"meta.<키>"` 만 받습니다.
+- **`ds.shuffle(*, seed=None, page_size=1000, **필터)`** — 필터에 걸린 샘플을 섞은 순서로 `AnnotatedSample` 로 하나씩 내는 제너레이터입니다. 같은 `seed` 와 같은 데이터면 같은 순서입니다. `sample_id` 를 먼저 모아 섞은 뒤 `page_size` 개씩 본문을 받으므로 id 목록은 메모리에 둡니다. 도중에 지워진 샘플은 건너뜁니다. 필터 규칙은 `iter_samples` 와 같습니다(`include_annotations` 를 받지 않습니다).
+- **`nx.dataset_exists(name)`** — 그 이름의 dataset 이 있으면 `True`. 이름이 정확히 같은 것만 셉니다(부분 일치는 `False`).
+- **`ds.delete(..., confirm_dataset_name=)`·`NexusClient.delete_version(..., confirm_dataset_name=)`** — `role=admin` 은 sealed 버전도 데이터셋 이름을 정확히 주면 삭제됩니다(틀리거나 빠지면 `400`, nexus-server `0.1.18` 이상). 비-admin 은 종전대로 `409` 입니다. 인자를 주지 않으면 요청이 종전과 같습니다. 「sealed 는 예외 없이 삭제 불가」라던 독스트링도 고쳤습니다.
+- **`NexusClient` 저수준 메서드** — `version_stats`·`facet_values`·`facet_counts`·`histogram`·`version_schema`·`add_dataset_tags`·`remove_dataset_tags`. 서버 경로를 그대로 감싸고 응답 JSON 을 해석 없이 돌려줍니다.
+
 ## 0.1.20
 
 **seal 이 서버의 동시 seal 상한에 걸리면 기다렸다 다시 보냅니다.** nexus-server `0.1.21` 부터 파드마다 동시에 도는 seal 의
