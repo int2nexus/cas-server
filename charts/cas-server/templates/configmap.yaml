@@ -91,6 +91,14 @@ data:
     {{- with .jwksAuth }}
     jwksAuth = {{ . | quote }}
     {{- end }}
+    {{- with .caFile }}
+    {{- if hasPrefix "/etc/cas/oidc-ca/" . }}
+    {{- if not (hasKey ($.Values.auth.oidc.caCerts | default dict) (trimPrefix "/etc/cas/oidc-ca/" .)) }}
+    {{- fail (printf "auth.oidc.issuers 의 caFile '%s' 이 가리키는 파일이 auth.oidc.caCerts 에 없습니다. caCerts 에 같은 이름의 키로 PEM 을 넣으십시오." .) }}
+    {{- end }}
+    {{- end }}
+    caFile   = {{ . | quote }}
+    {{- end }}
     {{- end }}
     {{- end }}
 

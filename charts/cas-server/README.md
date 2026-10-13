@@ -5,9 +5,9 @@ HTTP API를 제공한다.
 
 ## 문서
 
-- [아키텍처](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.40/charts/cas-server/docs/architecture.md)
+- [아키텍처](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.41/charts/cas-server/docs/architecture.md)
   — 스토리지 모델(CAS·dedup·GC), 백엔드 구성, S3 호환 API 명세, 에러 코드
-- [사용법](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.40/charts/cas-server/docs/usage.md)
+- [사용법](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.41/charts/cas-server/docs/usage.md)
   — 배포 절차, 웹 UI 키 관리, AWS CLI/boto3 예제, 내부 API
 - [변경 이력](CHANGELOG.md)
   — 버전별 동작 변경·마이그레이션·설정 키. 각 항목은 해당 GitHub Release 본문과 동일하다
@@ -49,7 +49,7 @@ kubectl apply -f sealed-secret.yaml -n <namespace>
 배포에서 그 값이 없으면 스크레이프가 `401`** 이다. 용도는 [메트릭 스크레이프](#메트릭-스크레이프) 참고.
 
 `secrets.secretMasterKey`를 비우면 NoAuth 모드(인증 없음, 내부망 전용)로 동작한다. 상세 절차와 값 교체
-방법은 [`examples/sealed-secret.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.40/charts/cas-server/examples/sealed-secret.yaml) 참고.
+방법은 [`examples/sealed-secret.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.41/charts/cas-server/examples/sealed-secret.yaml) 참고.
 
 ## 설치
 
@@ -57,7 +57,7 @@ kubectl apply -f sealed-secret.yaml -n <namespace>
 helm install cas-server int2nexus/cas-server -n <namespace> -f values-prod.yaml
 ```
 
-`values-prod.yaml`은 직접 작성하거나 [`examples/values-prod.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.40/charts/cas-server/examples/values-prod.yaml)을
+`values-prod.yaml`은 직접 작성하거나 [`examples/values-prod.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.41/charts/cas-server/examples/values-prod.yaml)을
 내려받아 값을 채운 뒤 사용하세요(이 레포를 clone했다면 `charts/cas-server/examples/values-prod.yaml`).
 
 ### S3 / MinIO 모드 values 예시
@@ -158,6 +158,7 @@ storage:
 | `config.softDeleteRetentionSecs` | `604800` | soft-delete된 `object_versions` **행** 중 GC 가 blob 과 함께 치우지 못한 것의 보존 기간. **되돌림 창이 아니다** (아래 참고) |
 | `auth.cacheTtlSecs` | `10` | 자격증명 캐시 TTL. 폐기된 키·좁힌 정책이 실제로 막히기까지의 지연. 유출 대응 시 `0` |
 | `auth.oidc.issuers` | `[]` | STS(`POST /`) 발급자 목록. **비우면 라우트를 마운트하지 않습니다.** 이미지 `0.1.28` 이상 (아래 「STS 임시 자격증명」) |
+| `auth.oidc.caCerts` | `{}` | 발급자 항목의 `caFile` 이 가리킬 CA 파일(이름: PEM). `/etc/cas/oidc-ca` 에 마운트합니다. 이미지 `0.1.34` 이상 (아래 「STS 임시 자격증명」) |
 | `serviceAccount.create` | `false` | `true` 면 차트가 ServiceAccount 를 만든다. `false` 면 기존 것을 쓴다 |
 | `serviceAccount.automountToken` | `false` | 토큰 자동 마운트. 마운트된 토큰은 컨테이너가 뚫렸을 때 API 접근 수단이 되므로 기본 `false`. IRSA/Workload Identity 를 쓸 때, 그리고 `auth.oidc.issuers` 항목에 `jwksAuth: serviceaccount` 를 쓸 때만 `true` |
 | `gc.automountToken` | `null` (= `serviceAccount.automountToken` 상속) | GC CronJob 파드에만 걸리는 토큰 자동 마운트. `jwksAuth: serviceaccount` 때문에 서버 쪽을 `true` 로 올린 배포에서, 쿠버네티스 API 를 부르지 않는 이 Job 만 `false` 로 남길 때 씁니다. `fullSweep` CronJob 에도 같이 적용됩니다 (차트 `0.1.37` 이상) |
@@ -561,7 +562,7 @@ DB 도 타지 않습니다. 그 이전 이미지에서는 `blobs` 전량을 안�
 
 주기는 데이터 크기가 아니라 **회수 대상이 쌓이는 속도**로 정하십시오. 스캔 비용은 회수할
 blob 이 0건이든 수천 건이든 같습니다. 판단 기준과 미루는 비용 계산은
-[docs/usage.md](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.40/charts/cas-server/docs/usage.md) 의 "주기를 정하는 기준" 을 참고하십시오.
+[docs/usage.md](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.41/charts/cas-server/docs/usage.md) 의 "주기를 정하는 기준" 을 참고하십시오.
 
 `gc.phases` 는 이미지 `0.1.20` 이상이 해석합니다. **`sweep` 은 `0.1.25` 이상**이라,
 `0.1.20`~`0.1.24` 에 보내면 서버가 `400` 으로 거절하고 그 Job 이 실패합니다.
@@ -740,6 +741,29 @@ kubeadm 기본 구성은 위 예시의 `https://kubernetes.default.svc.cluster.l
 가리킵니다** — 컨트롤플레인이 여럿이면 그 노드의 장애가 곧 인증 장애가 되므로, 엔드포인트
 여럿 뒤에 있는 서비스 DNS 이름을 `jwksUri` 에 명시하시는 편이 낫습니다.
 
+**사내 CA 가 서명한 IdP 는 `caFile` 로 그 CA 를 더합니다**(이미지 `0.1.34` 이상).
+서버는 공개 CA 만 믿으므로, 없으면 `IDPCommunicationError`(500)입니다.
+
+```yaml
+auth:
+  oidc:
+    issuers:
+      - issuer: https://sso.example.com/realms/<realm>
+        audience: <IdP 쪽에서 정한 값>
+        caFile: /etc/cas/oidc-ca/sso-ca.pem
+    caCerts:
+      sso-ca.pem: |          # 루트와 발급 CA 를 한 파일에 이어 붙여도 됩니다
+        -----BEGIN CERTIFICATE-----
+        ...
+        -----END CERTIFICATE-----
+```
+
+`caCerts` 의 파일은 `/etc/cas/oidc-ca/<파일 이름>` 에 마운트됩니다. 파일 이름에는 영문·숫자·`-`·`_`·`.` 만 쓸 수 있습니다(ConfigMap 키 규칙). `caFile` 의 CA 는 그 발급자의
+JWKS 조회에만 더해지고 기본 신뢰 저장소를 대체하지 않습니다. 다른 발급자와 스토리지 연결은
+영향을 받지 않습니다. 서버는 조회마다 파일을 읽으므로 CA 를 바꿔도 파드를 다시 띄울 필요가
+없습니다. 파일이 없거나 PEM 인증서가 없으면 그 발급자만 `500` 이고, 로그의 `JWKS 조회 실패`
+줄이 경로를 말합니다.
+
 **⑵ 템플릿 키를 만들고 정책을 붙입니다.** 임시 자격증명이 받을 권한이 이 키의 정책입니다.
 
 ```bash
@@ -828,7 +852,7 @@ curl -X DELETE "$BASE/_admin/access-keys/$SESSION_KEY_ID" -H "$SIGV4"
 | `AccessDenied` (403) | 토큰은 유효한데 `(issuer, subject)` 매핑이 없거나 템플릿이 폐기·만료됐습니다 |
 | `InvalidIdentityToken` (400) | 서명·발급자·`audience` 불일치. **`aud` 가 없는 토큰은 거부합니다. `azp` 는 보지 않습니다** |
 | `ExpiredToken` (400) | `exp` 가 지났거나 남은 수명이 900초 미만입니다 |
-| `IDPCommunicationError` (500) | JWKS 를 가져오지 못했습니다. **파드가 막 뜬 직후에도 납니다** — 첫 조회가 끝날 때까지 다른 요청이 여기로 옵니다 |
+| `IDPCommunicationError` (500) | JWKS 를 가져오지 못했습니다. **파드가 막 뜬 직후에도 납니다** — 첫 조회가 끝날 때까지 다른 요청이 여기로 옵니다. IdP 가 사내 CA 서명이면 `caFile` 이 필요합니다(위 ⑴) |
 
 `500` 의 사유는 응답에 실리지 않습니다. `kubectl logs` 에서 `JWKS 조회 실패` 줄을
 보십시오. `jwksAuth: serviceaccount` 인데 `serviceAccount.automountToken` 이 `false` 면

@@ -84,6 +84,25 @@ cas-server 는 기동 시 `sqlx::migrate!` 로 `migrations/` 를 적용합니다
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.1.41
+
+image: `int2jieun/cas-server:0.1.34`
+digest: `sha256:5e4b3b2316c25036ee3698b20f265e361dccc84f546a8b04dfb8aa577b3056a1`
+
+**동작 변경** — 없음. `caFile` 을 쓰지 않으면 이전과 같습니다
+**마이그레이션** — 없음. **롤백 하한은 `0.1.28` 그대로입니다**
+**설정 키** — `auth.oidc.issuers[].caFile`, `auth.oidc.caCerts` 추가
+**호환성** — `caFile` 은 이미지 `0.1.34` 이상에서 동작합니다. 그 이하 이미지는 이 키를 무시하고 기본 신뢰 저장소로만 조회합니다
+
+**추가로 CA 를 줄 수 있습니다.**
+
+사내 CA 가 서명한 IdP 의 JWKS 를 가져올 때 씁니다. `auth.oidc.caCerts` 에 PEM 을 넣으면
+`/etc/cas/oidc-ca/<파일 이름>` 에 마운트되고, 발급자 항목의 `caFile` 이 그 경로를 가리킵니다.
+그 CA 는 그 발급자의 JWKS 조회에만 더해지며 기본 신뢰 저장소를 대체하지 않습니다. 쓰는 법은
+README 「STS 임시 자격증명」에 있습니다.
+
+`caFile` 이 `/etc/cas/oidc-ca/` 아래를 가리키는데 `caCerts` 에 그 이름이 없으면 렌더가 실패합니다.
+
 ## 0.1.40
 
 image: `int2jieun/cas-server:0.1.33`

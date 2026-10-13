@@ -212,6 +212,13 @@ spec:
               mountPath: /app/config
               readOnly: true
 
+            {{- if .Values.auth.oidc.caCerts }}
+            # auth.oidc.caCerts → /etc/cas/oidc-ca/<파일 이름> (issuers[].caFile 이 가리킨다)
+            - name: oidc-ca
+              mountPath: /etc/cas/oidc-ca
+              readOnly: true
+            {{- end }}
+
             {{- if eq .Values.storage.mode "nfs" }}
             {{- range .Values.storage.nfs.backends }}
             - name: nas-{{ .id }}
@@ -263,6 +270,12 @@ spec:
             items:
               - key: default.toml
                 path: default.toml
+
+        {{- if .Values.auth.oidc.caCerts }}
+        - name: oidc-ca
+          configMap:
+            name: {{ include "cas-server.fullname" . }}-oidc-ca
+        {{- end }}
 
         {{- if eq .Values.storage.mode "nfs" }}
         {{- range .Values.storage.nfs.backends }}

@@ -1,0 +1,14 @@
+{{- /* auth.oidc.issuers[].caFile 이 가리키는 CA. deployment 가 /etc/cas/oidc-ca 에 마운트한다. */}}
+{{- with .Values.auth.oidc.caCerts }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cas-server.fullname" $ }}-oidc-ca
+  labels:
+    {{- include "cas-server.labels" $ | nindent 4 }}
+data:
+  {{- range $name, $pem := . }}
+  {{ $name | quote }}: |
+    {{- $pem | nindent 4 }}
+  {{- end }}
+{{- end }}
