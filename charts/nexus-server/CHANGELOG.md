@@ -81,6 +81,153 @@ nexus-server 는 마이그레이션이 바이너리에 임베드되어 **기동 
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.3.19
+
+image: `int2jieun/nexus-server:0.1.23` → `0.1.24`
+digest: `sha256:2505c608fc1d2a696e239d5846bedfff9a1b7d329e257c43de9fa1b93c3f15c7`
+
+**동작 변경** — 열둘입니다. 1~5 는 seal 스냅샷의 저장 위치와 삭제, 6~12 는 meta·샘플 수·집계입니다.
+
+1. **seal 스냅샷의 CAS key 가 버전 id 와 내용 해시를 담습니다.** 이 판이 seal 하는 버전부터 아래 key 에 씁니다. 이미 sealed 인
+   버전의 스냅샷은 옮기지 않고 이전 key 에 그대로 둡니다.
+
+   | 객체 | key |
+   |---|---|
+   | 샤드 NDJSON | `annotations/shards/{버전 id}/{순번 6 자리}-{blake3}.ndjson` |
+   | shard manifest | `annotations/{dataset_id}/{버전 id}/{blake3}.manifest.json` |
+   | 메인 manifest | `manifests/{dataset_id}/{버전 id}/{blake3}.json` |
+
+   이전 판의 key 는 버전 이름(manifest)이나 내용 해시만(샤드)으로 만들어져 다른 버전과 위치를 공유할 수 있었습니다. SDK 는
+   shard manifest 의 `url` 을 따라가므로 SDK 쪽 변경은 없습니다.
+2. **seal 이 CAS 에 쓰는 스냅샷 객체를 쓰기 전에 DB(새 표 `dataset_version_objects`)에 기록합니다.** 실패했거나 파드 종료로
+   중단된 seal, 같은 버전의 seal 경합에서 진 쪽이 남긴 객체(끝나지 않은 seal 의 잔여)는 그 버전의 다음 seal 이 성공한 뒤 지우고,
+   그 전에 버전을 지우면 버전 삭제가 지웁니다(경합에서 진 쪽은 끝날 때 바로 지웁니다). seal 도중 버전이 지워지면 그 seal 이 쓴
+   객체를 지우고 `404` 입니다. clone job 이 실패해 대상을 롤백할 때도 대상 버전의 잔여를 지웁니다.
+3. **버전 삭제가 지우는 스냅샷 객체.**
+
+   | 객체 | `delete_cas=false` | `delete_cas=true` |
+   |---|---|---|
+   | 끝나지 않은 seal 의 잔여 | 지웁니다 | 지웁니다 |
+   | 이 판이 seal 한 버전의 스냅샷 | 남깁니다 | 샤드 본문까지 지웁니다 |
+   | `0.1.23` 이하가 seal 한 버전의 스냅샷 | 남깁니다 | 그 버전의 manifest 둘만 지우고, 다른 버전과 공유될 수 있는 샤드는 남깁니다 |
+
+   첫 행은 「`delete_cas=false` 는 CAS 를 건드리지 않는다」의 예외입니다. 그 객체는 어떤 sealed 버전도 가리키지 않고, 샘플 에셋과
+   sealed 스냅샷에는 해당하지 않습니다. 지우지 못한 객체는 `nexus_cas_delete_failures_total{kind="snapshot"}` 에 셉니다.
+4. **seal 은 다른 버전과 내용이 같은 샤드도 자기 key 로 다시 올립니다**(이전 판은 같은 내용이 있으면 건너뛰었습니다). 본문 해시를
+   `x-cas-hash` 로 함께 보내므로 cas 가 같은 내용을 가지고 있으면 본문을 다 받기 전에 응답하고, 저장 공간은 cas 의 중복 제거로
+   늘지 않습니다. 루프백 측정(cas `0.1.33`)에서 샤드 크기와 무관하게 샤드당 송신이 약 1.5~2 MB 였고, 운영 네트워크에서는 버퍼
+   크기에 따라 다를 수 있습니다. 같은 버전의 seal 재시도는 이미 올린 샤드를 HEAD 로 확인해 건너뜁니다.
+5. **같은 dataset 의 두 버전이 내용이 같아도 `shard_manifest_hash` 가 다릅니다**(샤드 URL 에 버전 id 가 들어갑니다). 이전 판은
+   변경 없이 fork 한 버전을 seal 하면 원본 버전과 같았습니다. `manifest_hash` 는 이전 판에서도 버전마다 달랐고, 같은 버전·같은
+   내용이면 같다는 성질은 그대로입니다.
+6. **적재 본문의 선택 필드 `dataset_id`.** `/ingest`·`/ingest/batch` 의 item 에 `dataset_id` 가 있으면 그 id 의 dataset 을 쓰고
+   이름(`dataset`)은 무시합니다. 없는 id 는 `404` 이고 dataset 을 새로 만들지 않습니다(`/ingest/batch` 에서는 그 item 만 `404`).
+   이름이 바뀐 dataset 에 응답을 못 받은 요청을 같은 `idempotency_key` 로 다시 보내도 처음 결과가 돌아옵니다. `dataset_id` 가
+   없으면 이전과 같습니다. 멱등 키의 해시 규칙은 바뀌지 않습니다.
+7. **일괄 meta 쓰기 경로 둘.** 권한은 `editor` 이상(로봇 포함), sealed 버전은 `409` 입니다.
+   - `PATCH /datasets/{dataset_id}/versions/{version}/samples/meta` — 본문 `{"items": [{"sample_id", "meta"}]}`, 샘플마다 다른
+     값을 top-level 키 단위로 병합합니다(값 `null` 은 그 키 삭제). 요청당 최대 10,000 건이고 한 트랜잭션이라 하나라도 거절되면
+     아무것도 쓰지 않고 `400` 에 `code: "meta_write_rejected"` 와 `rejected: [{sample_id, reason}]` 를 싣습니다(`reason` 은
+     `not_found`·`meta_not_object`).
+   - `PATCH .../samples/meta/by-filter` — 본문 `{"filter", "meta"}`, explorer 와 같은 필터에 걸린 샘플 전부에 같은 값을 씁니다.
+     걸린 수가 10,000 건을 넘으면 `?confirm=<걸린 수>` 가 필요하고 다르면 `409` 입니다(`POST .../samples/explorer/count?exact=true`
+     의 값과 같습니다). `filter.sample_ids: []` 는 필터 없음(버전 전체)입니다.
+   - 두 경로 모두 본문의 바깥 키와 items 항목에 모르는 키가 있으면 `422` 입니다. 안쪽 `filter` 객체는 explorer 와 같은 규칙입니다.
+8. **`GET .../schema` 의 meta 타입.** 관측만 된 숫자 필드가 `float` 하나에서 `int`(정수만 관측)·`float`(실수가 한 번이라도 관측)로
+   나뉩니다. 배열·객체만 관측된 필드는 `meta_schema.fields` 가 아니라 새 목록 `meta_schema.other_fields` 에 실립니다(`list`·
+   `object`, 섞이면 `any`, 선언 컨테이너는 선언 그대로). `other_fields` 는 항상 있습니다(없으면 빈 배열). **`float` 를 기대하던
+   클라이언트는 `int` 를 받을 수 있습니다.**
+9. **meta 필터 `exclude`.** `{"type": "exclude", "value": [...]}` 는 그 값을 가진 샘플을 빼고 **그 키가 없는 샘플은 남깁니다**.
+   문자열은 텍스트, 숫자·불리언은 값으로 비교합니다. 선언 `string`·`enum` 필드와 선언되지 않은 키가 받고, 그 밖의 선언 필드
+   (`int`·`float`·`datetime`·`bool` 등)에는 `400` 입니다. explorer·facet 개수·subset·일괄 태그·`keypoint-info`·by-filter 쓰기에 모두 걸립니다 — 필터로
+   쓰는 경로에 걸면 그 키가 없는 샘플까지 대상입니다.
+10. **선언 스칼라 필드의 「값 없음」.** 선언 `int`·`float`·`string`·`enum`·`datetime` 필드가 `{"type": "ternary", "none": true}` 를
+    받아 키가 없거나 값이 `null` 인 샘플을 고릅니다. 이 필드에서 `true`·`false` 를 켜면 `400` 입니다. 이전 판은 이 필드들의 `ternary`
+    가 전부 `400` 이었습니다.
+11. **sealed 버전의 샘플 수 `sample_count`.** seal 이 끝날 때 그 버전의 삭제되지 않은 샘플 수를 저장하고(새 표
+    `dataset_version_sample_counts`), 버전 조회·목록·설명 수정·seal 응답의 sealed 버전에 `sample_count` 로 싣습니다. draft
+    버전에는 필드가 없습니다. 값은 explorer 개수와 같고 manifest 의 `sample_count`(스냅샷의 수)와는 다를 수 있습니다 — 스냅샷을
+    만든 뒤 seal 이 끝나기 전에 지워진 샘플은 스냅샷에만 있습니다. seal 이 끝나기 직전에 같은 버전에 들어간 적재·링크는 저장
+    값에서 빠질 수 있습니다(고치는 법은 아래 **운영 조치**). 조회가 실패하면 응답에서 이 필드만 빠집니다.
+12. **facet 옵션별 개수의 전수 모드.** `POST .../facets/counts?exact=true` 가 값 종류 100,000 개·50 초까지 셉니다(기본은
+    이전처럼 500 개·3 초). 요청 하나가 DB 커넥션을 그 시간 동안 쥡니다. 50 초는 앞단 프록시의 기본 읽기 타임아웃(60 초) 안에
+    답하려는 값입니다. Ingress 의 읽기 타임아웃이 50 초보다 짧으면 서버가 `computed: false` 로 답하기 전에 `504` 가 납니다. 숫자 meta 필드는 이전처럼 `400`
+    입니다.
+
+**마이그레이션** — 넷입니다(029~032). **이 버전은 마이그레이션 029~032 를 추가하며, 이미지 `0.1.23` 이하로 롤백할 수 없습니다**
+(롤백 가능한 하한은 `0.1.24`). 되돌리려면 올리기 전의 DB 스냅샷(`pg_dump`)을 복원해야 합니다.
+
+- `029_dataset_version_objects` — **영향받는 테이블**: 신규 `dataset_version_objects`, FK 가 가리키는 `dataset_versions`.
+  `dataset_versions` 를 바꾸지 않고 표만 만듭니다. 큰 fork·subset 실체화가 도는 동안에는 잠금을 3 초 기다린 뒤 실패하고, 파드가
+  재기동해 다시 시도합니다.
+- `030_meta_field_float_backfill` — **영향받는 테이블**: `dataset_schema_meta_fields`(행 삽입), `samples`(전수 읽기). 삭제되지 않은
+  샘플의 meta 를 모두 읽어 관측 행을 다시 채웁니다. 적재·seal 을 막지 않습니다.
+- `031_dataset_version_sample_counts` — **영향받는 테이블**: 신규 `dataset_version_sample_counts`, FK 가 가리키는 `dataset_versions`.
+  029 와 같은 3 초 잠금 대기입니다.
+- `032_sealed_sample_count_backfill` — **영향받는 테이블**: `dataset_version_sample_counts`(행 삽입), sealed 버전의 링크 집계.
+  적재·seal 을 막지 않습니다.
+- **예상 소요시간**: 샘플 약 180 만 행·sealed 버전 583 개·DB 약 2.3 GB 인 `0.1.23` DB 사본(사본을 막 만들어 캐시가 일부 찬
+  상태)에서 기동 로그가 `마이그레이션 완료 applied=4 elapsed_ms=10863` 이었습니다. 030 이 `samples` 전수, 032 가 sealed 버전의
+  링크 수에 비례합니다. 기본 startupProbe 예산 600 초 안에서 여유가 있지만, 행 수가 더 많거나 디스크가 느린 배포는 위 로그 줄로
+  확인하십시오. 마이그레이션마다 자기 트랜잭션이라 도중에 파드가 죽으면 그 마이그레이션을 처음부터 다시 돕니다.
+
+**설정 키** — 없음.
+
+**호환성**
+- cas: 요구하는 cas 판은 바뀌지 않습니다. **서버 키(Secret 의 `NEXUS__CAS__KEY_ID`)가 manifest 버킷의 `annotations/`·`manifests/`
+  에서 `PutObject`·`GetObject`·`DeleteObject` 를 할 수 있어야 합니다.** Put 은 seal, Get 은 같은 버전 재시도의 샤드 HEAD(없으면
+  매번 다시 올리고 seal 은 성공합니다), Delete 는 버전 삭제와 끝나지 않은 seal 의 잔여 정리가 씁니다. 이 두 접두사에 이 셋 중
+  하나라도 deny 를 건 정책이 있으면 거두십시오.
+- SDK: 이 판의 서버 기능(6~12)을 쓰는 SDK 는 `0.1.22` 이상입니다. 그 아래 SDK 도 이 서버에서 이전과 같이 동작합니다.
+
+**운영 조치**
+- **교체하는 동안 버전 삭제를 미루십시오.** 옛 파드(`0.1.23`)가 이 판이 seal 한 버전을 `delete_cas=true` 로 지우면 샤드와 메인
+  manifest 가 CAS 에 남고 DB 기록도 함께 사라져, 다시 찾아 지울 수 없습니다(데이터 손실은 아닙니다). 끝나지 않은 seal 의 잔여가
+  있는 draft 를 옛 파드가 지울 때도 같습니다.
+- **교체하는 동안 큰 fork·subset 실체화를 미루십시오.** 029·031 이 3 초 잠금 대기에 걸려 새 파드가 재기동을 되풀이합니다.
+- **교체 중에만 나는 실패.** 옛 파드에 닿은 요청은 `exclude`·선언 필드 `none` 필터가 `400`, by-filter 쓰기가 `404`, items 쓰기가
+  `405`(SDK `0.1.22` 는 샘플별 요청으로 내려갑니다), `exact=true` 가 무시되어 500 개·3 초 기본 모드, 적재의 `dataset_id` 무시(이름으로
+  찾거나 만듦)입니다. 옛 파드가 seal 한 버전은 이전 key 형식이 되고 `sample_count` 가 없습니다.
+- **교체가 끝난 뒤** 옛 파드가 seal 한 버전의 `sample_count` 를 채우려면 아래 SQL 을 한 번 돌리십시오(032 와 같은 문장, 멱등).
+  이미 있는 행은 바뀌지 않으므로, 저장 값이 explorer 개수와 다른 버전(위 동작 변경 11)은 그 버전의 행을
+  `DELETE FROM dataset_version_sample_counts WHERE dataset_version_id = '<버전 id>'` 로 지운 뒤 돌립니다.
+
+  ```sql
+  INSERT INTO dataset_version_sample_counts (dataset_version_id, sample_count)
+  SELECT v.dataset_version_id, count(s.sample_id)
+  FROM dataset_versions v
+  LEFT JOIN dataset_version_samples dvs ON dvs.dataset_version_id = v.dataset_version_id
+  LEFT JOIN samples s ON s.sample_id = dvs.sample_id AND s.is_deleted = FALSE
+  WHERE v.status = 'sealed'
+  GROUP BY v.dataset_version_id
+  ORDER BY 1
+  ON CONFLICT DO NOTHING;
+  ```
+
+  교체 중 옛 파드가 받은 실수 meta 값은 `int` 로 보일 수 있습니다. 그 필드를 `float` 로 받아야 하면 교체 뒤 030 과 같은 문장을
+  돌립니다(`samples` 전수 읽기, 아래).
+
+  ```sql
+  INSERT INTO dataset_schema_meta_fields (dataset_id, field, value_type)
+  SELECT DISTINCT s.dataset_id, k, v.t
+  FROM samples s,
+       LATERAL jsonb_object_keys(
+           CASE WHEN jsonb_typeof(s.meta) = 'object' THEN s.meta ELSE '{}'::jsonb END
+       ) k,
+       LATERAL (VALUES
+           (jsonb_typeof(s.meta->k)),
+           (CASE WHEN jsonb_typeof(s.meta->k) = 'number' AND strpos(s.meta->>k, '.') > 0 THEN 'float' END)
+       ) v(t)
+  WHERE s.is_deleted = FALSE
+    AND v.t IS NOT NULL
+    AND v.t <> 'null'
+    AND k ~ '^[A-Za-z0-9_]+$'
+  ORDER BY 1, 2, 3
+  ON CONFLICT DO NOTHING;
+  ```
+- **manifest 버킷의 cas 버저닝을 확인하십시오.** 버저닝이 켜진(Enabled) 버킷에서는 DELETE 가 삭제 표시만 만들어 공간이 돌아오지
+  않습니다. nexus 는 버저닝을 설정하지 않고, cas 의 기본은 꺼짐입니다.
+
 ## 0.3.18
 
 image: `int2jieun/nexus-server:0.1.21` → `0.1.23`
