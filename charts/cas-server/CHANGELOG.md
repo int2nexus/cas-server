@@ -84,6 +84,15 @@ cas-server 는 기동 시 `sqlx::migrate!` 로 `migrations/` 를 적용합니다
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.1.42
+
+image: `int2jieun/cas-server:0.1.35`
+digest: `sha256:07a514bfe27545dd9f81b5f8d93cbc8694c879934264abd813fbcee3a52397ad`
+
+**동작 변경** — presigned 요청의 `X-Amz-Expires` 가 범위를 벗어나게 크면 `400` 입니다. 이전에는 그 요청이 서버에서 패닉해 응답 없이 연결이 끊겼습니다(프로세스는 유지)
+**마이그레이션** — 없음. **롤백 하한은 `0.1.28` 그대로입니다**
+**설정 키** — 없음
+
 ## 0.1.41
 
 image: `int2jieun/cas-server:0.1.34`
