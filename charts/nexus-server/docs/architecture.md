@@ -179,7 +179,7 @@ Seal이 완료되면
 
 Seal 은 Version 하나를 통째로 읽어 직렬화하므로 메모리를 가장 많이 쓰는 작업이다. 그래서 서버는 파드마다 동시에 도는 Seal 수에 상한(`seal.max_concurrent`, 기본 1)을 두고, 같은 Version 의 Seal 은 DB 잠금으로 파드와 무관하게 하나만 돌린다(서버 `0.1.21`+). 판정 순서는 이미 Sealed 인가(409 `already_sealed`) → 같은 Version 의 Seal 이 도는가(429 `seal_in_progress`) → 파드 상한이 찼는가(429 `seal_busy`)이다. 넘친 요청은 기다리게 하지 않고 시작하지 않은 채 `429`(`Retry-After: 10`)로 돌려보낸다 — 기다리게 하면 프록시의 응답 대기 상한에 먼저 걸리고, 시작하지 않았으므로 다시 보내도 중복되지 않는다. 진행 중 거절을 `409` 가 아니라 `429` 로 내는 것은 `409` 가 「이미 Sealed」의 뜻으로 쓰이고 있기 때문이다.
 
-Seal 은 요청과 분리된 태스크로 돈다. 클라이언트나 프록시가 연결을 끊어도 Seal 은 끝까지 진행되고, 끊긴 쪽은 Version 상태를 조회해 결과를 확인한다. 같은 Version 잠금은 Seal 이 끝날 때까지 커넥션 하나를 쥔다(Postgres 에서는 `idle in transaction` 으로 보인다). 서버 종료(SIGTERM)는 연결이 끊긴 채 도는 Seal 을 기다리지 않으므로 그 Seal 은 Draft 로 남는다 — Version 을 Sealed 로 바꾸는 쓰기가 맨 마지막이라 반쯤 Sealed 인 상태는 없다.
+Seal 은 요청과 분리된 태스크로 돈다. 클라이언트나 프록시가 연결을 끊어도 Seal 은 끝까지 진행되고, 끊긴 쪽은 Version 상태를 조회해 결과를 확인한다. 도는 중인 Seal 은 Version 조회에 `seal_in_progress`(와 시작 시각 `seal_started_at`)로 보인다(서버 `0.1.25`+) — 같은 Version 잠금을 DB 에서 보므로 어느 파드가 돌리든 보이고, Seal 이 실패하거나 파드가 죽으면 잠금과 함께 사라진다. 같은 Version 잠금은 Seal 이 끝날 때까지 커넥션 하나를 쥔다(Postgres 에서는 `idle in transaction` 으로 보인다). 서버 종료(SIGTERM)는 연결이 끊긴 채 도는 Seal 을 기다리지 않으므로 그 Seal 은 Draft 로 남는다 — Version 을 Sealed 로 바꾸는 쓰기가 맨 마지막이라 반쯤 Sealed 인 상태는 없다.
 
 Seal 은 마지막 트랜잭션에서 그 Version 의 샘플 수(삭제되지 않은 Sample)를 세어 저장하고, Version 을 돌려주는 응답(Version 조회·목록·설명 수정·Seal)은 Sealed Version 에 그 값을 `sample_count` 로 싣는다(서버 `0.1.24`+). Draft Version 의 수는 저장하지 않는다 — 적재·링크·삭제마다 증감이 필요하고 병렬 적재가 Version 행 하나에서 줄을 서게 되기 때문이다. 이 값은 API 조회(Explorer 개수)와 같은 수이고, Manifest 의 `sample_count`(스냅샷의 수)와는 다를 수 있다 — 스냅샷을 만든 뒤 Seal 이 끝나기 전에 지워진 Sample 은 스냅샷에만 있다.
 
@@ -289,7 +289,7 @@ Nexus는 Annotation을 직접 편집하는 도구를 제공하지 않고, 편집
 Sealed Version은 편집 대상이 될 수 없으며, 세션 생성 요청은 거부된다.
 
 #### 5.5.1 데이터 흐름
-이미지 파일은 Nexus를 통과하지 않는다. Nexus는 CAS Object의 URL 목록(key는 퍼센트 인코딩한다 — API 응답의 `image_url`과 같다)만 CVAT에 전달하고, CVAT이 CAS에서 직접 이미지를 내려받는다.
+이미지 파일은 Nexus를 통과하지 않는다. Nexus는 CAS Object의 URL 목록만 CVAT에 전달하고, CVAT이 CAS에서 직접 이미지를 내려받는다. URL에는 서버 키로 GET 서명(만료 기본 1시간)을 붙이므로 CAS가 익명 읽기를 닫은 배포에서도 받을 수 있다(서버 `0.1.25`+). 서명한 URL은 CVAT 쪽에 저장된다. 파일 이름이 겹치거나 서명한 URL이 CVAT의 저장 한도(1024 자)를 넘는 Sample이 있으면 CVAT Project를 만들기 전에 세션을 실패시킨다.
 Nexus가 주고받는 것은 Annotation과 라벨 정의뿐이다.
 
 ```mermaid
@@ -303,7 +303,7 @@ sequenceDiagram
     NX-->>U: 세션 (status=creating)
     Note over NX: 준비는 백그라운드
     NX->>CV: Project · Task 생성 (라벨 정의)
-    NX->>CV: 이미지 URL 목록 전달
+    NX->>CV: 서명한 이미지 URL 목록 전달
     CV->>CAS: 이미지 직접 다운로드
     NX->>CV: Annotation 내보내기
     U->>NX: 상태 조회 (open 이 될 때까지)
@@ -661,7 +661,7 @@ Nexus는 계정 역할로 무엇을 할 수 있는지를 정한다. 담당자는
 ### 10.1 인증
 Nexus는 자체 발급하는 JWT(HS256) 기반 인증을 사용한다.  
 사용자는 로그인 후 Access Token을 발급받으며, 이후의 요청은 JWT를 통해 사용자 신원을 확인한다. 자체 발급 JWT 외에 로봇 계정 토큰과 외부 IdP 가 발급한 OIDC 토큰도 받는다(아래). 인증 방식은 Catalog 계층과 분리되어 있어, 어느 경로로 오든 계정 판정은 한 곳을 지난다.  
-**조회를 포함한 모든 엔드포인트가 토큰을 요구한다.** 예외는 회원 가입, 로그인, 프로브 두 경로(`/_internal/live`, `/_internal/health`), OpenAPI 문서(`/api-docs/openapi.json`), 그리고 Swagger UI 정적 셸(`/swagger-ui`, `/swagger-ui/`) 일곱 가지뿐이다. `/_internal/metrics`는 예외가 아니다 — 별도 bearer 토큰을 받고, 설정하지 않으면 404를 반환한다. 문서 세 경로는 설정으로 끌 수 있으며, 끄면 등록 자체가 되지 않아 404가 된다. 토큰이 없거나 만료되었으면 401을 반환한다.
+**조회를 포함한 모든 엔드포인트가 토큰을 요구한다.** 예외는 회원 가입, 로그인, 비밀번호 재설정 링크의 확인·사용 두 경로(링크 토큰이 자격증명이다), 프로브 두 경로(`/_internal/live`, `/_internal/health`), OpenAPI 문서(`/api-docs/openapi.json`), 그리고 Swagger UI 정적 셸(`/swagger-ui`, `/swagger-ui/`) 아홉 가지뿐이다. `/_internal/metrics`는 예외가 아니다 — 별도 bearer 토큰을 받고, 설정하지 않으면 404를 반환한다. 문서 세 경로는 설정으로 끌 수 있으며, 끄면 등록 자체가 되지 않아 404가 된다. 토큰이 없거나 만료되었으면 401을 반환한다.
 
 **역할은 토큰에 담지 않는다.** 인증 단계에서 사용자 행(역할·승인 상태·활성 상태)을 읽고 그 결과를 짧게 캐시한다. 토큰에 담으면 역할을 낮춰도 토큰 만료까지 반영되지 않기 때문이다. 이 캐시 수명(`auth.revocationCacheTtlSecs`, 기본 5초)이 곧 **권한 회수·계정 정지·계정 삭제가 듣기까지의 상한**이다. 매 요청 조회로 두면 적재 처리량이 눈에 띄게 줄어 캐시를 기본으로 두었다.
 

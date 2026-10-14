@@ -6,16 +6,16 @@
 #
 # ── 문서 ─────────────────────────────────────────────────────────────────────
 #   아키텍처 (도메인 모델·버전 관리·스냅샷 구조)
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.19/charts/nexus-server/docs/architecture.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.20/charts/nexus-server/docs/architecture.md
 #   사용법 (설치·SDK 연결·Dataset 워크플로우)
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.19/charts/nexus-server/docs/usage.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.20/charts/nexus-server/docs/usage.md
 #   차트 README
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.19/charts/nexus-server/README.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.20/charts/nexus-server/README.md
 # ─────────────────────────────────────────────────────────────────────────────
 
 image:
   repository: int2jieun/nexus-server
-  tag: "0.1.24"
+  tag: "0.1.25"
   # digest 로 핀하려면 여기에 넣으십시오 (`sha256:...`). 값이 있으면 tag 대신 이것이
   # 쓰이고, 렌더 결과가 `repository@sha256:...` 가 됩니다.
   #
@@ -139,6 +139,25 @@ jwt:
   # (조용히 24로 되돌아가 "0을 줬는데 왜 24가 됐지"로 헤매는 쪽보다 낫다).
   ttlHours: ""
 
+# ── 추가로 믿을 CA (선택) ───────────────────────────────────────────────────
+# 키가 파일 이름, 값이 PEM 이다. 비어 있지 않으면 ConfigMap 으로 만들어 /etc/nexus/ca 에 읽기 전용으로
+# 마운트한다. auth.oidc.issuers[].caFile 과 cvat.caFile 이 그 안을 가리킨다(같은 CA 면 한 번만 넣는다).
+# 루트 CA 를 반드시 넣는다 — 발급 CA 한 장만으로는 검증이 루트에 닿지 않는다. 한 키에 여러 장을 넣어도 된다.
+# OIDC 는 조회마다 파일을 읽어 ConfigMap 갱신 뒤 다음 조회부터 반영되고, CVAT 은 기동 때 읽어 파드를 다시
+# 띄워야 반영된다.
+# CAS(cas.baseUrl)가 사내 CA 서명 https 면 이 기능이 닿지 않는다 — 키 이름을 해시 이름(<주체 해시>.0,
+# openssl x509 -hash -noout 의 출력)으로 넣고 extraEnv 로 SSL_CERT_DIR=/etc/nexus/ca 를 주면 같은 ConfigMap 으로 된다.
+caCerts: {}
+# 예:
+# caCerts:
+#   sso-ca.pem: |
+#     -----BEGIN CERTIFICATE-----
+#     ...(루트 CA)
+#     -----END CERTIFICATE-----
+#     -----BEGIN CERTIFICATE-----
+#     ...(발급 CA)
+#     -----END CERTIFICATE-----
+
 auth:
   # 공개 회원가입. false로 하면 POST /api/v1/auth/register 만 403이 되고
   # 로그인·갱신·기존 계정 동작은 그대로다. NodePort로 직접 노출된 배포에서
@@ -198,6 +217,8 @@ auth:
   #             실패" 줄에서 한다.
   #             같은 디렉터리의 ca.crt를 JWKS 조회의 TLS 신뢰에도 쓰므로, 클러스터
   #             자체 CA로 서명된 API 서버 인증서 뒤의 JWKS가 이 값으로 검증된다.
+  #   caFile    선택. 이 발급자의 JWKS 조회에만 더해 믿을 CA 파일. 위 caCerts 에 넣은 파일은
+  #             /etc/nexus/ca/<파일 이름>. 빈 값은 렌더 실패
   #
   # 같은 issuer를 두 번 적으면 기동에 실패한다.
   #
@@ -213,6 +234,7 @@ auth:
     #   - issuer: https://sso.example.com/realms/<realm>
     #     audience: <IdP 쪽에서 정한 값>
     #     exchange: true
+    #     caFile: /etc/nexus/ca/sso-ca.pem   # 사내 CA 서명일 때
     #   - issuer: https://kubernetes.default.svc.cluster.local
     #     audience: <파드 스펙의 projected 볼륨 audience와 같은 값>
     #     jwksUri: https://<API 서버>:6443/openid/v1/jwks
@@ -311,12 +333,16 @@ auth:
 #   smokescreen 사설대역 허용(SMOKESCREEN_OPTS=--allow-range=...). 자세한 내용은 usage.md.
 cvat:
   baseUrl: ""                  # 예: "http://cvat.example.com:8080" — 비우면 연동 꺼짐
-  user: ""                     # CVAT 서비스 계정(Django superuser)
-  organization: ""             # CVAT organization slug (선택)
+  user: ""                     # CVAT 서비스 계정. 일반 계정이면 된다(superuser 불필요)
+  organization: ""             # CVAT organization slug (선택). 쓰면 서비스 계정은 그 organization 의 supervisor 이상,
+                               # 작업자는 maintainer 이상이어야 세션 링크(task 페이지)를 연다
   projectNamePrefix: "nexus"   # CVAT project 이름 접두사 — 다른 프로젝트와 구분용
   segmentSize: ""              # job 분할 크기. 비우면 CVAT 기본 동작
   maxSessionSamples: ""        # 세션당 샘플 상한(서버 기본 2000)
   staleCreatingSecs: ""        # 준비 작업의 진행 기록이 이 시간 넘게 멈춘 creating 세션을 failed 로(초, 서버 기본 1800, 180 미만은 180)
+  caFile: ""                   # CVAT 호출에 더해 믿을 CA 파일. 예: /etc/nexus/ca/sso-ca.pem (위 caCerts). 못 읽으면 CVAT 연동만 꺼진다(기동은 된다)
+  publicUrl: ""                # 작업자 링크(cvat_url) 주소. 비우면 baseUrl. API 는 늘 baseUrl 로 부른다
+  imageUrlExpirySecs: ""       # CVAT 에 넘기는 presigned 이미지 URL 만료(초, 서버 기본 3600, 2100~604800 밖은 깎는다)
 
 # ── 비밀 Secret 참조 ─────────────────────────────────────────────────
 # 이 Secret(아래 4키 보유)을 sealed-secret으로 미리 주입해야 한다:

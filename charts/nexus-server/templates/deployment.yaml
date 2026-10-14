@@ -1,3 +1,26 @@
+{{- /* caFile 이 /etc/nexus/ca/ 를 가리키면 caCerts 에 그 키가 있어야 한다. OIDC 의 빈 caFile 은 서버 기동 실패라
+       렌더에서 먼저 막는다(목록이 toJson 으로 통째로 넘어가 걸러지지 않는다). */}}
+{{- $caCerts := .Values.caCerts | default dict }}
+{{- range $i, $iss := (.Values.auth.oidc.issuers | default list) }}
+{{- if hasKey $iss "caFile" }}
+{{- $cf := $iss.caFile | default "" | toString }}
+{{- if not (trim $cf) }}
+{{- fail (printf "auth.oidc.issuers[%d].caFile 이 비어 있습니다. 쓰지 않으려면 키를 빼십시오." $i) }}
+{{- end }}
+{{- if hasPrefix "/etc/nexus/ca/" $cf }}
+{{- if not (hasKey $caCerts (trimPrefix "/etc/nexus/ca/" $cf)) }}
+{{- fail (printf "auth.oidc.issuers[%d].caFile '%s' 이 가리키는 파일이 caCerts 에 없습니다. caCerts 에 같은 이름의 키로 PEM 을 넣으십시오." $i $cf) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- with .Values.cvat.caFile }}
+{{- if hasPrefix "/etc/nexus/ca/" . }}
+{{- if not (hasKey $caCerts (trimPrefix "/etc/nexus/ca/" .)) }}
+{{- fail (printf "cvat.caFile '%s' 이 가리키는 파일이 caCerts 에 없습니다. caCerts 에 같은 이름의 키로 PEM 을 넣으십시오." .) }}
+{{- end }}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -174,6 +197,18 @@ spec:
             - name: NEXUS__CVAT__STALE_CREATING_SECS
               value: {{ .Values.cvat.staleCreatingSecs | quote }}
             {{- end }}
+            {{- if .Values.cvat.caFile }}
+            - name: NEXUS__CVAT__CA_FILE
+              value: {{ .Values.cvat.caFile | quote }}
+            {{- end }}
+            {{- if .Values.cvat.publicUrl }}
+            - name: NEXUS__CVAT__PUBLIC_URL
+              value: {{ .Values.cvat.publicUrl | quote }}
+            {{- end }}
+            {{- if .Values.cvat.imageUrlExpirySecs }}
+            - name: NEXUS__CVAT__IMAGE_URL_EXPIRY_SECS
+              value: {{ .Values.cvat.imageUrlExpirySecs | quote }}
+            {{- end }}
             {{- end }}
             {{- if .Values.auth.superuserEmail }}
             {{- /* 이메일이 있을 때만 주입한다. 비밀번호는 Secret에서 envFrom으로 들어오므로
@@ -209,6 +244,14 @@ spec:
               exec:
                 command: ["sleep", "{{ int $preStop }}"]
           {{- end }}
+          {{- if .Values.caCerts }}
+          # caCerts → /etc/nexus/ca/<파일 이름>. subPath 를 쓰지 않는다 — subPath 마운트는 kubelet 이 갱신하지 않아
+          # OIDC caFile 의 「다음 조회부터 반영」이 성립하지 않는다.
+          volumeMounts:
+            - name: ca
+              mountPath: /etc/nexus/ca
+              readOnly: true
+          {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       {{- with .Values.nodeSelector }}
@@ -222,4 +265,10 @@ spec:
       {{- with .Values.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.caCerts }}
+      volumes:
+        - name: ca
+          configMap:
+            name: {{ include "nexus-server.fullname" . }}-ca
       {{- end }}

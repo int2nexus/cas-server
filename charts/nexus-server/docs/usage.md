@@ -175,7 +175,7 @@ result = client.delete_account("새비번123")          # 완전 삭제 — 되�
 - **담당한 dataset이 남아 있어도 삭제된다.** 담당하던 dataset은 삭제되지 않고 **담당자만 해제**되며, 그 상태는 `GET /datasets?unowned=true`로 관측된다.
 - 삭제 응답의 **`released_datasets`는 해제된 dataset 수다.**
 - 비밀번호가 틀리면 403이다. superuser 계정은 본인도 삭제할 수 없고(403), 로봇·OIDC 토큰으로 온 요청도 403이다.
-- 비밀번호를 잊어 로그인할 수 없는 계정은 본인이 처리할 수 없다 — 관리자가 `POST /api/v1/admin/users/password-reset`으로 임시 비밀번호를 발급한다([README 관리 API](../README.md#관리-api)).
+- 비밀번호를 잊어 로그인할 수 없는 계정은 본인이 처리할 수 없다 — 관리자가 `POST /api/v1/admin/users/password-reset`으로 임시 비밀번호를 발급하거나, `POST /api/v1/admin/users/password-reset-links`로 일회용 재설정 링크 토큰을 발급한다(서버 이미지 `0.1.25`+). 링크를 받은 사용자는 로그인 없이 `POST /api/v1/auth/password-reset/complete`(`{token, new_password}`)로 새 비밀번호를 정하고, 그다음 로그인한다([README 관리 API](../README.md#관리-api)).
 
 ## 3. 데이터 적재
 ### 3.1 전체 흐름 예제
@@ -869,7 +869,7 @@ print(r)    # {"updated": 1204, "skipped_non_object_meta": 0}
 ## 6. CVAT으로 annotation 편집
 
 Draft 버전의 샘플을 **CVAT으로 보내 사람이 편집**하고, 그 결과를 다시 Draft에 반영한다.
-이미지는 Nexus를 거치지 않는다 - CVAT이 CAS에서 직접 받는다.
+이미지는 Nexus를 거치지 않는다 - CVAT이 CAS에서 직접 받는다. Nexus는 서버 키로 서명한 이미지 URL을 넘기므로 CAS가 익명 읽기를 닫은 배포에서도 된다(서버 이미지 `0.1.25`+).
 
 서버에 CVAT 연동이 구성되어 있어야 한다. 구성되지 않은 서버에서는 `NexusError(status_code=503)`이 발생한다.
 
@@ -881,6 +881,7 @@ Draft 버전의 샘플을 **CVAT으로 보내 사람이 편집**하고, 그 결�
 | 내 역할이 **`editor` 이상** | `NexusError(403)` - 세션 생성은 쓰기다 |
 | 서버에 CVAT 연동 구성 | `NexusError(503)` |
 | CVAT이 CAS 이미지를 받을 수 있는 네트워크 | 세션이 `failed`가 되고 사유가 예외에 실린다 |
+| 샘플 key 의 파일 이름(마지막 경로 조각)이 세션 안에서 겹치지 않고, 서명한 이미지 URL 이 1024 자 이하 | 세션이 `failed`가 되고 해당 샘플 id 가 사유에 실린다. CVAT project 를 만들기 전에 거절한다(서버 이미지 `0.1.25`+). 파일 이름이 겹치면 세션을 나눠 만든다 |
 | `sample_ids`가 모두 그 버전에 링크된 삭제되지 않은 샘플 | `NexusError(400)` - 해당 id를 최대 10개 나열한다. CVAT 호출 전에 거절하므로 project·task가 생기지 않는다(서버 이미지 `0.1.21`+). 중복 id는 하나로 합친다 |
 | 그 샘플을 잡고 있는 다른 세션 없음 | `NexusError(409)` - 어느 세션이 잡고 있는지 메시지에 담긴다 |
 
@@ -1091,7 +1092,7 @@ ds.seal(description="검수 완료, 2026-10 학습용")   # 버전 설명과 함
 - `description`은 **seal이 성공할 때만** 저장된다. `if_sealed="ignore"`로 불렀는데 이미 sealed인 버전이면 준 `description`은 적용되지 않는다 — 그때는 `ds.set_description()`(§7.7)을 쓴다.
 - **동시 seal 상한과 대기**(SDK `0.1.20`+, 서버 이미지 `0.1.21`+). 서버는 파드마다 동시에 도는 seal 수에 상한(`seal.maxConcurrent`, 기본 1)을 둔다. 상한이 차 있거나(`seal_busy`) 같은 버전의 seal이 이미 돌고 있으면(`seal_in_progress`) seal을 시작하지 않고 `429`(`Retry-After: 10`)로 답한다. 시작하지 않은 요청이라 다시 보내도 중복되지 않는다.
   - `ds.seal(wait=600)`(기본)은 이 `429`를 최대 `wait`초 기다리며 다시 보내고, 넘기면 `NexusError(status_code=429)`다. `wait=0`이면 기다리지 않는다. 기다린 시간만 세고 seal 자체의 소요는 세지 않는다.
-- **seal은 연결이 끊겨도 서버에서 끝까지 돈다**(서버 이미지 `0.1.21`+). 프록시가 응답 대기 상한으로 연결을 끊어 `502`/`504`를 받았더라도 seal은 멈추지 않으므로, 그 버전의 상태를 조회해 sealed가 됐는지 확인한다. 서버 교체(SIGTERM) 중에 끊긴 seal은 draft로 남는다.
+- **seal은 연결이 끊겨도 서버에서 끝까지 돈다**(서버 이미지 `0.1.21`+). 프록시가 응답 대기 상한으로 연결을 끊어 `502`/`504`를 받았더라도 seal은 멈추지 않으므로, 그 버전의 상태를 조회해 sealed가 됐는지 확인한다. 아직 도는 중이면 버전 조회(`GET /datasets/{id}/versions/{v}`·목록)에 `"seal_in_progress": true`와 시작 시각 `seal_started_at`이 실리고, 진행 중이 아니면 두 키가 없다(서버 이미지 `0.1.25`+). 서버 교체(SIGTERM) 중에 끊긴 seal은 draft로 남는다.
 - **CAS 업로드가 전송 중에 손상되면 seal이 실패한다**(서버 이미지 `0.1.23`+). 서버는 스냅샷을 올릴 때 본문 해시를 함께 보내 CAS가 저장 전에 대조하게 하고, 다르면 seal은 nexus의 `502`(본문 `cas error: ... InvalidDigest`)로 끝나며 버전은 **draft로 남는다**. 일시적인 손상이면 다시 `ds.seal()`하면 된다. 프록시가 낸 `502`와 구별하려 애쓸 필요는 없다 — 어느 쪽이든 버전 상태를 조회해 sealed면 끝난 것이고, draft면 다시 seal한다.
 - **읽기 타임아웃.** SDK의 기본 읽기 타임아웃은 120초다. seal이 그보다 오래 걸리는 대규모 버전은 `nx.connect(timeout=(10, 1800))`처럼 읽기 쪽 초를 늘린다. 타임아웃이 나도 seal은 서버에서 계속되고(위) SDK는 이 타임아웃을 다시 보내지 않으므로, 실패로 단정하지 말고 `ds.seal(if_sealed="ignore")`로 다시 부르거나 버전 상태를 확인한다.
 - **HTTP 오류 `code`**(`POST /datasets/{id}/versions/{v}/seal`). 응답 본문 `{"error": ..., "code": ...}`의 `code`로 분기한다.

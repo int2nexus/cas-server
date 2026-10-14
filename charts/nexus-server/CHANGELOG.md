@@ -81,6 +81,197 @@ nexus-server 는 마이그레이션이 바이너리에 임베드되어 **기동 
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.3.20
+
+image: `int2jieun/nexus-server:0.1.24` → `int2jieun/nexus-server:0.1.25`
+digest: `sha256:ae50c9780b94625ef5d35f815feb9a60085718b7e9dbb4b4372a52cef864a9f1`
+
+**정정** — `0.3.19` 동작 변경 4 의 seal 샤드 송신량 「약 1.5~2 MB」는 한 번 잰 값이었습니다. 같은 측정을 네 번 되풀이하니
+샤드당 64 KB~2 MB 로 실행마다 달랐습니다. 2 MB 이하이고 샤드 크기에 따라 늘지 않는다는 것은 그대로입니다.
+
+**동작 변경** — 여섯입니다. 2·3·6 은 CVAT 연동과 바깥 HTTPS 연결, 4·5 는 seal 과 끊긴 요청의 관측입니다.
+
+1. **비밀번호 재설정 일회용 링크.** 경로 셋을 더합니다.
+   - `POST /api/v1/admin/users/password-reset-links`(관리자) — 본문 `{"email", "expires_in_hours"}`, `expires_in_hours` 는 1~72 이고
+     필수입니다(없으면 `422`, 범위 밖이면 `400`). `201` 에 `{email, token, expires_at}` 를 돌려주며 토큰 평문은 이 응답에만 나옵니다.
+     대상이 superuser 면 `403`, 로봇이면 `400`, 없는 계정이면 `404` 입니다.
+   - `POST /api/v1/auth/password-reset/inspect` — 본문 `{token}`, `200` `{email, expires_at}`.
+   - `POST /api/v1/auth/password-reset/complete` — 본문 `{token, new_password}`, `204`. 로그인은 하지 않습니다.
+   - 위 둘은 인증 없이 부르고 본문은 4 KiB 까지입니다(넘으면 `413`). 판정 실패(없음·이미 씀·만료·대상 부적격)는 모두 `400`
+     `{"error": "reset link invalid", "code": "reset_link_invalid"}` 하나이고 사유는 요청 로그의 `reset_error` 에만 남습니다. 유효한
+     링크라도 새 비밀번호가 규칙(8 자 이상)에 맞지 않으면 `code` 없는 `400` 이고 링크는 소모되지 않습니다.
+   - 링크는 사용자당 하나입니다. 다시 발급하거나, 임시 비밀번호 재설정(`password-reset`)이나 본인 비밀번호 변경을 하면 이전 링크는
+     무효입니다.
+   - **재설정 뒤에도 그 사용자의 기존 토큰은 만료(`jwt.ttl_hours`, 기본 24 시간)까지 유효합니다.**
+2. **CVAT 에 넘기는 이미지 URL 에 서명합니다(presigned GET).** 세션을 만들 때 CVAT 의 `remote_files` 로 보내는 CAS 객체 URL 에
+   서버 키(`NEXUS__CAS__KEY_ID`)로 SigV4 query 서명을 붙입니다. `anonymousGet: false` 인 cas 에서도 CVAT 이 이미지를 받습니다.
+   끄는 설정은 없습니다.
+   - 만료는 `cvat.imageUrlExpirySecs`(기본 3600 초)입니다. 2100 초보다 작거나 604800 초(7 일)보다 크면 그 경계로 맞추고 기동 로그에
+     경고합니다(기동은 됩니다). 하한은 CVAT 첨부 대기(30 분)에 여유 5 분을 더한 값입니다.
+   - 서명은 그 객체 하나에만 통합니다. 서명을 다른 key 에 붙이면 `403` 입니다.
+   - cas 가 `anonymousGet: false` 면 서버 키에 이미지 버킷의 `GetObject` 권한이 있어야 합니다(아래 **호환성**).
+   - 익명 GET 을 여는 cas(`anonymousGet: true`)에서는 동작이 바뀌지 않습니다. cas 는 서명된 GET 도 익명으로 통과시키고, 서명이
+     틀리거나 만료된 GET 은 `cas_anonymous_get_total{reason="signed_invalid"}` 로만 셉니다.
+   - API 응답의 `image_url`·`thumbnail_url` 은 바뀌지 않습니다(서명 없음).
+   - **서명한 URL 은 CVAT 쪽에 서명째로 남습니다** — CVAT DB(`engine_remotefile.file`)와 CVAT import 워커 로그(`Downloading: <URL>`).
+     그것을 볼 수 있는 사람은 만료 전까지 그 객체 하나를 받을 수 있고, 같은 자리에 서버 키의 key id 가 `X-Amz-Credential` 로
+     남습니다. secret 은 남지 않습니다. cas 요청 로그에는 `X-Amz-Signature=***` 로 가려져 남고, CVAT 의 smokescreen 로그에는
+     호스트(`requested_host`)만 남습니다.
+   - **CVAT project 를 만들기 전에 거부하는 샘플이 둘 생깁니다.** 세션이 `failed` 가 되고 `error` 에 샘플 id 와 사유가 실리며, CVAT
+     에는 project 가 생기지 않습니다.
+     - 서명한 URL 이 1024 자를 넘는 샘플. CVAT 이 첨부 URL 을 1024 자까지 저장합니다. 서명이 약 260 자(key id·region 길이에
+       따라 다름)를 더하므로 이전 판에서 통하던 긴 key 가 막힐 수 있습니다(한글은 한 글자가 9 자입니다).
+     - URL 의 마지막 경로 조각(파일 이름)이 같은 샘플이 둘 이상인 세션(`a/000001.png` 와 `b/000001.png`). CVAT 이 파일 이름으로
+       내려받으므로 이전 판에서도 CVAT 쪽에서 첨부가 실패했을 경우입니다. 이 판은 project 를 만들기 전에 실패시킵니다. 세션을
+       나눠 만드십시오. URL 전체가 같은 샘플의 거부도 project 를 만들기 전으로 앞당겨졌습니다.
+3. **추가로 믿을 CA 파일과 CVAT 링크 주소.** 서버 설정 넷(`auth.oidc.issuers[].caFile`·`cvat.caFile`·`cvat.publicUrl`·
+   `cvat.imageUrlExpirySecs`, 만료는 위 2)은 모두 선택이고, 앞의 셋을 주지 않으면 OIDC·CVAT 연결과 링크는 이전과 같습니다.
+   차트는 CA 를 담는 `caCerts` 를 더합니다(아래 **설정 키**).
+   - `auth.oidc.issuers[].caFile` — 그 발급자의 JWKS 조회에만 더해 믿을 CA(PEM, 여러 장 가능). 이미지의 기본 신뢰 저장소를
+     대체하지 않고 더합니다. JWKS 를 가져올 때마다 파일을 읽으므로 파일이 바뀌면 다음 가져오기부터 반영됩니다(파드 재시작
+     불필요). 다시 가져오는 데는 최소 간격이 있습니다 — 가져오기에 실패한 뒤에는 5 초, 가져온 뒤 모르는 `kid` 의 토큰이 와서
+     다시 가져올 때는 60 초입니다. 읽지 못하면 그 조회만 실패해 `503`(`IdP 의 JWKS 를 가져오지 못했습니다`)이고 로그는
+     `JWKS 조회 실패` 입니다.
+     **빈 문자열(공백만 포함)은 서버 기동 실패이고 차트는 렌더 실패입니다.** 키 이름은 `caFile` 입니다(`ca_file` 로 적으면 모르는
+     키라 아무 신호 없이 무시됩니다).
+   - `cvat.caFile` — CVAT 호출에 더해 믿을 CA. 기동 때 한 번 읽으므로 바꾸면 파드를 다시 띄워야 합니다. **비었거나 없거나 PEM 이
+     아니면 기동은 되고 CVAT 연동만 꺼집니다** — 경고 한 줄(`[cvat] 클라이언트를 만들지 못해 CVAT 연동을 켜지 않는다 … reason=<사유>`),
+     annotation session 엔드포인트 `503`, `creating` 세션 정리도 돌지 않습니다. `GET /api/v1/admin/config-effective` 의
+     `cvat.usable` 이 `false` 이고 `cvat.disabled_reason` 에 사유가 실립니다.
+   - CVAT 연동이 꺼져 있을 때(`[cvat]` 설정이 없는 배포 포함) annotation session 엔드포인트의 `503` 본문이 바뀌었습니다:
+     `CVAT 연동이 꺼져 있습니다 — 사유는 GET /api/v1/admin/config-effective 의 cvat.missing_fields·cvat.disabled_reason 에 있습니다`.
+   - **루트 CA 를 반드시 넣으십시오.** 발급 CA 한 장만으로는 검증이 루트에 닿지 않아 실패합니다(아래 실측). 서버가 발급 CA 를
+     체인에 실어 보내면 루트 한 장으로 되고, 둘 다 넣어도 됩니다.
+   - `cvat.publicUrl` — 작업자 링크(세션의 `cvat_url`)의 주소. 비면 `cvat.baseUrl` 이고 끝의 `/` 는 뗍니다. API 호출은 늘
+     `cvat.baseUrl` 로 합니다. 이미 만든 세션의 `cvat_url` 은 DB 에 저장된 값이라 바뀌지 않습니다.
+   - `config-effective` 에 `cvat.public_url`·`cvat.image_url_expiry_secs`(맞춘 뒤 값)·`cvat.ca_file`·`cvat.disabled_reason` 과 OIDC
+     항목의 `ca_file` 이 늘었습니다. `cvat.usable` 은 `missing_fields` 가 비고 `disabled_reason` 이 없을 때만 `true` 입니다.
+   - CAS 연결(`cas.baseUrl`)은 이 기능의 대상이 아닙니다. 사내 CA 서명 https 면 `caCerts` 에 해시 이름(`openssl x509 -hash -noout`
+     의 출력 + `.0`)으로 넣고 `extraEnv` 로 `SSL_CERT_DIR=/etc/nexus/ca` 를 주면 같은 ConfigMap 으로 됩니다.
+4. **버전 응답에 seal 진행 여부가 실립니다.** 버전을 돌려주는 응답(조회 `GET /datasets/{id}/versions/{v}`·목록
+   `GET /datasets/{id}/versions`·설명 수정 `PATCH`·버전 생성 `POST /datasets/{id}/versions`·`POST /subsets/{id}/version`)에서,
+   draft 버전의 seal 이 지금 어느 파드에선가 도는 중이면 `"seal_in_progress": true` 와 그 seal 의 시작 시각 `seal_started_at` 이
+   있습니다. 진행 중이 아니면 두 키 모두 없습니다(기존 응답 모양 그대로).
+   - seal 요청이 앞단 프록시의 읽기 타임아웃으로 응답 전에 끊겨도 seal 은 끝까지 돕니다(`0.1.21` 부터). 응답을 못 받은 화면은 이
+     필드로 「잠그는 중」과 「잠금 전」을 가르고, `status` 가 `sealed` 가 될 때까지 다시 조회하면 됩니다.
+   - 판정은 seal 이 쥐는 DB advisory 잠금(`pg_locks`)이라 파드와 무관합니다. seal 이 실패하거나 파드가 죽으면 잠금이 함께 풀려
+     「진행 중」이 남지 않습니다.
+   - `seal_started_at` 은 seal 잠금 트랜잭션의 시작 시각입니다. seal 을 도는 파드가 다른 DB 사용자로 접속했고 nexus 의 DB 사용자에게
+     `pg_read_all_stats` 가 없으면 이 키만 빠집니다.
+5. **지표 셋을 더합니다**(`/_internal/metrics`, `metrics.token` 이 있을 때).
+   - `nexus_seal_total{result}` — 끝난 seal 누적. `result` 는 `completed`·`failed` 이고 둘 다 0 부터 나옵니다. `seal_busy`·
+     `seal_in_progress`·`already_sealed` 로 거절된 요청은 seal 을 시작하지 않았으므로 세지 않습니다.
+   - `nexus_seal_duration_seconds{result}` — 끝난 seal 의 소요 히스토그램. 구간은 1·5·10·30·60·120·300·600·1200·1800·3600 초입니다.
+     요청이 끊긴 seal 도 끝날 때 기록하므로 앞단 프록시의 읽기 타임아웃을 이 분포에 맞춰 정할 수 있습니다. 첫 seal 이 끝나기
+     전에는 시리즈가 없습니다.
+   - `nexus_http_requests_cancelled_total{method, endpoint}` — 응답 전에 클라이언트(또는 프록시)가 연결을 끊은 요청 누적.
+     이런 요청은 `axum_http_requests_total` 에 잡히지 않습니다(응답을 만들 때 세기 때문). `endpoint` 는 그 지표와 같은 규칙(라우트
+     템플릿, 매칭되지 않으면 `unmatched`)이라 같은 라벨로 맞춰 볼 수 있습니다. 첫 끊김 전에는 시리즈가 없습니다. 로그 줄
+     `요청이 취소됐다` 는 그대로 남습니다.
+   - `axum_http_requests_*` 의 이름·라벨·구간은 바뀌지 않습니다.
+6. **CVAT import 의 「인스턴스 N 건 스킵(… 그룹이 배열 아님 5)」 경고가 더 이상 나오지 않습니다.** 이전 판은 import 로 반영한 샘플마다
+   이 경고를 냈습니다. annotation 이 아닌 샘플 필드(`sample_id`·`split`·`tags`·`created_at`·`image_url`·`thumbnail_url`)를 반영
+   대상에 함께 넣어 그룹으로 센 것이고, 이 필드들은 annotation 으로 쓰이지 않아 데이터가 바뀌거나 빠진 일은 없습니다. 태그가 있는
+   샘플은 같은 경고에 `object 아님 <태그 수>` 가 붙었습니다. 이제 이 경고는 반영 중 실제로 버려진 인스턴스가 있을 때만 나옵니다.
+
+**실측 — CA 파일**
+
+루트 CA → 발급 CA → 서버 인증서로 서명한 HTTPS 서버 하나가 JWKS 와 CVAT 을 흉내 냈습니다(서버는 서버 인증서와 발급 CA 를
+체인으로 보냄). 컨테이너에 `SSL_CERT_FILE`·`SSL_CERT_DIR` 은 없습니다. OIDC 는 JWKS 에 없는 `kid` 의 토큰으로 두드려
+`401`(`auth_error="unknown key id"`)이면 JWKS 를 가져와 검증한 것이고, `503` 이면 가져오지 못한 것입니다. CVAT 흉내 서버는
+로그인에 `405` 를 돌려주므로 세션 `error` 가 `CVAT login 실패: 405` 면 TLS 연결이 된 것입니다. 두 OIDC 항목에 같은 `caFile` 을 붙였습니다.
+
+| `caFile`·`cvat.caFile` 내용 | 사설 CA JWKS | 공개 CA JWKS(googleapis) | CVAT |
+|---|---|---|---|
+| 없음 | `503` | `401` 가져옴 | 연결 실패 |
+| 루트 + 발급 CA | `401` 가져옴 | `401` 가져옴 | 연결(`405`) |
+| 발급 CA 만 | `503` | `401` 가져옴 | 연결 실패 |
+| 루트만 | `401` 가져옴 | `401` 가져옴 | 연결(`405`) |
+
+| `cvat.caFile` | 기동 | 세션 생성 | `config-effective` 의 `cvat.disabled_reason` |
+|---|---|---|---|
+| `/no/such` | 성공, 경고 한 줄 | `503` | `CA 파일 /no/such 를 읽지 못했다: No such file or directory (os error 2)` |
+| `""`(env 로 직접 줄 때 — 차트는 빈 값이면 렌더하지 않음) | 성공, 경고 한 줄 | `503` | `CA 파일 경로가 비어 있다` |
+| PEM 아닌 파일 | 성공, 경고 한 줄 | `503` | `CA 파일 <경로> 에 PEM 인증서가 없다` |
+
+OIDC `caFile: " "` 은 기동 실패(exit 1)였습니다. 실행 중인 컨테이너 안에서 `caFile` 파일을 바꾼 결과는 아래와 같습니다. 조회 실패
+뒤 5 초는 다시 조회하지 않고, 가져온 뒤 모르는 `kid` 의 재조회는 60 초에 한 번입니다.
+
+| 시점 | 파일 | 사설 CA JWKS |
+|---|---|---|
+| 기동 직후 | 발급 CA 만 | `503` |
+| 루트 + 발급으로 바꾼 직후 | 루트 + 발급 | `503`(실패 뒤 5 초 안) |
+| 그 6 초 뒤 | 루트 + 발급 | `401` 가져옴 |
+| 발급 CA 만으로 되돌린 직후 | 발급 CA 만 | `401`(가져온 키) |
+| 그 62 초 뒤 | 발급 CA 만 | `503` |
+| 루트 + 발급으로 되돌리고 6 초 뒤 | 루트 + 발급 | `401` 가져옴 |
+
+**실측 — CVAT `v2.78.0` 세션 왕복**
+
+CVAT `v2.78.0`(서비스 계정은 일반 `user` 그룹 계정), cas `0.1.33`(`anonymousGet: false`), 이 판의 서버 빌드. CVAT 은 smokescreen
+허용 주소(`SMOKESCREEN_OPTS=--allow-address=…`)로 cas 에 닿습니다. 이미지 넷(PNG 셋·JPEG 하나, 그중 하나는 key 가
+`t10/한글 폴더/한글 사진 01.png`)을 한 세션으로 보냈습니다.
+
+| 항목 | 결과 |
+|---|---|
+| 서명 없는 GET | `403` |
+| 세션 생성 → `open` | 첫 확인(4 초 뒤)에 `open`. cas 의 서명 GET 4 건 모두 `200`(smokescreen 경유, 다른 세션 한 번 더 같은 결과) |
+| frame 이름(`GET /api/tasks/{id}/data/meta`) | key 의 파일 이름 그대로, query 가 섞이지 않음: `한글 사진 01.png`·`000003.jpg`·`000002.png`·`000001.png` |
+| frame 순서 | nexus 가 보낸 순서(샘플 id 내림차순, explorer 순서)와 같음 |
+| CVAT API(`PATCH /api/tasks/{id}/annotations?action=update`)로 박스 하나 수정 → `import` | `updated_samples: 1`, `updated_components: 1`, nexus annotation 의 `rect` 가 `[0.0333…, 0.1, 0.5, 0.5]` 로 반영 |
+| `close` | `200`, `closed` |
+| 세션의 `cvat_url` | `cvat.publicUrl` + `/tasks/{id}` |
+| 파일 이름이 같은 두 샘플(`t10/a/000001.png`·`t10/b/000001.png`) | `failed`, CVAT project 수 변화 없음 |
+| key 에 한글 85 자를 넣어 서명 전 URL 이 813 자인 샘플 | `failed`(서명 뒤 1074 자), CVAT project 수 변화 없음 |
+| CVAT import 워커 로그 | `Downloading: <서명째 URL>` |
+| CVAT DB `engine_remotefile.file` | 서명째. ASCII key 는 서명 전 51 자 → 312 자 |
+| cas 요청 로그 | `X-Amz-Signature=***`, `key_id` 는 그대로 |
+| smokescreen 로그(`CANONICAL-PROXY-DECISION`) | `requested_host` 만, 경로·query 없음 |
+| 워커 로그의 URL 을 그대로 다시 요청 | `200`. 같은 서명을 다른 key 에 붙이면 `403` |
+
+**마이그레이션** — 하나입니다(033). **이 버전은 마이그레이션 033 을 추가하며, 적용되면 이미지 `0.1.24` 이하로 롤백할 수 없습니다**
+(이전 이미지는 기동을 거부합니다). 되돌리려면 올리기 전의 DB 스냅샷(`pg_dump`)을 복원해야 합니다.
+
+- `033_password_reset_tokens` — **영향받는 테이블**: 신규 `password_reset_tokens`, FK 가 가리키는 `users`. `users` 에 잠깐 잠금을
+  잡으며 `lock_timeout` 3 초 안에 잡지 못하면 실패하고 파드가 재기동해 다시 시도합니다.
+
+**설정 키** — 다섯입니다(동작 변경 2·3). 모두 비우면(기본) 서버 기본값으로 돕니다. 이 다섯을
+비워 둔 배포에서도 동작 변경 2(이미지 URL 서명·첨부 전 거부)는 적용됩니다.
+
+- `caCerts`(기본 `{}`) — 키가 파일 이름, 값이 PEM 입니다. 비어 있지 않으면 ConfigMap `<fullname>-ca` 를 만들어 `/etc/nexus/ca` 에
+  디렉터리째 읽기 전용으로 마운트합니다(`subPath` 를 쓰지 않는 설계라 kubelet 이 갱신할 것이나 ConfigMap 교체 뒤 갱신은
+  시험하지 않았습니다). 아래 둘이 이 안을 가리킵니다. 같은 CA 면 한 번만 넣습니다.
+- `auth.oidc.issuers[].caFile` — 예: `/etc/nexus/ca/sso-ca.pem`.
+- `cvat.caFile`(`""`), `cvat.publicUrl`(`""`), `cvat.imageUrlExpirySecs`(`""`, 서버 기본 3600) — 비면 env 를 렌더하지 않습니다.
+- **렌더가 실패하는 경우가 둘 늘었습니다**: `caFile`(OIDC 항목·CVAT)이 `/etc/nexus/ca/` 아래를 가리키는데 `caCerts` 에 그 이름의
+  키가 없을 때, OIDC 항목의 `caFile` 이 비었을 때(공백만 포함). 그 밖의 경로(직접 마운트한 파일)는 검사하지 않습니다.
+- `cvat.user` 의 설명을 고쳤습니다. CVAT 서비스 계정은 일반 계정이면 됩니다(superuser 불필요, CVAT `v2.78.0` 의 `user` 그룹 계정으로
+  세션 생성·import·close 를 확인했습니다).
+
+**호환성**
+- cas: cas 가 `anonymousGet: false` 면 **서버 키(Secret 의 `NEXUS__CAS__KEY_ID`)가 CVAT 으로 보낼 이미지 버킷에서 `GetObject` 를
+  할 수 있어야 합니다.** 서명은 이 키의 권한으로 검사되므로, 없으면 cas 가 CVAT 의 이미지 요청을 거부합니다. 적재 때 CAS HEAD 를 하지 않는 서버 기본값(`ingest.verify_assets = false`)으로 돌던 배포는 이 권한을 쓴
+  적이 없을 수 있습니다. presigned GET 은 cas `0.1.33` 에서 확인했습니다.
+- CVAT: `v2.78.0` 에서 확인했습니다. smokescreen 이 cas 주소를 허용해야 하는 것은 이전과 같습니다.
+- CVAT organization(`cvat.organization`): `v2.78.0` 에서 superuser·staff 가 아닌 계정만으로 확인했습니다(아래 표).
+  - **서비스 계정(`cvat.user`)은 그 organization 의 `supervisor` 이상이어야 합니다.** `worker` 면 project 생성(`POST /api/projects`)이
+    `403` 이라 세션이 `failed` 입니다. `supervisor` 와 `maintainer` 는 세션 생성·import·close·삭제의 결과가 같았습니다.
+  - **작업자가 세션의 `cvat_url`(task 페이지)로 들어가려면 `maintainer` 이상이어야 합니다.** `worker` 는 배정되지 않은 task 의
+    조회가 `403` 이고, job 에 배정돼도 task 조회(`GET /api/tasks/{id}`)는 `403` 입니다(job 경로는 `200`). `cvat_url` 은 task
+    페이지만 가리킵니다.
+  - `cvat_url` 에는 organization 표시가 없습니다. task 조회는 요청의 organization 이 아니라 task 의 organization 으로 판정되어,
+    `maintainer` 작업자가 organization 을 지정하지 않고 조회해도 `200` 이고 응답에 그 organization 이 실립니다. 브라우저의
+    organization 화면 전환은 확인하지 않았습니다.
+  - annotation 쓰기(task·job `PATCH`, task `PUT`)는 organization 헤더가 있든 없든 `200` 이었습니다.
+
+  | 계정 · organization 역할 | 호출 | 결과 |
+  |---|---|---|
+  | 서비스 계정 · `supervisor` | nexus 의 CVAT 호출 전부(로그인·project/task 생성·이미지 첨부·annotation 조회·삭제) | 실패 0 건, 세션 왕복 성공 |
+  | 서비스 계정 · `worker` | `POST /api/projects` | `403`, 세션 `failed` |
+  | 작업자 · `maintainer` | `GET /api/tasks/{id}`·job 목록·annotation 조회·수정(organization 지정 없음) | `200`, 수정이 nexus import 에 반영 |
+  | 작업자 · `worker`, 배정 없음 | task·job·annotation 조회 | `403` |
+  | 작업자 · `worker`, job 에만 배정 | `GET /api/tasks/{id}` / job 경로 | `403` / `200` |
+
 ## 0.3.19
 
 image: `int2jieun/nexus-server:0.1.23` → `0.1.24`

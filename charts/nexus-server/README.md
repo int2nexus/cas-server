@@ -4,9 +4,9 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
 
 ## 문서
 
-- [아키텍처](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.19/charts/nexus-server/docs/architecture.md)
+- [아키텍처](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.20/charts/nexus-server/docs/architecture.md)
   — 도메인 모델, Version 생명주기, Annotation CoW, 스냅샷·Manifest 구조
-- [사용법](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.19/charts/nexus-server/docs/usage.md)
+- [사용법](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.20/charts/nexus-server/docs/usage.md)
   — 설치, Python SDK 연결, Dataset 적재·검색·seal 워크플로우, API 레퍼런스
 - [변경 이력](CHANGELOG.md)
   — 버전별 동작 변경·마이그레이션·설정 키. 각 항목은 해당 GitHub Release 본문과 동일하다
@@ -22,7 +22,7 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
   선택 키가 셋 더 있고, 쓰는 기능이 있을 때만 넣는다 — CVAT annotation 편집 세션의
   `NEXUS__CVAT__PASSWORD`, superuser의 `NEXUS__AUTH__SUPERUSER_PASSWORD`,
   지표의 `NEXUS__METRICS__TOKEN`(values 스위치가 없다 — 이 키가 곧 스위치다).
-  전체 목록은 [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.19/charts/nexus-server/examples/secret.example.yaml).
+  전체 목록은 [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.20/charts/nexus-server/examples/secret.example.yaml).
 - **CVAT은 선택** — 설정하지 않아도 서버는 정상 동작한다. 세션 생성·결과 회수만 503이 되고 카탈로그·업로드·seal·조회는 영향이 없다.
 - **superuser도 선택** — 설정하지 않으면 관리자를 만들 부트스트랩 수단이 없다(`users.role = admin`은 백필하지 않는다). 다만 **CVAT과 달리 반쪽 설정은 조용히 꺼지지 않고 기동을 실패시킨다**(아래 참조).
 
@@ -56,7 +56,7 @@ kubectl create secret generic nexus-server -n <namespace> --dry-run=client -o ya
 kubectl apply -f sealed-nexus-server.yaml -n <namespace>
 ```
 
-평문 예시: [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.19/charts/nexus-server/examples/secret.example.yaml).
+평문 예시: [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.20/charts/nexus-server/examples/secret.example.yaml).
 Secret 이름은 `secret.existingSecret`(비우면 릴리즈 fullname, 기본 `nexus-server`)과 일치해야 한다.
 
 - `NEXUS__JWT__SECRET`은 직접 생성하는 임의의 비밀 키(로그인 JWT HS256 서명용)  
@@ -116,7 +116,7 @@ helm upgrade nexus-server int2nexus/nexus-server -n <namespace> \
 
 **이메일을 바꿔 재배포해도 이전 계정의 관리 권한은 회수되지 않는다.** 서버가 기동 시 superuser 계정에 `role = admin`을 부여하므로, 설정에서 빠진 이전 계정은 `admin`으로 남는다. 회수하려면 새 관리자가 `POST /api/v1/admin/users/role`로 이전 계정을 강등한다.
 
-**superuser 계정을 대상으로 삼는 관리 조작 셋은 누가 부르든 403이다** — 역할 변경(`users/role`)·정지(`users/active`)·비밀번호 재설정(`users/password-reset`). 유일한 부트스트랩 수단이 스스로 잠기는 것을 막기 위해서다.
+**superuser 계정을 대상으로 삼는 관리 조작 넷은 누가 부르든 403이다** — 역할 변경(`users/role`)·정지(`users/active`)·비밀번호 재설정(`users/password-reset`)·재설정 링크 발급(`users/password-reset-links`). 유일한 부트스트랩 수단이 스스로 잠기는 것을 막기 위해서다.
 
 ### 관리 API
 
@@ -130,6 +130,7 @@ helm upgrade nexus-server int2nexus/nexus-server -n <namespace> \
 | `POST /api/v1/admin/users/active` | 계정 정지·해제 |
 | `GET /api/v1/admin/users/pending` · `POST /api/v1/admin/users/approve` | 승인 대기 목록·승인(`auth.approvalRequired`가 켜진 배포) |
 | `POST /api/v1/admin/users/password-reset` | 임시 비밀번호 발급 |
+| `POST /api/v1/admin/users/password-reset-links` | 비밀번호 재설정 일회용 링크 토큰 발급(아래) |
 | `PUT /api/v1/admin/datasets/{id}/owner` · `POST /api/v1/admin/datasets/transfer-owner` | 담당자 지정·일괄 이관 |
 | `POST /api/v1/admin/robots` · `GET` | 로봇 계정 생성·목록 |
 | `DELETE /api/v1/admin/robots/{user_id}` | 로봇 계정 삭제 |
@@ -169,14 +170,15 @@ requests.post(f"{base}/api/v1/admin/datasets/transfer-owner",
 
 - **사람 계정 만들기** — 공개 가입(`auth.registrationEnabled`)을 끈 배포에서도, 승인 대기(`auth.approvalRequired`)를 켠 배포에서도 만들 수 있고 **만든 계정은 만드는 순간 승인된다.** `role`은 `editor`/`viewer`만(`admin`은 `400` — 승격은 `users/role`). `issue_password: true`면 임시 비밀번호를 응답에 한 번만 싣고, 생략하면 **비밀번호로는 로그인할 수 없는 계정**이 된다(OIDC 신원을 붙여 쓸 사람용 — `admin/oidc-identities`로 매핑하고, 나중에 비밀번호가 필요하면 `users/password-reset`). 이미 있는 이메일·superuser 이메일은 `409`, 로봇 도메인 이메일은 `400`(로봇은 `admin/robots`).
 - **임시 비밀번호는 응답에 한 번만 실려 온다.** 서버 어디에도 저장되지 않으니 그 자리에서 전달하고, 받은 사람은 곧바로 `client.change_password(...)`로 바꾼다. 재설정해도 그 사람의 기존 토큰은 만료(`jwt.ttlHours`)까지 유효하다 — "잊어버림"을 푸는 도구지 "탈취 즉시 차단"이 아니다.
+- **재설정 링크는 임시 비밀번호 대신 쓰는 일회용 토큰이다.** 발급은 본문 `{"email", "expires_in_hours"}`(1~72, 필수)이고 `201` 응답에 `token` 평문이 한 번만 실린다. 사용자는 인증 없이 `POST /api/v1/auth/password-reset/inspect`(`{token}` → 이메일·만료 확인)와 `POST /api/v1/auth/password-reset/complete`(`{token, new_password}` → `204`, 로그인은 따로 한다)를 부른다. 판정 실패(없음·이미 씀·만료·대상 부적격)는 모두 `400` `reset_link_invalid` 하나이고 사유는 요청 로그의 `reset_error` 에만 남는다. 새 비밀번호가 규칙에 맞지 않으면 `code` 없는 `400` 이고 링크는 소모되지 않는다. 사용자당 살아 있는 링크는 하나이며, 다시 발급하거나 임시 비밀번호 재설정·본인 비밀번호 변경을 하면 이전 링크는 무효다. 링크를 사용자에게 전달하는 경로의 보안은 운영자 몫이다.
 - **계정 정지는 삭제가 아니다.** 이메일을 계속 점유하므로 그 주소로 재가입할 수 없고, `active: true`로 해제하면 그대로 돌아온다. 정지하면 로그인이 `403 forbidden`이 되고, **이미 발급된 토큰도 캐시 수명(`auth.revocationCacheTtlSecs`, 기본 5초) 안에 막힌다.**
-- **담당자 이전은 인가를 옮기지 않는다.** 이전 담당자도 계속 쓰고 지울 수 있다 — 역할이 `editor`이기 때문이다. 옮겨가는 것은 「다시 넘길 자격」 하나다. 담당자가 없는 dataset(`GET /datasets?unowned=true`)은 위험한 상태가 아니라 **인수 대기**이고, `editor` 이상이면 그대로 쓰고 지울 수 있다. 담당자가 있는 dataset을 넘기는 것은 담당자 본인이 한다([사용법 8.2](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.19/charts/nexus-server/docs/usage.md#82-담당자-이전)).
+- **담당자 이전은 인가를 옮기지 않는다.** 이전 담당자도 계속 쓰고 지울 수 있다 — 역할이 `editor`이기 때문이다. 옮겨가는 것은 「다시 넘길 자격」 하나다. 담당자가 없는 dataset(`GET /datasets?unowned=true`)은 위험한 상태가 아니라 **인수 대기**이고, `editor` 이상이면 그대로 쓰고 지울 수 있다. 담당자가 있는 dataset을 넘기는 것은 담당자 본인이 한다([사용법 8.2](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.20/charts/nexus-server/docs/usage.md#82-담당자-이전)).
 
 **로그인·가입·갱신·OIDC 교환의 `200` 응답은 모두 `{ token, user_id, email }`이다** — 로그인 화면이 실어 쓰는 토큰 필드는 `token`이다. 가입이 승인 대기(`auth.approvalRequired`)면 `202`이고 타입이 다르다.
 
 ### 로봇 계정 발급
 
-사람이 없는 워크로드(적재 잡·스케줄러·CI)용 계정이다. 쓰는 쪽은 [사용법 2.3](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.19/charts/nexus-server/docs/usage.md#23-로봇-토큰으로-연결)의 `nx.connect(robot_token=...)`로 붙는다.
+사람이 없는 워크로드(적재 잡·스케줄러·CI)용 계정이다. 쓰는 쪽은 [사용법 2.3](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.20/charts/nexus-server/docs/usage.md#23-로봇-토큰으로-연결)의 `nx.connect(robot_token=...)`로 붙는다.
 
 계정 생성(`POST /api/v1/admin/robots`, body `{"name": "...", "role": "editor", "display_name": "..."}`, `display_name`만 선택)의 이름은 소문자·숫자·하이픈 1~48자이고 하이픈으로 시작하거나 끝날 수 없다(`400`). **이름 검사가 `role` 검사보다 먼저 돈다** — 이름이 틀린 동안에는 `role` 오류를 볼 수 없다. 로봇의 `role`은 `editor`·`viewer`뿐이고 `admin`은 `400`이다 — `admin` 로봇의 장수명 토큰은 그대로 관리 평면 전권이 되기 때문이다. 경로의 `user_id`는 정수다(UUID를 넣으면 본문 검사 전에 `400`).
 
@@ -192,7 +194,7 @@ requests.post(f"{base}/api/v1/admin/datasets/transfer-owner",
 | `auth.registrationEnabled` | `true` | `false`로 하면 `POST /api/v1/auth/register`만 403이 되고, 로그인·토큰 갱신·기존 계정은 영향을 받지 않는다. 가입을 닫은 뒤에도 관리자는 사람 계정(`POST /api/v1/admin/users`)과 로봇 계정(`POST /api/v1/admin/robots`)을 만들 수 있다 — 둘 다 이 값을 보지 않는다. |
 | `auth.docsEnabled` | `true` | `false`로 하면 `/api-docs/openapi.json`, `/swagger-ui`, `/swagger-ui/` 세 경로가 **404**가 된다(라우트 자체가 등록되지 않는다 — 403이 아니다). 스펙은 이미 전 경로가 인증 뒤에 있으므로, 이걸로 감추는 것은 API 경로 목록뿐이다. |
 | `auth.approvalRequired` | `false` | `true`로 하면 가입은 열어 둔 채 **승인 전까지 아무것도 할 수 없다.** 가입 요청은 계정을 만들되 **토큰을 주지 않고** `202`와 `{"status": "pending"}`을 반환하며, 승인 전에는 로그인·토큰 갱신이 `403`이다(본문 `pending_approval`). 승인은 `POST /api/v1/admin/users/approve`(본문에 `email`·`role` 필수), 대기 목록은 `GET /api/v1/admin/users/pending`. **켜기 전에 가입 화면이 `202`를 처리해야 하고**, 승인 엔드포인트가 관리자 전용이라 관리자(superuser 또는 `admin` 계정)가 있어야 한다. 켜기 전에 가입한 계정은 영향받지 않는다. |
-| `auth.oidc.issuers` | `[]` (기능 꺼짐) | 외부 IdP가 발급한 토큰을 인증 자격증명으로 받을 발급자 목록. 항목마다 `issuer`(필수, `https://`, 토큰의 `iss`와 같아야 한다) · `audience`(필수, 토큰 `aud` **안에 있으면** 통과하는 포함 검사) · `exchange`(기본 `false`, `POST /api/v1/auth/oidc/exchange`를 이 발급자에게 여는 스위치 — 자동 회전하는 토큰에는 켜지 말 것) · `jwksUri`(선택, 발급자와 JWKS 호스트가 다를 때) · `jwksAuth`(선택, `serviceaccount` 하나만 — 파드 자신의 SA 토큰을 실어 JWKS를 읽는다. `serviceAccount.automountToken: true`가 필요하다). **`audience`가 비었거나, `issuer`가 비-https·중복이거나, `jwksUri`가 비-https이거나, `jwksAuth`가 `serviceaccount`가 아니면 기동에 실패한다.** 목록이 비면 기능이 꺼질 뿐 기동은 정상이다. **발급자만 설정하면 아무도 인증되지 않는다** — 신원 `(issuer, subject)` → 계정 매핑을 `POST /api/v1/admin/oidc-identities`로 관리자가 등록해야 하고 자동 생성은 없다. superuser와 `role = admin` 계정에는 신원을 붙일 수 없다. 이 갈래로 온 요청은 `POST /api/v1/auth/refresh`가 `403`이다. |
+| `auth.oidc.issuers` | `[]` (기능 꺼짐) | 외부 IdP가 발급한 토큰을 인증 자격증명으로 받을 발급자 목록. 항목마다 `issuer`(필수, `https://`, 토큰의 `iss`와 같아야 한다) · `audience`(필수, 토큰 `aud` **안에 있으면** 통과하는 포함 검사) · `exchange`(기본 `false`, `POST /api/v1/auth/oidc/exchange`를 이 발급자에게 여는 스위치 — 자동 회전하는 토큰에는 켜지 말 것) · `jwksUri`(선택, 발급자와 JWKS 호스트가 다를 때) · `jwksAuth`(선택, `serviceaccount` 하나만 — 파드 자신의 SA 토큰을 실어 JWKS를 읽는다. `serviceAccount.automountToken: true`가 필요하다) · `caFile`(선택, 이 발급자의 JWKS 조회에만 더해 믿을 CA 파일. [사내 CA](#사내-ca)의 `caCerts` 에 넣은 파일은 `/etc/nexus/ca/<파일 이름>`. 빈 값은 렌더 실패). **`audience`가 비었거나, `issuer`가 비-https·중복이거나, `jwksUri`가 비-https이거나, `jwksAuth`가 `serviceaccount`가 아니면 기동에 실패한다.** 목록이 비면 기능이 꺼질 뿐 기동은 정상이다. **발급자만 설정하면 아무도 인증되지 않는다** — 신원 `(issuer, subject)` → 계정 매핑을 `POST /api/v1/admin/oidc-identities`로 관리자가 등록해야 하고 자동 생성은 없다. superuser와 `role = admin` 계정에는 신원을 붙일 수 없다. 이 갈래로 온 요청은 `POST /api/v1/auth/refresh`가 `403`이다. |
 | `auth.revocationCacheTtlSecs` | 빈 값 (서버 기본 **5**초) | 인증이 사용자 행(역할·승인·활성 상태)을 읽고 캐시하는 시간. **이 값이 곧 권한 회수·계정 정지·계정 삭제가 듣기까지의 상한이다.** `0`이면 매 요청 조회가 되어 즉시 반영되지만 적재 처리량이 20~33% 떨어진다(측정치). 조회 자체를 끄는 옵션은 없다. |
 
 ```bash
@@ -202,6 +204,24 @@ helm upgrade --install nexus-server int2nexus/nexus-server -n <namespace> \
   --set auth.registrationEnabled=false \
   --set auth.docsEnabled=false
 ```
+
+## 사내 CA
+
+OIDC 발급자나 CVAT 이 사내 CA 로 서명한 https 를 쓰면 `caCerts` 에 그 CA 를 넣는다. 키가 파일 이름, 값이 PEM 이고, 비어 있지 않으면 ConfigMap 으로 만들어 `/etc/nexus/ca` 에 디렉터리째 읽기 전용으로 마운트한다(`subPath` 를 쓰지 않는다).
+
+| values 키 | 기본값 | 설명 |
+|---|---|---|
+| `caCerts` | `{}` | 추가로 믿을 CA. 루트 CA 를 반드시 넣는다 — 발급 CA 한 장만으로는 검증이 루트에 닿지 않는다. 한 키에 여러 장을 넣어도 되고, 같은 CA 는 한 번만 넣어 `auth.oidc.issuers[].caFile` 과 `cvat.caFile` 이 같이 가리킨다 |
+
+```bash
+helm upgrade --install nexus-server int2nexus/nexus-server -n <namespace> \
+  --set-file 'caCerts.sso-ca\.pem=./sso-ca.pem' \
+  --set-json 'auth.oidc.issuers=[{"issuer":"https://sso.example.com/realms/x","audience":"nexus","caFile":"/etc/nexus/ca/sso-ca.pem"}]'
+```
+
+- `caFile` 이 `/etc/nexus/ca/` 아래를 가리키는데 `caCerts` 에 그 이름의 키가 없으면 렌더가 실패한다. OIDC 발급자의 빈 `caFile` 도 서버가 기동에 실패하므로 렌더에서 먼저 막는다.
+- OIDC 는 JWKS 를 조회할 때마다 파일을 읽으므로 파일이 바뀌면 다음 조회부터 반영된다(ConfigMap 을 고친 뒤 kubelet 이 파일을 갱신하는 시점은 시험하지 않았다). CVAT 은 기동 때 한 번 읽어 파드를 다시 띄워야 반영되고, 못 읽으면 CVAT 연동만 꺼진다(세션 라우트 503).
+- CAS(`cas.baseUrl`)가 사내 CA 서명 https 면 이 기능이 닿지 않는다. 키 이름을 해시 이름(`<주체 해시>.0`, `openssl x509 -hash -noout` 의 출력)으로 넣고 `extraEnv` 로 `SSL_CERT_DIR=/etc/nexus/ca` 를 주면 같은 ConfigMap 으로 된다.
 
 ## CVAT 연동
 
@@ -213,9 +233,10 @@ nexus가 통제하지 않는 부분이라 CVAT 관리자와 함께 준비해야 
 
 | 항목 | 내용 |
 |---|---|
-| 서비스 계정 | nexus가 사용할 CVAT 계정 1개. `docker exec -it cvat_server python manage.py createsuperuser` 로 생성한다. 모든 CVAT project를 이 계정이 소유하므로 일반 작업자 계정과 분리한다 |
+| 서비스 계정 | nexus 가 쓸 CVAT 계정 1 개. 일반 계정이면 된다(superuser 불필요). 모든 project 를 이 계정이 소유하므로 작업자가 링크를 열려면 CVAT 관리자이거나 같은 organization(`cvat.organization`)에 있어야 한다. organization 을 쓰면 서비스 계정은 `supervisor` 이상(`worker` 면 project 생성이 `403`), 작업자는 `maintainer` 이상이어야 한다 — 링크가 task 페이지라 `worker` 는 job 에 배정돼도 열 수 없다 |
 | 네트워크 도달 | **CVAT 워커 컨테이너**에서 CAS 주소로 HTTP 요청이 가능해야 한다. 이미지는 nexus를 거치지 않고 CVAT이 CAS에서 직접 받는다 |
 | smokescreen 허용 | CVAT은 원격 URL 다운로드에 SSRF 가드(smokescreen)를 거친다. CAS가 사설 IP면 기본 설정에서 차단되므로 허용 대역을 지정해야 한다 |
+| 이미지 읽기 권한 | nexus 는 CVAT 에 넘기는 이미지 URL 에 서버 키(`NEXUS__CAS__KEY_ID`)로 GET 서명을 붙인다(만료 `cvat.imageUrlExpirySecs`). cas 가 익명 GET 을 닫았으면(`anonymousGet: false`) 이 키에 이미지 버킷의 `GetObject` 권한이 있어야 한다. 서명한 URL 은 CVAT DB 와 워커 로그에 남는다 |
 
 smokescreen은 CVAT 컨테이너 안에서 로컬 프록시로 동작하며, compose의 `SMOKESCREEN_OPTS` 환경변수로 허용 대상을 지정한다.
 
@@ -253,7 +274,10 @@ helm upgrade --install nexus-server int2nexus/nexus-server -n <namespace> \
 | `cvat.projectNamePrefix` | `nexus` | 생성되는 CVAT project 이름 접두사 |
 | `cvat.segmentSize` | `""` | job 분할 크기. 비우면 CVAT 기본 동작 |
 | `cvat.maxSessionSamples` | `""` | 세션당 샘플 상한(서버 기본 2000) |
-| `cvat.staleCreatingSecs` | `""` | 준비 작업의 진행 기록(60 초마다)이 이 시간(초)보다 오래 멈춘 `creating` 세션을 `failed` 로 정리한다(서버 기본 1800). 각 파드가 5 분마다(기동 직후 포함) 검사하고, 다른 파드가 준비 중인 살아 있는 세션은 건드리지 않는다. 180 미만이면 180 으로 올려 쓰고 기동 로그에 경고를 남긴다(`config-effective` 에는 올린 값이 보인다). 이미지 `0.1.21`~ |
+| `cvat.staleCreatingSecs` | `""` | 준비 작업의 진행 기록(60 초마다)이 이 시간(초)보다 오래 멈춘 `creating` 세션을 `failed` 로 정리한다(서버 기본 1800). 각 파드가 5 분마다(기동 직후 포함) 검사하고, 다른 파드가 준비 중인 살아 있는 세션은 건드리지 않는다. 180 미만이면 180 으로 올려 쓰고 기동 로그에 경고를 남긴다(`config-effective` 에는 올린 값이 보인다) |
+| `cvat.caFile` | `""` | CVAT 호출에 더해 믿을 CA 파일. 예: `/etc/nexus/ca/sso-ca.pem`([사내 CA](#사내-ca)의 `caCerts`). 못 읽으면 CVAT 연동만 꺼지고 기동은 된다. 기동 때 읽으므로 바꾸면 파드를 다시 띄워야 한다 |
+| `cvat.publicUrl` | `""` | 작업자 링크(`cvat_url`) 주소. 비우면 `cvat.baseUrl`. API 는 늘 `cvat.baseUrl` 로 부른다 |
+| `cvat.imageUrlExpirySecs` | `""` | CVAT 에 넘기는 presigned 이미지 URL 만료(초, 서버 기본 3600). 2100~604800 밖의 값은 범위로 깎고 기동 로그에 경고를 남긴다 |
 
 ### 연결 확인
 
@@ -301,8 +325,11 @@ INFO  [cvat] 설정 없음 — annotation session 엔드포인트는 503을 반�
 |---|---|---|---|---|
 | 설정 없음 | 정상 | 정상 | 503 | 정상 |
 | 설정 불완전 | 정상(경고 로그) | 정상 | 503 | 정상 |
+| `cvat.caFile` 을 못 읽음 | 정상(경고 로그) | 정상 | 503 | 정상 |
 | 설정됨, CVAT 다운 | 정상 | 정상 | 세션이 `failed`가 된다 | 정상 |
 | 정상 연결 | 정상 | 정상 | 정상 | 정상 |
+
+503 의 사유는 [`config-effective`](#적용된-설정-확인)의 `cvat.missing_fields`·`cvat.disabled_reason` 에 있다.
 
 **목록·조회·`close`·`delete`는 CVAT 없이도 동작한다.** CVAT을 호출하지 않거나(목록), 호출에 실패해도 진행하기 때문이다(조회·`close`는 미반영 편집 여부를 「모름」으로 두고, `delete`는 CVAT project 삭제를 건너뛰고 세션 행만 지운다). 이미 만들어진 세션을 CVAT이 죽은 뒤에도 정리할 수 있어야 하기 때문이다 — 그러지 않으면 샘플이 영구히 잠긴다.
 
@@ -319,7 +346,7 @@ curl localhost:8090/_internal/health      # {"status":"ok","db":true}
 
 **readiness는 워크로드와 커넥션 풀을 나눠 쓴다.** `/_internal/health`는 크기 1의 전용 풀로 ping하므로 적재가 워크로드 풀을 전부 써도 200이다. 그래서 **readiness 실패는 「DB에 못 닿는다」만 뜻하고**, 「앱이 바쁘다」로는 파드가 서비스에서 빠지지 않는다. 앱이 커넥션을 못 받고 있는지는 아래 `nexus_db_pool_acquire_timeouts_total`로 본다.
 
-`live`와 `health` 두 경로는 프로브가 자격증명 없이 호출해야 하므로 인증이 면제된다. 그 밖의 면제 경로는 `POST /api/v1/auth/register`·`POST /api/v1/auth/login`과 API 문서 경로(`/api-docs/openapi.json`, `/swagger-ui`, `/swagger-ui/`)뿐이며, 문서 경로는 `auth.docsEnabled: false`로 끄면 404가 된다. **데이터 API는 조회를 포함해 전부 토큰이 필요하다.**
+`live`와 `health` 두 경로는 프로브가 자격증명 없이 호출해야 하므로 인증이 면제된다. 그 밖의 면제 경로는 `POST /api/v1/auth/register`·`POST /api/v1/auth/login`, 재설정 링크의 `POST /api/v1/auth/password-reset/inspect`·`/complete`(링크 토큰이 자격증명), API 문서 경로(`/api-docs/openapi.json`, `/swagger-ui`, `/swagger-ui/`)뿐이며, 문서 경로는 `auth.docsEnabled: false`로 끄면 404가 된다. **데이터 API는 조회를 포함해 전부 토큰이 필요하다.**
 
 ### 지표
 
@@ -336,11 +363,13 @@ curl -H "Authorization: Bearer $METRICS_TOKEN" localhost:8090/_internal/metrics
 | 로봇 토큰 | `nexus_robot_tokens_active` · `_expiring_soon` · `nexus_robot_token_min_expires_in_seconds` · `nexus_robot_accounts_without_active_token` | 이 넷만 DB를 조회한다(250ms 제한). 조회가 실패하거나 제한을 넘겨도 **사라지지 않고 직전 값으로 남으므로**(기동 후 한 번도 못 읽었으면 처음부터 없다), 알림에는 `and nexus_metrics_db_stats_ok == 1`을 함께 건다. `min_expires_in_seconds`는 활성 토큰이 없을 때 `+Inf`라 `< 임계값` 경보가 저절로 풀린다 |
 | seal | `nexus_seal_permits_total` · `_available` | 파드당 동시 seal 자리와 빈 자리. **total − available 이 지금 도는 seal 수다** — 연결이 끊긴 seal 은 `axum_http_requests_pending` 에 잡히지 않으므로 진행 중인 seal 은 이 둘로만 보인다 |
 | 삭제 정리 | `nexus_cas_delete_failures_total`(라벨 `kind` = `asset`·`thumbnail`·`snapshot`) | 삭제와 seal 잔여 정리에서 지우지 못하고 남긴 객체 누적. 셋 다 `0` 부터 나온다. **버전·샘플 삭제에서 오른 것은 다시 정리되지 않는다**(seal 잔여 정리에서 오른 `snapshot` 은 그 버전을 지울 때 다시 지운다) — bucket·key 는 같은 시각의 로그 `CAS object 삭제 실패`·`CAS 썸네일 삭제 실패`·`스냅샷 객체 CAS 삭제 실패` 줄에 있다 |
+| seal 결과 | `nexus_seal_total`(라벨 `result` = `completed`·`failed`) · `nexus_seal_duration_seconds`(히스토그램, 같은 라벨) | 끝난 seal 의 수와 소요. 요청이 끊긴 seal 도 끝날 때 기록하므로 앞단 프록시의 읽기 타임아웃을 소요 분포에 맞춰 정한다. `seal_busy`·`seal_in_progress`·`already_sealed` 거절은 세지 않는다. 히스토그램은 첫 seal 이 끝나야 나온다 |
+| 끊긴 요청 | `nexus_http_requests_cancelled_total`(라벨 `method`·`endpoint`) | 응답 전에 클라이언트나 프록시가 연결을 끊은 요청 누적. `endpoint` 는 아래 HTTP 요청 지표와 같은 규칙이다. 첫 끊김이 생겨야 나온다 |
 | 할당자 | `nexus_jemalloc_allocated_bytes` · `_resident_bytes` | `resident − allocated` 가 대략 할당자가 붙든 몫이라, 메모리가 오를 때 할당자가 쥔 것인지 애플리케이션이 쥔 것인지를 가른다 |
 | 집계 성공 | `nexus_metrics_db_stats_ok` | 이번 스크레이프에서 위 넷을 실제로 읽었으면 `1`, 못 읽었으면 `0` |
 | HTTP 요청 | `axum_http_requests_total`(라벨 `method`·`status`·`endpoint`) · `axum_http_requests_duration_seconds`(히스토그램, 같은 라벨) · `axum_http_requests_pending`(`method`·`endpoint`) | 이름·라벨 키·지연 구간이 cas-server와 같다 |
 
-**HTTP 요청 지표의 `endpoint`는 요청 경로가 아니라 라우트 템플릿이다**(`/datasets/{dataset_id}`) — dataset id마다 시리즈가 생기지 않는다. 어느 라우트에도 매칭되지 않은 요청은 `unmatched` 하나로 모이고(cas-server는 이 경우 요청 경로를 적는다), 프로브·스크레이프 경로도 함께 세어진다. 응답 전에 끊긴 요청은 요청 수·지연에 잡히지 않는다(로그의 `요청이 취소됐다` 줄로 본다. seal 은 끊겨도 계속 돌며, 위 seal 지표로 본다). 엔드포인트 하나만 5xx인 결함은 이렇게 본다.
+**HTTP 요청 지표의 `endpoint`는 요청 경로가 아니라 라우트 템플릿이다**(`/datasets/{dataset_id}`) — dataset id마다 시리즈가 생기지 않는다. 어느 라우트에도 매칭되지 않은 요청은 `unmatched` 하나로 모이고(cas-server는 이 경우 요청 경로를 적는다), 프로브·스크레이프 경로도 함께 세어진다. 응답 전에 끊긴 요청은 요청 수·지연에 잡히지 않는다(위 `nexus_http_requests_cancelled_total` 과 로그의 `요청이 취소됐다` 줄로 본다. seal 은 끊겨도 계속 돌며, 위 seal 지표로 본다). 엔드포인트 하나만 5xx인 결함은 이렇게 본다.
 
 ```promql
 sum by (endpoint) (rate(axum_http_requests_total{status=~"5.."}[5m]))
