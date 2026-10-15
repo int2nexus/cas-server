@@ -9,6 +9,18 @@ pip install --extra-index-url https://int2nexus.github.io/cas-server/sdk/simple/
 `scripts/publish_sdk.py` 는 `sdk/pyproject.toml` 의 버전과 같은 `## <버전>` 절이 이 파일에 없으면
 빌드하지 않고 멈춥니다. 최신 버전이 위로 오게 적습니다.
 
+## 0.1.23
+
+- **`nx.delete_dataset(name, *, confirm_dataset_name, delete_cas=None)`·`NexusClient.delete_dataset(dataset_id, *, confirm_dataset_name, delete_cas=False)`** — dataset 을 버전째 지웁니다(nexus-server `0.1.26` 부터, 그 이하 서버는 `405`). `confirm_dataset_name` 에 dataset 의 현재 이름을 정확히 주어야 하고(틀리면 `400`), sealed 버전이 있으면 `role=admin` 만 지웁니다(아니면 `409` 이고 아무것도 지우지 않습니다). seal 이 진행 중인 버전이나 열린 CVAT 편집 세션이 있어도 `409` 이고 아무것도 지우지 않습니다. `viewer`·로봇 계정은 `403` 입니다. `delete_cas` 는 `ds.delete()` 와 같습니다 — `nx.delete_dataset` 에서 `None` 이면 대화형으로 묻고 비대화형이면 CAS 파일을 보존합니다. 버전마다 따로 지우므로 dataset 전체로는 원자적이지 않습니다. 도중에 실패했거나 응답을 받지 못했으면 다시 부르면 남은 버전부터 지우고, 이미 다 지워졌으면 `404` 입니다(서버가 받았을 수 있는 실패는 SDK 가 자동으로 다시 보내지 않습니다). `nx.delete_dataset` 은 이름이 정확히 같은 dataset 이 없으면 요청 없이 `NexusError(404)` 입니다. 반환은 `{dataset_id, versions_deleted, samples_deleted, cas_objects_deleted}` 입니다.
+- **`ds.values(field)`·필터를 건 `ds.distinct(field)`·`ds.shuffle()` 의 id 수집** — nexus-server `0.1.26` 의 explorer projection(`fields`)으로 샘플마다 그 필드 값만 받습니다. 종전에는 샘플마다 meta 전체와 이미지 URL 까지 받았고, 요청 하나에 1,000 개였습니다. 이제 요청 하나에 최대 10,000 개이고, 값이 긴 필드는 서버가 페이지를 짧게(약 8 MiB 이하) 자르므로 요청 수가 그만큼 늘어납니다. 짧은 페이지를 받으면 다음 요청의 개수를 그 두 배(최소 100)로 줄이고, 꽉 찬 페이지 뒤에는 두 배로 늘립니다 — 값이 큰 필드에서 서버가 만들고 버리는 행을 줄이려는 것입니다. 서버가 마지막 페이지라고 알리면(응답 헤더 `X-Nexus-Page-End: 1`) 끝에 빈 페이지를 확인하는 요청을 보내지 않습니다. 결과(값·순서)는 종전과 같습니다. 서버가 `0.1.25` 이하면 페이지마다 응답 모양으로 알아보고 그 페이지는 종전처럼 「요청한 개수(최대 1,000)보다 짧으면 끝」으로 봅니다 — 롤링 교체 중 두 판의 파드가 번갈아 답해도 빠지는 샘플이 없습니다.
+- **`NexusClient.explore_samples(..., fields=)`** — explorer projection 을 그대로 감쌉니다(nexus-server `0.1.26` 부터). 행은 `{"sample_id": .., "<필드>": 값}` 이고, **응답이 `limit` 보다 짧아도 끝이 아니므로** 빈 페이지가 올 때까지 마지막 `sample_id` 를 `cursor` 로 넘기십시오(`offset` 으로 넘기면 잘린 행을 건너뜁니다). 그 이하 서버는 `fields` 를 무시하고 행 전체를 줍니다.
+- **`NexusClient.explore_samples_page(...)`** — `explore_samples` 와 같은 인자로 `(행, 마지막인가)` 를 돌려줍니다. nexus-server `0.1.26` 은 projection 의 마지막 페이지에 `X-Nexus-Page-End: 1` 을 붙이고, 이 메서드가 그것을 `True` 로 줍니다. 헤더가 없으면(옛 서버, 행 전체 explorer) `False` 이므로 빈 페이지까지 잇습니다.
+- **`Dataset.load_or_create`·`nx.dataset_exists` 의 이름 조회** — nexus-server `0.1.26` 의 `name_exact`(이름 정확히 일치)로 dataset 하나만 묻습니다. 종전 `load_or_create` 는 dataset 목록 전체를 받아 이름을 비교했고, `dataset_exists` 는 부분 일치 목록을 받았습니다. 결과는 종전과 같습니다. 서버가 `0.1.25` 이하면 `name_exact` 를 무시하므로 부분 검색 `name` 을 함께 실어 받은 목록에서 이름이 같은 것을 고릅니다. 이름에 역슬래시가 들어 있으면 `name` 을 싣지 않습니다(서버의 부분 검색이 역슬래시를 이스케이프로 읽어 그 이름을 찾지 못합니다). 그런 이름은 `0.1.25` 이하 서버에서 목록 전체를 받습니다. 종전 `dataset_exists` 는 그 서버에서 역슬래시가 든 이름이 있어도 `False` 였습니다.
+- **`NexusClient.list_datasets(..., name_exact=)`·`nx.list_datasets(..., name_exact=)`** — 이름이 정확히 같은(대소문자 구분) dataset 만 받습니다. nexus-server `0.1.26` 부터이고, 그 이하 서버는 이 인자를 무시해 걸러지지 않은 목록을 줍니다.
+- **`ds.to_df()` 의 pandas 설치 안내** — pandas 가 없을 때의 `ImportError` 가 `pip install pandas` 를 안내합니다. 종전 안내
+  `pip install 'nexus-sdk[pandas]'` 는 패키지 이름(`int2nexus-sdk`)이 다르고 `pandas` extra 도 없어 그대로 따라 하면 설치되지
+  않았습니다.
+
 ## 0.1.22
 
 **일괄 meta 쓰기, meta 필터 `exclude`·「값 없음」, `get_field_schema()` 의 int/float·배열·객체 구분, `len(ds)` 캐시, `count_values` 전수 모드를 더하고, 적재 본문에 `dataset_id` 를 싣습니다.** 새 기능은 nexus-server `0.1.24` 부터이고, 그 이하 서버에서 각 항목이 어떻게 동작하는지는 항목마다 적었습니다.
