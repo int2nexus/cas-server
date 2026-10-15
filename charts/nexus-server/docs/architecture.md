@@ -201,9 +201,10 @@ Seal된 Version은 변경되지 않는다.
 새로운 데이터셋을 만들기 위해서는 기존 Version을 수정하는 대신 새로운 Draft Version을 생성한다.
 
 ### 4.6 삭제와 저장소 정리
-Draft Version 은 `editor` 이상의 사람 계정이 `?confirm=<버전>` 을 정확히 붙여 삭제할 수 있다(로봇 계정은 403). **Sealed Version 은 기본적으로 삭제할 수 없다** — `confirm` 을 맞게 준 요청도 관리자가 아니면 409로 거부되며(`confirm` 이 없거나 틀리면 역할과 무관하게 400), Dataset 의 마지막 Version 이어서 Dataset 까지 함께 사라지는 경우에도 마찬가지다.  
+Draft Version 은 `editor` 이상의 사람 계정이 `?confirm=<버전>` 을 정확히 붙여 삭제할 수 있다(로봇 계정은 403). 그 Version 에 열린 CVAT 편집 세션(`creating`·`open`)이 있으면 409 다 — 지우면 아직 들이지 않은 편집이 사라지므로, 세션을 닫거나 지운 뒤 다시 부른다(서버 `0.1.26`+). **Sealed Version 은 기본적으로 삭제할 수 없다** — `confirm` 을 맞게 준 요청도 관리자가 아니면 409로 거부되며(`confirm` 이 없거나 틀리면 역할과 무관하게 400), Dataset 의 마지막 Version 이어서 Dataset 까지 함께 사라지는 경우에도 마찬가지다.  
 **단 관리자(`role=admin`인 사람 계정 — 설정 superuser 는 기동 시 `admin` 이 부여된다)는 Sealed Version 을 삭제할 수 있다** — `DELETE /datasets/{id}/versions/{v}` 에 쿼리 파라미터 둘, `?confirm=<버전>` 과 `?confirm_dataset_name=<데이터셋명>` 을 정확히(비어 있지 않게) 함께 줄 때만이다. 하나라도 틀리면 지우지 않는다. **되돌릴 수 없다.** `editor`·`viewer`·로봇은 지울 수 없다. 재현성 보호의 축은 여전히 Seal 이고(§10.3), 관리자에게만 복구(break-glass) 경로를 연 것이다.  
-마지막 Draft Version 이 삭제되고, 해당 Dataset에 남은 Version 이 없다면 Dataset 도 함께 삭제된다(관리자가 마지막 Sealed Version 을 위 절차로 지우는 경우도 같다).  
+마지막 Draft Version 이 삭제되고, 해당 Dataset에 남은 Version 이 없다면 Dataset 도 함께 삭제된다(관리자가 마지막 Sealed Version 을 위 절차로 지우는 경우도 같다).
+Dataset 을 버전째 한 번에 지우는 `DELETE /datasets/{id}?confirm_dataset_name=<데이터셋명>`(서버 `0.1.26`+)은 Version 마다 위 규칙으로 지운다. 지우기 전에 이름 → 역할·로봇 → Sealed Version(관리자가 아니면 409) → Seal 이 진행 중인 Version(409) → 열린 CVAT 세션(409)을 모두 보고, 걸리면 아무것도 지우지 않는다. Version 하나씩 지우므로 Dataset 전체로는 원자적이지 않다 — 도중에 멈추면 다시 불러 남은 Version 부터 지운다.  
 이때 삭제 요청에 `delete_cas=true`를 명시적으로 지정한 경우에만, 더 이상 어디에서도 참조되지 않는 원본 파일에 대해 CAS에 삭제 요청을 보내 CAS 내부 GC 로직에 의해 정리될 수 있도록 한다. `delete_cas`는 기본값이 `false`(보존)이므로, 별도로 지정하지 않으면 CAS 객체는 그대로 남는다.  
 **Seal 스냅샷 객체(샤드 NDJSON·Shard Manifest·Main Manifest)는 별도 표(`dataset_version_objects`)가 정한다**(서버 `0.1.24`+, [6.3](#63-manifest-구조)). Version 을 지우면 그 표에 기록된 객체를 다음 규칙으로 지운다. 표에 Sealed 스냅샷 기록이 없는 Sealed Version 은 `0.1.23` 이하가 Seal 한 옛 형식으로 보고, `delete_cas=true` 일 때 이름 기반 Manifest key 를 지운다.
 
@@ -338,9 +339,11 @@ CVAT은 2D 이미지 편집기이므로, 왕복이 무손실인 컴포넌트만 
 | 편집 대상 | `bounding_box`, `polygon`, `polyline`, `keypoint_2d` | CVAT으로 내보내고 편집 결과를 병합한다 |
 | 편집 제외 | 그 밖의 모든 컴포넌트(`cuboid_3d`, `keypoint_3d`, classification 등) | 내보내지 않으며 **원본이 그대로 보존된다** |
 
-`keypoint_2d`는 CVAT의 skeleton 라벨로 나간다. 관절 **이름**과 **연결선**은 서버가 만들어 내는 값이 아니라 GT의 `meta.keypoint_info`에서 온다 — 컴포넌트 키로 색인된 `{labels, edges}`다. `edges`의 원소는 두 점의 쌍이 아니라 여러 점을 잇는 **경로**이며, 서버가 그것을 연결선 쌍으로 펴서 skeleton SVG에 넣는다. 이 값이 없거나 이름 배열만 있는 옛 모양이면 연결선 없이 점만 그려진다. 관절 수 밖을 가리키는 인덱스는 그 선만 건너뛴다 — 그리면 CVAT이 project 생성을 거절해 세션이 통째로 실패하고 사유가 드러나지 않는다.
+`keypoint_2d`는 CVAT의 skeleton 라벨로 나간다. 관절 **이름**과 **연결선**은 서버가 만들어 내는 값이 아니라 GT의 `meta.keypoint_info`에서 온다 — 컴포넌트 키로 색인된 `{labels, edges}`다(세션 생성의 `extra_labels` 로 만든 skeleton 은 이름을 요청의 `keypoints` 에서 받고 연결선만 `keypoint_info[<component_key>]` 에서 읽는다, 서버 `0.1.26`+). `edges`의 원소는 두 점의 쌍이 아니라 여러 점을 잇는 **경로**이며, 서버가 그것을 연결선 쌍으로 펴서 skeleton SVG에 넣는다. 이 값이 없거나 이름 배열만 있는 옛 모양이면 연결선 없이 점만 그려진다. 관절 수 밖을 가리키는 인덱스는 그 선만 건너뛴다 — 그리면 CVAT이 project 생성을 거절해 세션이 통째로 실패하고 사유가 드러나지 않는다.
 
 편집 대상이 아닌 컴포넌트는 병합 과정에서 변경되지 않는다. 3D 정보나 분류 값을 가진 인스턴스의 2D 박스만 수정하는 경우에도 나머지 정보는 유지된다.
+
+CVAT 에서 새로 그린 도형(nexus 신원이 없는 것)은 새 인스턴스가 되고, 컴포넌트 키는 그 라벨의 것이다 — 고른 샘플의 점에서 만든 skeleton 이면 그 점의 컴포넌트 키, `extra_labels` 의 skeleton 이면 `component_key`, 도형 라벨이면 도형 타입(서버 `0.1.26`+, 그 전에는 skeleton 이 늘 `keypoint_2d`). 「가져오기」는 프레임별 도형만 들이고 CVAT **트랙**과 마스크는 들이지 않는다 — 버린 트랙 수는 결과의 `warnings` 에 남는다(서버 `0.1.26`+).
 
 #### 5.5.3 인스턴스 식별
 왕복 과정에서 Nexus 인스턴스와 CVAT Shape를 연결하기 위해, Nexus는 인스턴스 식별자를 CVAT Shape의 속성(attribute)으로 함께 내보낸다.
@@ -696,7 +699,7 @@ Token 자체는 발급 후 만료까지 무효화할 수 없다. 만료 시점�
 
 **로봇 계정의 권한에는 상한이 둘 있다.** 역할은 `editor`까지이고, dataset·Version·Sample 삭제는 되지 않는다 — CVAT 세션과 저장된 explorer 필터(subset)도 지울 수 없다(모든 삭제 경로가 같은 판정을 쓴다). 관리 엔드포인트가 `users.role = admin`으로도 열리므로 `admin` 로봇의 장수명 토큰은 그대로 관리 평면 전권이 되고, 사람 토큰이 최대 `jwt.ttlHours`인 데 비해 로봇 토큰은 최장 365일이라 그 값 하나로 sealed가 아닌 모든 dataset을 지울 수 있는 것은 장수명 자격증명에 붙일 권한이 아니다. 적재·수정·seal·이름 변경·fork는 사람과 같다.
 
-**삭제도 역할만 본다.** Version·Sample 삭제는 `editor` 이상의 사람 계정이면 담당자와 무관하게 된다(Sealed Version 과 그에 속한 Sample 은 409 — §4.6, §10.3). Dataset을 직접 지우는 엔드포인트는 없고, 마지막 Version을 지우면 Dataset이 함께 사라진다.
+**삭제도 역할만 본다.** Version·Sample 삭제는 `editor` 이상의 사람 계정이면 담당자와 무관하게 된다(Sealed Version 과 그에 속한 Sample 은 409 — §4.6, §10.3). Dataset 통째 삭제(`DELETE /datasets/{id}`, 서버 `0.1.26`+)도 같은 판정을 지나고 Version 마다 Version 삭제를 부른다. 마지막 Version 을 지우면 Dataset 이 함께 사라진다.
 
 쓰기(적재·수정·seal·이름 변경·fork)가 이미 `editor` 이상이면 남의 Dataset에도 되는 상태에서 **삭제 한 경로만 담당자로 막는 것은 가드가 되지 못하고**, 가드가 있다고 믿게 만들 뿐이다.
 

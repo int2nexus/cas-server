@@ -547,6 +547,7 @@ client.facet_counts(ds.dataset_id, ds.version, "det_gt.label", {"tags": ["train"
 
 - `offset`과 `cursor`를 함께 주면 **400**이다. 한쪽을 조용히 무시하면 화면이 엉뚱한 자리를 가리키는데 증상만으로는 어느 쪽이 무시됐는지 알 수 없다.
 - **깊은 `offset`은 비싸다** — 건너뛸 행을 DB가 세어 나간다. 위치로 점프한 뒤의 연속 스크롤은 `cursor`로 이어간다.
+- **`fields`(projection, 서버 이미지 `0.1.26`+) 모드에서는 `offset += limit` 으로 페이지를 넘기지 않는다.** 값이 긴 필드는 서버가 페이지를 `limit` 보다 짧게 자르므로 잘린 행을 건너뛴다 — 다음 페이지는 마지막 `sample_id` 를 `cursor` 로 잇고, 응답 헤더 `X-Nexus-Page-End: 1` 이 마지막 페이지다.
 
 ### 4.6 데이터셋 목록 조회
 ```python
@@ -555,6 +556,7 @@ nx.list_datasets(q="incabin")                    # name/description/tags 통합 
 nx.list_datasets(tags=["person-detection"])      # 태그로 필터(하나라도 포함)
 nx.list_datasets(favorite=True)                  # 내 즐겨찾기만
 nx.list_datasets(sort="name", order="asc")       # 정렬
+nx.list_datasets(name_exact="my-dataset")        # 이름 정확히 일치(대소문자 구분, 서버 이미지 `0.1.26`+ — 그 전 서버는 무시)
 ```
 - `q`는 `name/description/tags` 중 하나라도 부분일치하는 데이터셋을 반환한다. `name=/description=`은 개별 필드 검색
 - 즐겨찾기는 `ds.favorite() / ds.unfavorite()`(멱등)로 켜고 끄고, favorite=True로 목록을 필터링한다.
@@ -812,7 +814,7 @@ rep = s.save()      # PATCH — seatbelt_gt 그룹 통째 + meta 의 width 키�
 
 ### 5.3 골격 정의 심기 — `set_keypoint_info`
 
-CVAT skeleton의 관절 **이름**과 **연결선**은 `meta.keypoint_info`에서 온다. 컴포넌트 키로 색인하며 FiftyOne `fo.KeypointSkeleton`과 같은 모양이다.
+CVAT skeleton의 관절 **이름**과 **연결선**은 `meta.keypoint_info`에서 온다. 컴포넌트 키로 색인하며 FiftyOne `fo.KeypointSkeleton`과 같은 모양이다(세션 생성의 `extra_labels` 로 만든 skeleton 은 이름을 `keypoints` 에서 받는다, [6.2](#62-세션-생성)).
 
 ```python
 ds.set_keypoint_info({
@@ -916,6 +918,38 @@ ses.wait_open(timeout=1800)                           # 큰 세션은 넉넉히
 ds.create_annotation_session(ids, extra_labels=[
     {"group": "det", "label": "Face", "components": ["bounding_box"]}])
 ```
+
+고른 샘플에 그 group/label 의 점(skeleton)이 하나도 없어도 점 라벨을 만들 수 있다(서버 이미지 `0.1.26`+). `keypoints` 의 순서가
+점 번호이고, `component_key` 는 CVAT 에서 새로 그린 점이 들어갈 구성요소 키다(생략하면 `keypoint_2d`). 고른 샘플에 이미 점이 있으면
+그 점으로 skeleton 을 만들고 `keypoints`·`component_key` 는 세션 `warnings` 에 남기고 무시한다.
+
+```python
+ds.create_annotation_session(ids, extra_labels=[
+    {"group": "face", "label": "person", "components": ["keypoint_2d"],
+     "keypoints": ["l_eye", "r_eye", "nose"], "component_key": "FACE_KP"}])
+```
+
+- CVAT 라벨 이름은 `face/person/kp`, 점 이름은 `keypoints` 그대로다. CVAT 자동 주석 함수의 라벨·점 이름을 이것에 맞추면
+  `cvat-cli task auto-annotate` 가 이름으로 짝짓고, 결과는 「가져오기」에서 `FACE_KP` 구성요소의 새 인스턴스로 들어온다.
+- **세션을 만든 뒤 CVAT 에서 더한 라벨은 들어오지 않는다**(이름이 같아도). 쓸 라벨은 세션을 만들 때 정한다.
+- `components` 에 `"keypoint_2d"` 만 주면 도형 라벨은 만들지 않는다(도형도 그리려면 `"bounding_box"` 등을 함께 준다).
+- `400` 인 경우: `keypoint_2d` 인데 `keypoints` 가 없거나 빈 목록, 점 이름이 비었거나·앞뒤에 공백이 있거나·겹치거나·64 자를 넘음,
+  점이 1,000 개를 넘음, CVAT 라벨 이름(`face/person/kp`)이 64 자를 넘음, `component_key` 에 영문·숫자·`_`·`-` 밖의 문자가 있거나
+  `id`·`label`·`track_id`·`confidence` 임, `keypoint_2d` 없이 `keypoints`·`component_key` 만 줌.
+
+**CVAT 프레임 순서는 `sample_ids` 의 순서다**(서버 이미지 `0.1.26`+, 그 전에는 `sample_id` 내림차순). 영상처럼 이어진 프레임을
+CVAT 에서 따라가려면 프레임 번호로 정렬해 넘긴다.
+
+```python
+rows = ds.samples(split="video01", include_annotations=False)
+ids = [r["sample_id"] for r in sorted(rows, key=lambda r: r["meta"]["frame_index"])]
+ses = ds.create_annotation_session(ids)
+```
+
+**CVAT 트랙은 들어오지 않는다.** 「가져오기」(`ses.pull()`)는 프레임별 도형만 들이고, 트랙이 있으면 결과의 `warnings` 에 버린 수를
+남긴다(서버 이미지 `0.1.26`+). 트랙을 들이려면 CVAT 에서 작업을 `CVAT for images 1.1` 로 내보냈다가 같은 작업에 `CVAT 1.1` 로 다시
+들여 프레임별 도형으로 푼 뒤 「가져오기」한다 — 다시 들이기는 그 작업의 주석을 통째로 바꾸므로 그동안 편집하지 않는다. 이렇게 들인
+인스턴스에는 `track_id` 가 없다.
 
 ### 6.3 고칠 대상만 골라서 세션 만들기
 
@@ -1058,7 +1092,7 @@ ses.close()
 **버전 설명**(서버 이미지 `0.1.21`+). 버전 생성 HTTP 본문(`POST /datasets/{id}/versions`)에 선택 필드 `description`을 줄 수 있다(SDK의 `load_or_create`·`fork`에는 인자가 없고, 만든 뒤 `ds.set_description()`으로 쓴다, §7.7). fork는 원본 버전의 설명을 **복사하지 않는다**. clone(§7.6)은 원본 버전의 설명을 복사한다.
 
 이 상태에서 할 수 있는 일:
-- 샘플 추가/등록, Annotation 추가, 버전 삭제
+- 샘플 추가/등록, Annotation 추가, 버전 삭제(열린 CVAT 세션이 있으면 `409` — [8.3](#83-삭제-정책))
 - 같은 Dataset의 다른 버전에서 샘플 재사용(재적재 없이 참조만 연결)
 ```python
 ds.link_samples([sid1, sid2])          # 이미 존재하는 sample_id를 이 버전에 연결
@@ -1224,7 +1258,7 @@ curl -X PUT "$BASE/api/v1/datasets/$DATASET_ID/owner" \
 내가 담당인 dataset은 `GET /datasets?mine=true`로, 담당자가 없는 것은 `?unowned=true`로 조회한다. 둘 다 **기본 뷰용 필터이지 권한이 아니다** — 걸지 않으면 전부 보인다.
 
 ### 8.3 삭제 정책
-Dataset 삭제는 버전 단위로 수행한다. `ds.delete()`로 버전을 삭제하고, 남은 버전이 하나도 없으면 Dataset도 자동으로 삭제된다. 이때 Dataset에 속한 잔여 Sample도 모두 정리되며, CAS로 Asset 삭제 요청을 보낼지는 아래 `delete_cas`가 정한다.
+Dataset 은 버전 단위(`ds.delete()`)로 지우거나, `nx.delete_dataset` 으로 버전째 한 번에 지운다(아래, 서버 이미지 `0.1.26`+). 남은 버전이 하나도 없으면 Dataset도 자동으로 삭제된다. 이때 Dataset에 속한 잔여 Sample도 모두 정리되며, CAS로 Asset 삭제 요청을 보낼지는 아래 `delete_cas`가 정한다.
 삭제는 **`editor` 이상의 사람 계정**이면 된다(로봇은 403). 담당자와 무관하게 남의 dataset의 버전·샘플도 지울 수 있다(마지막 버전을 지우면 dataset도 함께 사라진다). `viewer`는 자기가 담당인 dataset도 지울 수 없다. 샘플 하나를 지우는 `DELETE /samples/{sample_id}`는 그 샘플이 sealed 버전에 하나라도 속해 있으면 `409`다(draft 버전에서만 빼려면 unlink). sealed 버전은 기본적으로 삭제할 수 없다 — `confirm`을 맞게 준 비-admin은 `409`, `confirm`이 없거나 틀리면 역할과 무관하게 `400`이다. 그 버전이 Dataset의 마지막 버전이어도 마찬가지다. **단 관리자(`role=admin` 또는 설정 superuser, 사람 계정)는 `DELETE /datasets/{id}/versions/{v}?confirm=<버전>&confirm_dataset_name=<데이터셋명>` 처럼 두 확인값을 정확히 함께 주면 sealed 버전도 지울 수 있다**(되돌릴 수 없음). SDK는 `ds.delete(confirm="v0", confirm_dataset_name="my-dataset")`(저수준 `client.delete_version(..., confirm_dataset_name=)`, SDK `0.1.21`+)다. 데이터셋명이 틀리거나 빠지면 admin은 `400`이고, 비-admin은 이름을 맞게 줘도 `409`다.
 
 **CAS 원본 삭제(`delete_cas`)는 층마다 기본값이 다르다.**
@@ -1250,6 +1284,21 @@ ds.delete(confirm="v0")                   # delete_cas 생략 → 대화형으�
 ds.delete(confirm="v0", delete_cas=False) # 묻지 않고 카탈로그만 삭제, CAS 원본 유지
 ds.delete(confirm="v0", delete_cas=True)  # CAS로 삭제 요청까지 보냄
 ```
+
+**열린 CVAT 편집 세션(`creating`·`open`)이 있는 버전은 지우지 않는다**(`409`, 서버 이미지 `0.1.26`+). 지우면 아직 들이지 않은
+작업자 편집이 함께 사라지므로, 세션을 닫거나(`ses.close()`) 지운 뒤 다시 부른다.
+
+**dataset 을 버전째 한 번에 지우려면** `nx.delete_dataset` 을 쓴다(서버 이미지 `0.1.26`+, SDK `0.1.23`+). 버전마다 위 버전 삭제와
+같은 규칙으로 지우고, 마지막 버전과 함께 dataset 이 사라진다.
+
+```python
+nx.delete_dataset("my-dataset", confirm_dataset_name="my-dataset", delete_cas=False)
+# {'dataset_id': ..., 'versions_deleted': ['v1', 'v0'], 'samples_deleted': 3, 'cas_objects_deleted': 0}
+```
+
+- `confirm_dataset_name` 은 늘 필수다(틀리면 `400`). sealed 버전이 있으면 관리자만 지우고(아니면 `409`), seal 이 진행 중인 버전이나
+  열린 세션이 있어도 `409` 다 — 이 판정은 지우기 전에 하므로 걸리면 아무것도 지우지 않는다.
+- 버전 하나씩 지우므로 dataset 전체로는 원자적이지 않다. 도중에 실패하면 다시 부르면 남은 버전부터 지우고, 다 지워졌으면 `404` 다.
 
 ## 9. 에러 처리
 
@@ -1301,7 +1350,8 @@ except NexusError as e:
 |||
 |---|---|
 |`nx.connect(nexus_url=, email=, password=, robot_token=, cas_url=, cas_key_id=, cas_secret=, save_cas_credentials=False, cas_sts=, oidc=, timeout=(10, 120), retry_timeout=)`|서버 연결. `timeout`은 nexus 요청의 (연결, 읽기) 타임아웃 초 — 큰 seal·`update_meta`는 읽기를 늘린다. `retry_timeout`은 서버 부재를 첫 실패부터 기다리는 초(기본 120, `0`이면 끔, SDK `0.1.19`+, [2.2](#22-연결-설정)). `robot_token=`이면 로그인하지 않는다. `save_cas_credentials`는 아무 일도 하지 않는다(시그니처 호환용 — `True`로 주면 경고한다). `cas_sts=nx.CasSts(...)`이면 CAS 임시 자격증명(STS) 모드. `oidc=nx.OidcAuth(token_file=)`/`(token_provider=)`이면 외부 IdP(OIDC) 토큰으로 nexus에 인증 — `email`/`password`·`robot_token`과 함께 못 쓴다|
-|`nx.list_datasets(q=, name=, description=, tags=, sort=, order=, favorite=, mine=, unowned=, limit=, cursor=)`|dataset 목록 검색. `limit`을 주지 않으면 커서를 자동 순회해 전체를 모은다([4.6](#46-데이터셋-목록-조회))|
+|`nx.list_datasets(q=, name=, name_exact=, description=, tags=, sort=, order=, favorite=, mine=, unowned=, limit=, cursor=)`|dataset 목록 검색. `limit`을 주지 않으면 커서를 자동 순회해 전체를 모은다. `name_exact`는 이름 정확히 일치(SDK `0.1.23`+, 서버 이미지 `0.1.26`+)([4.6](#46-데이터셋-목록-조회))|
+|`nx.delete_dataset(name, confirm_dataset_name=, delete_cas=None)` → dict|dataset 을 버전째 삭제(SDK `0.1.23`+, 서버 이미지 `0.1.26`+ — 그 전 서버는 `405`). `delete_cas` 미지정 시 대화형으로 묻는다([8.3](#83-삭제-정책))|
 |`nx.dataset_exists(name)` → bool|그 이름의 dataset이 있으면 `True`. 이름이 정확히 같은 것만 센다([4.8](#48-fiftyone-식-조회와-집계))|
 |`nx.upload(paths, bucket, prefix="", workers=8, overwrite=False)` → {경로: CasRef}|파일 업로드. `overwrite=True`면 같은 key에 다른 내용이 있어도 에러 대신 덮어씀|
 |`nx.probe(refs, workers=8, strict=False, max_header_bytes=65536)` → [CasRef]|업로드 없이 CAS 객체의 이미지 크기만 채움(앞부분만 읽음, 순서 보존)|
@@ -1381,6 +1431,7 @@ except NexusError as e:
 |`client.patch_meta_items(dataset_id, version, items)` / `client.patch_meta_by_filter(dataset_id, version, filter, meta, confirm=None)`|meta 일괄 쓰기 경로를 해석 없이 감싼다(서버 이미지 `0.1.24`+, [5.4](#54-meta-일괄-쓰기--set_valuesupdate_meta))|
 |`client.version_stats` / `.facet_values` / `.histogram` / `.version_schema` / `.add_dataset_tags` / `.remove_dataset_tags`|서버 경로를 그대로 감싸고 응답 JSON을 해석 없이 돌려준다|
 |`client.delete_version(dataset_id, version, confirm=, delete_cas=False, confirm_dataset_name=None)`|버전 삭제 저수준([8.3](#83-삭제-정책))|
+|`client.delete_dataset(dataset_id, confirm_dataset_name=, delete_cas=False)`|dataset 통째 삭제 저수준(SDK `0.1.23`+, 서버 이미지 `0.1.26`+, [8.3](#83-삭제-정책))|
 |`client.change_password(current, new)`|본인 비밀번호 변경(현재 비밀번호 재확인)|
 |`client.delete_account(password)` → dict|본인 계정 **완전 삭제** — 되돌릴 수 없다. 담당하던 dataset은 담당자만 해제되고 남는다([8.2](#82-담당자-이전))|
 |`NexusError`, `NexusAuthError`, `NexusCasError`, `NexusIngestError`, `NexusBatchError`, `NexusValidationError`|	예외 타입(`.status_code`, `.server_message`, `.code`, `.rejected` — 뒤의 둘은 SDK `0.1.22`+, [9](#9-에러-처리)). `NexusValidationError`는 객체 모델 `save()` 검증 실패(`status_code` 없음)|

@@ -81,6 +81,112 @@ nexus-server 는 마이그레이션이 바이너리에 임베드되어 **기동 
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.3.21
+
+image: `int2jieun/nexus-server:0.1.25` → `int2jieun/nexus-server:0.1.26`
+digest: `sha256:9ef895893840e96c4c2fa9f447974f65525727ee48f24acda6c949c430f5e640`
+
+**정정** — `0.3.19` 마이그레이션 절의 예상 소요(샘플 약 180 만 행에서 네 마이그레이션 합 약 11 초)와 「030 이 `samples` 전수에
+비례」는 맞지 않았습니다. 030 은 샘플마다 meta 를 펼쳐 키마다 다시 계산하므로 소요가 샘플 수만이 아니라 샘플당 meta 키 수와 meta
+크기에 따라 늘고, 샘플 약 6,700 만 행인 DB 에서 12 시간 안에 끝나지 않았습니다. 이미 그 교체에서 멈췄다면 README 「기동
+마이그레이션이 길어질 때」의 절차로 030·032 를 기동에서 넘기고 기동 뒤에 채울 수 있습니다.
+
+**동작 변경** — 아홉입니다. 6~9 는 CVAT 편집 세션입니다.
+
+1. **dataset 이름 정확히 일치 필터.** `GET /datasets` 와 `GET /datasets/count` 가 쿼리 파라미터 `name_exact` 를 받습니다. 이름이
+   정확히 같은(대소문자 구분) dataset 만 고르고, 이름은 유일하므로 결과는 0 개나 1 개입니다. `name`(부분 검색)과 함께 주면 둘 다
+   겁니다. `name` 의 부분 검색은 역슬래시를 이스케이프로 읽어 역슬래시가 든 이름을 찾지 못하지만 `name_exact` 는 찾습니다. `name`
+   의 동작은 바뀌지 않습니다.
+2. **explorer projection(`fields`).** `POST /datasets/{dataset_id}/versions/{version}/samples/explorer` 가 본문의 `fields`
+   (`"meta.<키>"`·`"tags"`·`"split"`·`"sample_id"` 중 최대 32 개)를 받으면 행 전체 대신 `{"sample_id": .., "<필드>": 값}` 만
+   돌려줍니다. 필터·정렬은 행 전체와 같습니다.
+   - `"meta.<키>"` 의 `<키>` 는 meta 의 최상위 키 하나입니다(`meta.a.b` 는 키 `a.b`). 키가 없거나 meta 가 객체가 아니면 `null` 입니다.
+   - 이 모드의 `limit` 상한은 10,000(기본 100)입니다.
+   - **응답이 `limit` 보다 짧아도 끝이 아닙니다.** 행마다 값 텍스트와 `sample_id` 를 더한 크기의 합이 약 8 MiB 를 넘는 행부터 다음
+     페이지로 넘깁니다. 마지막 페이지에는 응답 헤더 `X-Nexus-Page-End: 1` 이 붙고, 없으면 마지막 `sample_id` 를 `cursor` 로
+     이어 받으십시오. **이 모드에서 `offset` 으로 다음 페이지를 넘기면(`offset += limit`) 잘린 행을 건너뜁니다** — 다음 페이지는
+     `cursor` 로 잇습니다.
+   - 모르는 필드·중복·`include_annotations: true` 와 함께 주면 `400` 입니다. `fields` 가 없거나 `null` 이거나 빈 목록이면
+     종전과 같습니다.
+3. **dataset 통째 삭제.** `DELETE /datasets/{dataset_id}?confirm_dataset_name=<데이터셋명>` 이 dataset 의 버전을 하나씩 버전
+   삭제(`DELETE /datasets/{dataset_id}/versions/{version}`)와 같은 규칙으로 지우고, 마지막 버전과 함께 dataset 이 지워집니다. 응답은
+   `{"dataset_id", "versions_deleted": [버전…], "samples_deleted", "cas_objects_deleted"}` 입니다.
+   - `confirm_dataset_name` 은 sealed 버전이 없어도 **늘 필수**입니다(틀리거나 비면 `400`). `delete_cas` 의 기본값(`false`, CAS
+     object 보존)과 뜻은 버전 삭제와 같습니다.
+   - 지우기 전에 이 순서로 보고, 걸리면 아무것도 지우지 않습니다: 이름(`400`) → `viewer`·로봇 계정(`403`) → sealed 버전이 있는데
+     `role=admin` 이 아님(`409`) → seal 이 진행 중인 버전(`409`) → 열린 CVAT 편집 세션(`409`, 9).
+   - **dataset 전체로는 원자적이지 않습니다.** 버전 하나씩 지우므로, 도중에 오류가 나거나 그 사이 다른 요청이 seal·세션을 새로
+     시작하면 그 버전에서 멈추고 그때까지 지운 버전은 지워진 채로 남습니다. 다시 호출하면 남은 버전부터 지우고, 이미 다
+     지워졌으면 `404` 입니다. 지우는 동안 버전이 세 번 다시 읽어도 계속 생기면 `409` 입니다.
+   - 버전이 하나도 없는 dataset 도 지웁니다. 단 버전 없이 샘플만 남아 있으면 `409` 로 지우지 않습니다 — 버전을 하나 만들어 그
+     버전을 지우면 샘플까지 정리됩니다.
+4. **기동 마이그레이션 동안 잠금 세션을 로그에 남깁니다.** 기동 10 초 뒤부터 마이그레이션이 끝날 때까지 60 초마다, 마이그레이션
+   잠금을 쥐었거나 기다리는 DB 세션을 `마이그레이션 잠금 세션 pid=… granted=… state=… wait_event=… client_addr=… application_name=…
+   xact_secs=… query_secs=… query=… blocked_by=…` 한 줄씩으로 남깁니다. 「마이그레이션이 오래 도는 중」과 「앞서 죽은 컨테이너가 남긴
+   세션이 잠금을 쥐어 기다리는 중」을 로그로 가를 수 있고, `blocked_by` 는 그 세션을 막고 있는 세션의 pid 입니다. 읽는 법과 남은
+   세션의 정리는 README 「기동 마이그레이션이 길어질 때」에 있습니다. 마이그레이션이 10 초 안에 끝나면 줄이 없습니다. 이 조회는
+   기동 중에만 돌고 연결 하나를 잠깐 씁니다.
+5. **스냅샷 잔여 점검 명령.** `nexus-server reconcile-snapshots` 가 manifest 버킷의 `annotations/`·`manifests/` 를 훑어 어느
+   sealed 버전도 가리키지 않는 객체의 수·크기·회수 상한을 JSON 으로 보고합니다. 아무것도 지우지 않고, 서버로 뜨지 않으며,
+   실행 중인 파드에 `kubectl exec` 로 돌립니다. 실행하는 동안만 서버 키에 manifest 버킷(`cas.defaultBucket` 뒤에 `-manifests`)의
+   `ListObjects` 가 필요합니다. 실행 조건·읽는 양·결과 읽는 법은 README 「스냅샷 잔여 점검」에 있습니다. 인자 없이 기동하는
+   서버의 동작은 바뀌지 않습니다.
+6. **`extra_labels` 로 점(skeleton) 라벨을 만듭니다.** 세션 생성 요청의 `extra_labels` 항목에 `components: ["keypoint_2d"]` 와
+   점 이름 목록 `keypoints` 를 주면, 고른 샘플에 점이 하나도 없어도 skeleton 라벨 `{group}/{label}/kp` 를 만듭니다.
+   ```json
+   {"group": "face", "label": "person", "components": ["keypoint_2d"],
+    "keypoints": ["l_eye", "r_eye", "nose"], "component_key": "FACE_KP"}
+   ```
+   - `keypoints` 의 순서가 점 번호이고 CVAT 의 점 이름입니다. `keypoint_2d` 를 주었는데 `keypoints` 가 없거나 빈 목록이면 `400`
+     이고, 점 이름이 비었거나(공백뿐 포함)·앞뒤에 공백이 있거나·겹치거나·64 자를 넘어도 `400` 입니다. 점은 1,000 개까지입니다.
+     CVAT 라벨 이름(`{group}/{label}/kp`, 도형 라벨은 `{group}/{label}`)이 64 자를 넘어도 `400` 입니다.
+   - `component_key` 는 그 라벨로 CVAT 에서 새로 그린 점이 들어갈 구성요소 키입니다. 생략하면 `keypoint_2d` 이고, 영문·숫자·`_`·
+     `-` 만 받습니다. `id`·`label`·`track_id`·`confidence` 는 `400` 입니다. `keypoint_2d` 없이 `keypoints`·`component_key` 만 주어도
+     `400` 입니다. 같은 그룹에서 그 키를 다른 타입의 구성요소가 쓰고 있으면 세션 `warnings` 에 남깁니다.
+   - 연결선은 고른 샘플의 `meta.keypoint_info[<component_key>].edges` 가 있으면 그것으로 그립니다. 반영에는 영향이 없습니다.
+   - 고른 샘플에 그 (group, label) 의 점이 이미 있으면 종전처럼 그 점으로 skeleton 을 만들고, 요청의 `keypoints`·
+     `component_key` 는 세션 `warnings` 에 한 줄을 남기고 무시합니다. 같은 (group, label) 의 skeleton 이 `extra_labels` 에 두 번
+     있으면 첫 번째만 쓰고 `warnings` 에 남깁니다.
+   - **`components` 의 뜻이 바뀝니다.** 이전 판은 이 값을 읽지 않고 항목마다 도형 라벨을 만들었습니다. 이 판부터
+     `["keypoint_2d"]` 만 주면 도형 라벨 없이 skeleton 만 만들고, 도형 타입(`bounding_box`·`polygon`·`polyline`)을 함께 주면 둘 다
+     만듭니다. 생략하거나 모르는 값만 주면 종전처럼 도형 라벨 하나이고, 모르는 값은 세션 `warnings` 에 남습니다.
+   - **세션에서 새로 그린 점의 구성요소 키가 바뀝니다.** 이전 판은 「가져오기」에서 nexus 신원이 없는 skeleton 을 늘
+     `keypoint_2d` 로 들였습니다. 이 판부터는 그 라벨의 키 — 고른 샘플의 점에서 만든 skeleton 이면 그 점의 구성요소 키, 6 의
+     skeleton 이면 `component_key` — 로 들여, 자동 주석 결과가 기존 점과 같은 구성요소로 모입니다. 같은 (group, label) 에 점
+     구성요소가 둘 이상이면 어느 쪽인지 정할 수 없어 종전대로 `keypoint_2d` 로 들이고 세션 `warnings` 에 남깁니다. 이전 판이 만든
+     세션, 그리고 롤링 교체 중 이전 판 파드가 「가져오기」를 처리한 경우도 종전대로 `keypoint_2d` 입니다.
+   - 고른 샘플의 그룹·라벨·점 이름이 64 자를 넘어 CVAT 이 받지 않을 때는 CVAT project 를 만들기 전에 그 이름들을 적고 세션이
+     `failed` 가 됩니다(이전 판은 CVAT 의 오류 페이지로 실패했습니다).
+7. **세션의 CVAT 프레임 순서가 요청 순서입니다.** 이전 판은 `sample_ids` 의 순서와 무관하게 `sample_id` 내림차순으로 붙여,
+   차례로 적재한 영상 프레임이 CVAT 에서 역순이 되었습니다. 이 판부터 `sample_ids` 순서(같은 id 가 두 번 있으면 처음 자리)가
+   CVAT 프레임 순서입니다. 이미 만든 세션의 프레임 순서는 바뀌지 않습니다.
+8. **「가져오기」가 CVAT 트랙을 버릴 때 `warnings` 에 남깁니다.** 「가져오기」는 이전 판과 같이 프레임별 도형만 들이고 트랙
+   (키프레임·보간 프레임)은 들이지 않습니다. 이전 판은 이를 서버 로그에만 남겼고, 이 판부터 응답 `warnings` 에
+   「CVAT 트랙 N개는 들이지 않았다 …」 한 줄을 남깁니다. 함께, 원본에 `visibility` 가 없던 점을 손대지 않고 「가져오기」하면
+   `visibility` 가 새로 생기며 `updated_components` 로 세던 것을 고쳤습니다(이전 판에서도 값은 모두 「보임」이었습니다). CVAT 에서
+   새로 그린 점은 이전과 같이 늘 `visibility` 를 적습니다.
+9. **열린 CVAT 편집 세션이 있는 버전은 지우지 않습니다.** 버전 삭제(`DELETE /datasets/{dataset_id}/versions/{version}`)와 3 의
+   dataset 삭제가, 그 버전에 `creating`·`open` 세션이 있으면 `409` 로 거절하고 세션 id 를 적습니다. 이전 판은 세션 행을 함께
+   지워 CVAT project 가 남고, 아직 들이지 않은 작업자 편집이 함께 사라졌습니다. 세션을 닫거나(`close`) 지운 뒤 다시 부르십시오.
+   함께, 버전 삭제가 행을 지운 뒤 CAS 정리 판정에서 DB 오류를 만나면 `500` 을 내던 것을, 그 객체를 남기고(지표
+   `nexus_cas_delete_failures_total{kind="asset"}`) 성공으로 돌려주게 고쳤습니다 — 이전 판은 지워진 버전을 실패로 보고했습니다.
+
+**마이그레이션** — 없음. 롤백 안전 — 이미지 `0.1.25` 로 되돌리면 1~9 가 이전 동작으로 돌아갑니다. 이 판부터 기존 행을 훑어 채우는
+일(백필)은 정합성에 필요한 것이 아니면 기동 마이그레이션에 넣지 않습니다. 이 판에는 그런 마이그레이션이 없고, 이미 발행된 030·032 는
+바꾸지 않습니다.
+
+**설정 키** — 없음.
+
+**호환성** — SDK `0.1.23` 의 `Dataset.load_or_create`·`nx.dataset_exists` 가 1 을, `ds.values()`·필터를 건 `ds.distinct()`·
+`ds.shuffle()` 이 2 를, `nx.delete_dataset` 이 3 을 씁니다. 1·2 는 이전 서버에서도 SDK 결과가 같습니다(역슬래시가 든 이름의
+`nx.dataset_exists` 가 `True` 로 바로잡힌 것만 다릅니다. 이전 서버는 `name_exact`·
+`fields` 를 무시하고, SDK 는 종전 방식으로 받습니다). 3 은 이전 서버에서 `405` 입니다. 6 의 `keypoints`·`component_key` 는 SDK 가
+`extra_labels` 를 그대로 보내므로 어느 SDK 판으로도 씁니다 — 이전 서버는 두 필드를 무시하고 6 의 「이전 판」 동작을 합니다.
+
+**운영 조치** — 권장. nexus-server 의 DB 사용자에 `client_connection_check_interval` 을 걸어 두면 컨테이너가 죽을 때 그 연결의
+마이그레이션 질의와 잠금 대기가 DB 에 남지 않습니다(`ALTER ROLE <사용자> SET client_connection_check_interval = '10s'`,
+PostgreSQL 14 이상). 효과와 한계는 README 「기동 마이그레이션이 길어질 때」에 있습니다.
+
 ## 0.3.20
 
 image: `int2jieun/nexus-server:0.1.24` → `int2jieun/nexus-server:0.1.25`
@@ -1024,7 +1130,7 @@ pending-list 비용을 받습니다. **적재가 이어지면 그 대기열이 �
 
 ```
 ① 적재를 멈춥니다(적재 파드를 0 으로 내립니다)
-② ⚠ 파드를 내려도 백엔드는 함께 죽지 않습니다 — 남아 있는 것을 끊습니다
+② 주의: 파드를 내려도 백엔드는 함께 죽지 않습니다 — 남아 있는 것을 끊습니다
       SELECT pid, pg_cancel_backend(pid) FROM pg_stat_activity
        WHERE datname = '<DB>' AND state = 'active' AND query ILIKE 'INSERT INTO instances%';
 ③ 게이트 — 위 조회가 0 건인지 확인합니다
@@ -1032,19 +1138,19 @@ pending-list 비용을 받습니다. **적재가 이어지면 그 대기열이 �
 ⑤ 파드가 Ready 가 된 것을 확인하고 적재를 재개합니다
 ```
 
-⚠ **②가 필요한 이유**: PostgreSQL 의 `client_connection_check_interval` 은 기본값이 `0` 이라, 질의를
+주의: **②가 필요한 이유**: PostgreSQL 의 `client_connection_check_interval` 은 기본값이 `0` 이라, 질의를
 실행 중인 백엔드는 클라이언트가 사라져도 그것을 보지 않습니다. 파드를 내려도 그 백엔드는 하던 일을
 계속하고, 커넥션 풀이 쥐고 있던 것이 그대로 락 경쟁자로 남습니다.
 
-⚠ **③이 필요한 이유**: 적재가 고르지 않으면(버스트) 요청 카운터의 평평한 구간을 정지로 오인하기
+주의: **③이 필요한 이유**: 적재가 고르지 않으면(버스트) 요청 카운터의 평평한 구간을 정지로 오인하기
 쉽습니다. 남아 있던 커넥션이 `active` 로 바뀌며 진행 중이던 pending-list 병합을 물려받으면 ④가
 `lock_timeout` 으로 실패합니다.
 
-⚠ **④의 `helm upgrade` 는 적재를 멈추지 않습니다.** `replicaCount: 1` 과 기본 RollingUpdate 에서는
+주의: **④의 `helm upgrade` 는 적재를 멈추지 않습니다.** `replicaCount: 1` 과 기본 RollingUpdate 에서는
 새 파드가 Ready 가 될 때까지 **구 파드가 계속 서비스하고 커넥션 풀도 그대로 살아 있습니다.** 적재를
 멈추는 것은 ①이지 ④가 아닙니다.
 
-⚠ **동결 방지(anti-wraparound) autovacuum 이 `instances` 에 떠 있으면 ④가 계속 실패합니다.** 그 작업은
+주의: **동결 방지(anti-wraparound) autovacuum 이 `instances` 에 떠 있으면 ④가 계속 실패합니다.** 그 작업은
 락 경쟁에서 **자동 취소되지 않습니다.** `pg_stat_activity` 에서 `autovacuum: VACUUM … (to prevent
 wraparound)` 를 먼저 확인하십시오.
 

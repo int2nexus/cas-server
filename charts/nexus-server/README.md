@@ -4,9 +4,9 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
 
 ## 문서
 
-- [아키텍처](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.20/charts/nexus-server/docs/architecture.md)
+- [아키텍처](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.21/charts/nexus-server/docs/architecture.md)
   — 도메인 모델, Version 생명주기, Annotation CoW, 스냅샷·Manifest 구조
-- [사용법](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.20/charts/nexus-server/docs/usage.md)
+- [사용법](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.21/charts/nexus-server/docs/usage.md)
   — 설치, Python SDK 연결, Dataset 적재·검색·seal 워크플로우, API 레퍼런스
 - [변경 이력](CHANGELOG.md)
   — 버전별 동작 변경·마이그레이션·설정 키. 각 항목은 해당 GitHub Release 본문과 동일하다
@@ -22,11 +22,11 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
   선택 키가 셋 더 있고, 쓰는 기능이 있을 때만 넣는다 — CVAT annotation 편집 세션의
   `NEXUS__CVAT__PASSWORD`, superuser의 `NEXUS__AUTH__SUPERUSER_PASSWORD`,
   지표의 `NEXUS__METRICS__TOKEN`(values 스위치가 없다 — 이 키가 곧 스위치다).
-  전체 목록은 [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.20/charts/nexus-server/examples/secret.example.yaml).
+  전체 목록은 [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.21/charts/nexus-server/examples/secret.example.yaml).
 - **CVAT은 선택** — 설정하지 않아도 서버는 정상 동작한다. 세션 생성·결과 회수만 503이 되고 카탈로그·업로드·seal·조회는 영향이 없다.
 - **superuser도 선택** — 설정하지 않으면 관리자를 만들 부트스트랩 수단이 없다(`users.role = admin`은 백필하지 않는다). 다만 **CVAT과 달리 반쪽 설정은 조용히 꺼지지 않고 기동을 실패시킨다**(아래 참조).
 
-DB 마이그레이션은 바이너리에 임베드되어 **기동 시 자동 적용**된다(별도 Job 불필요). 마이그레이션이 끝나야 포트가 열리므로 그 시간은 곧 startupProbe 예산(기본 `periodSeconds 10 × failureThreshold 60` = 600초)에서 나간다 — 스키마가 바뀌는 릴리스로 올릴 때는 [CHANGELOG](CHANGELOG.md)의 해당 버전 **마이그레이션** 항목에서 예상 소요를 먼저 확인할 것. **거기 적힌 실측값은 특정 환경의 것이라 행 수로 환산해 그대로 쓸 수 없다** — 소요가 행 수에 선형인 것은 같은 하드웨어 안에서일 뿐이고 계수는 DB마다 다르다. 예산은 넉넉한 쪽으로 잡는다(모자라면 기동 실패가 반복되고, 남으면 아무 일도 일어나지 않는다). 서버는 stateless(파일=CAS, 메타=Postgres)라 PVC가 없다.
+DB 마이그레이션은 바이너리에 임베드되어 **기동 시 자동 적용**된다(별도 Job 불필요). 마이그레이션이 끝나야 포트가 열리므로 그 시간은 곧 startupProbe 예산(기본 `periodSeconds 10 × failureThreshold 60` = 600초)에서 나간다 — 스키마가 바뀌는 릴리스로 올릴 때는 [CHANGELOG](CHANGELOG.md)의 해당 버전 **마이그레이션** 항목에서 예상 소요를 먼저 확인할 것. **거기 적힌 실측값은 특정 환경의 것이라 행 수로 환산해 그대로 쓸 수 없다** — 소요가 행 수에 선형인 것은 같은 하드웨어 안에서일 뿐이고 계수는 DB마다 다르며, 행마다 JSON 을 펼치는 마이그레이션은 행 수가 아니라 행의 크기(예: meta 의 키 수와 크기)에 따라 늘어난다. 길어졌을 때의 확인과 조치는 아래 「기동 마이그레이션이 길어질 때」. 예산은 넉넉한 쪽으로 잡는다(모자라면 기동 실패가 반복되고, 남으면 아무 일도 일어나지 않는다). 서버는 stateless(파일=CAS, 메타=Postgres)라 PVC가 없다.
 
 **한 번도 vacuum 되지 않은 대형 표**(예: `instances`)의 autovacuum 임계를 낮출 때는 값이 아니라 **순서**가 중요하다. analyze 축(`autovacuum_analyze_*`)은 임계만 걸면 되지만, vacuum 축(`autovacuum_vacuum_*`)은 **① `autovacuum_vacuum_cost_delay` 를 먼저 걸고 → ② 창을 잡아 첫 `VACUUM` 을 손으로 돌린 뒤 → ③ 임계**를 건다. 첫 vacuum 을 끝내기 전에 임계부터 걸면 visibility map 이 비어 있어 힙 전량을 읽는 대규모 vacuum 이 예고 없이 발동한다 — 수동 `VACUUM` 은 `autovacuum_vacuum_cost_delay` 를 쓰지 않으므로(기본 0) 세션에서 `SET vacuum_cost_delay` 를 먼저 걸어 I/O 를 눌러 둔다.
 
@@ -56,7 +56,7 @@ kubectl create secret generic nexus-server -n <namespace> --dry-run=client -o ya
 kubectl apply -f sealed-nexus-server.yaml -n <namespace>
 ```
 
-평문 예시: [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.20/charts/nexus-server/examples/secret.example.yaml).
+평문 예시: [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.21/charts/nexus-server/examples/secret.example.yaml).
 Secret 이름은 `secret.existingSecret`(비우면 릴리즈 fullname, 기본 `nexus-server`)과 일치해야 한다.
 
 - `NEXUS__JWT__SECRET`은 직접 생성하는 임의의 비밀 키(로그인 JWT HS256 서명용)  
@@ -172,13 +172,13 @@ requests.post(f"{base}/api/v1/admin/datasets/transfer-owner",
 - **임시 비밀번호는 응답에 한 번만 실려 온다.** 서버 어디에도 저장되지 않으니 그 자리에서 전달하고, 받은 사람은 곧바로 `client.change_password(...)`로 바꾼다. 재설정해도 그 사람의 기존 토큰은 만료(`jwt.ttlHours`)까지 유효하다 — "잊어버림"을 푸는 도구지 "탈취 즉시 차단"이 아니다.
 - **재설정 링크는 임시 비밀번호 대신 쓰는 일회용 토큰이다.** 발급은 본문 `{"email", "expires_in_hours"}`(1~72, 필수)이고 `201` 응답에 `token` 평문이 한 번만 실린다. 사용자는 인증 없이 `POST /api/v1/auth/password-reset/inspect`(`{token}` → 이메일·만료 확인)와 `POST /api/v1/auth/password-reset/complete`(`{token, new_password}` → `204`, 로그인은 따로 한다)를 부른다. 판정 실패(없음·이미 씀·만료·대상 부적격)는 모두 `400` `reset_link_invalid` 하나이고 사유는 요청 로그의 `reset_error` 에만 남는다. 새 비밀번호가 규칙에 맞지 않으면 `code` 없는 `400` 이고 링크는 소모되지 않는다. 사용자당 살아 있는 링크는 하나이며, 다시 발급하거나 임시 비밀번호 재설정·본인 비밀번호 변경을 하면 이전 링크는 무효다. 링크를 사용자에게 전달하는 경로의 보안은 운영자 몫이다.
 - **계정 정지는 삭제가 아니다.** 이메일을 계속 점유하므로 그 주소로 재가입할 수 없고, `active: true`로 해제하면 그대로 돌아온다. 정지하면 로그인이 `403 forbidden`이 되고, **이미 발급된 토큰도 캐시 수명(`auth.revocationCacheTtlSecs`, 기본 5초) 안에 막힌다.**
-- **담당자 이전은 인가를 옮기지 않는다.** 이전 담당자도 계속 쓰고 지울 수 있다 — 역할이 `editor`이기 때문이다. 옮겨가는 것은 「다시 넘길 자격」 하나다. 담당자가 없는 dataset(`GET /datasets?unowned=true`)은 위험한 상태가 아니라 **인수 대기**이고, `editor` 이상이면 그대로 쓰고 지울 수 있다. 담당자가 있는 dataset을 넘기는 것은 담당자 본인이 한다([사용법 8.2](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.20/charts/nexus-server/docs/usage.md#82-담당자-이전)).
+- **담당자 이전은 인가를 옮기지 않는다.** 이전 담당자도 계속 쓰고 지울 수 있다 — 역할이 `editor`이기 때문이다. 옮겨가는 것은 「다시 넘길 자격」 하나다. 담당자가 없는 dataset(`GET /datasets?unowned=true`)은 위험한 상태가 아니라 **인수 대기**이고, `editor` 이상이면 그대로 쓰고 지울 수 있다. 담당자가 있는 dataset을 넘기는 것은 담당자 본인이 한다([사용법 8.2](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.21/charts/nexus-server/docs/usage.md#82-담당자-이전)).
 
 **로그인·가입·갱신·OIDC 교환의 `200` 응답은 모두 `{ token, user_id, email }`이다** — 로그인 화면이 실어 쓰는 토큰 필드는 `token`이다. 가입이 승인 대기(`auth.approvalRequired`)면 `202`이고 타입이 다르다.
 
 ### 로봇 계정 발급
 
-사람이 없는 워크로드(적재 잡·스케줄러·CI)용 계정이다. 쓰는 쪽은 [사용법 2.3](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.20/charts/nexus-server/docs/usage.md#23-로봇-토큰으로-연결)의 `nx.connect(robot_token=...)`로 붙는다.
+사람이 없는 워크로드(적재 잡·스케줄러·CI)용 계정이다. 쓰는 쪽은 [사용법 2.3](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.21/charts/nexus-server/docs/usage.md#23-로봇-토큰으로-연결)의 `nx.connect(robot_token=...)`로 붙는다.
 
 계정 생성(`POST /api/v1/admin/robots`, body `{"name": "...", "role": "editor", "display_name": "..."}`, `display_name`만 선택)의 이름은 소문자·숫자·하이픈 1~48자이고 하이픈으로 시작하거나 끝날 수 없다(`400`). **이름 검사가 `role` 검사보다 먼저 돈다** — 이름이 틀린 동안에는 `role` 오류를 볼 수 없다. 로봇의 `role`은 `editor`·`viewer`뿐이고 `admin`은 `400`이다 — `admin` 로봇의 장수명 토큰은 그대로 관리 평면 전권이 되기 때문이다. 경로의 `user_id`는 정수다(UUID를 넣으면 본문 검사 전에 `400`).
 
@@ -334,6 +334,146 @@ INFO  [cvat] 설정 없음 — annotation session 엔드포인트는 503을 반�
 **목록·조회·`close`·`delete`는 CVAT 없이도 동작한다.** CVAT을 호출하지 않거나(목록), 호출에 실패해도 진행하기 때문이다(조회·`close`는 미반영 편집 여부를 「모름」으로 두고, `delete`는 CVAT project 삭제를 건너뛰고 세션 행만 지운다). 이미 만들어진 세션을 CVAT이 죽은 뒤에도 정리할 수 있어야 하기 때문이다 — 그러지 않으면 샘플이 영구히 잠긴다.
 
 nexus는 기동 시점에 CVAT을 호출하지 않는다. 따라서 운영 중 CVAT이 내려가도 영향은 세션 생성·회수에만 국한된다.
+
+## 기동 마이그레이션이 길어질 때
+
+**기동 마이그레이션에는 스키마 변경만 둔다.** 표·열·인덱스를 만드는 것만 기동 때 하고, 기존 행을 훑어 다른 표를 채우는 일(백필)은 정합성에 필요한 것이 아니면 기동 마이그레이션에 넣지 않는다. 기동 확인 예산이 곧 마이그레이션의 시간 한도이고, 예산을 넘기면 그때까지 한 일이 버려져 처음부터 다시 돌기 때문이다. 이 절차로 기동에서 넘길 수 있는 행 채우기 마이그레이션은 030(meta 필드 관측의 실수 표시)과 032(sealed 버전의 샘플 수) 둘이고, 아래 절차로 기동에서 넘길 수 있다.
+
+**무엇이 멈춰 있는지 보기.** 기동 10 초 뒤부터 60 초마다, 마이그레이션 잠금을 쥐었거나 기다리는 DB 세션을 한 줄씩 남긴다. 마이그레이션이 그 안에 끝나면 아무 줄도 남지 않는다.
+
+```
+마이그레이션 잠금 세션 pid=857 granted=true state="active" wait_event="" client_addr="10.0.3.17" application_name="" xact_secs=3600 query_secs=3600 query="-- meta 필드 관측에 실수 표시 행(`float`)을 채운다 — `/schema` 가 관측 전용 숫자 " blocked_by=""
+마이그레이션 잠금 세션 pid=860 granted=false state="active" wait_event="advisory" client_addr="10.0.3.21" application_name="" xact_secs=10 query_secs=10 query="SELECT pg_advisory_lock($1)" blocked_by="857"
+```
+
+- `granted=true` 가 잠금을 쥔 세션이다. `query` 는 그 세션이 돌리는 질의의 앞 60 자이고, 마이그레이션 파일의 첫 줄(주석)이면 마이그레이션이 도는 중이고 `xact_secs` 가 그 마이그레이션의 소요다. `client_addr` 가 지금 떠 있는 파드가 아니면 앞서 죽은 컨테이너가 남긴 세션이다.
+- `granted=false` 는 잠금을 기다리는 세션이다. 이 파드 자신도 여기 나온다.
+- `blocked_by` 는 그 세션을 막고 있는 세션의 pid 다(쉼표로 여럿). 잠금을 쥔 마이그레이션 세션의 `blocked_by` 가 비어 있지 않으면 마이그레이션이 다른 세션의 표 잠금을 기다리는 중이다.
+
+**남은 세션 막기와 정리.** 컨테이너가 죽어도 DB 는 그 세션의 질의를 계속 돌리고 잠금을 쥔 채 남는다(`client_connection_check_interval` 이 0 일 때). nexus-server 의 DB 사용자에 아래를 걸어 두면 연결이 끊긴 세션은 실행 중이든 잠금 대기 중이든 다음 확인 때 끝난다. 새로 맺는 연결부터 적용되고, 연결이 살아 있는 질의에는 영향이 없다. PostgreSQL 14 이상이고, DB 와 nexus-server 사이에 TCP 프록시·연결 풀러가 있으면 그 중계자와의 연결을 보게 되어 효과가 없을 수 있다.
+
+```sql
+ALTER ROLE <nexus-server 의 DB 사용자> SET client_connection_check_interval = '10s';
+```
+
+이미 남은 세션은 끊는다. 아래 조건은 마이그레이션 질의(파일이 주석으로 시작한다)와 마이그레이션 잠금 대기만 잡고, 서비스 중인 파드의 세션은 잡지 않는다. 살아 있는 파드의 대기 세션을 끊으면 그 컨테이너가 한 번 재시작할 뿐이다.
+
+```sql
+SELECT pid, state, wait_event, now() - query_start AS running, client_addr, left(query, 40)
+FROM pg_stat_activity
+WHERE datname = current_database()
+  AND (query LIKE '-- %' OR query LIKE 'SELECT pg_advisory_lock(%');
+-- 목록을 확인한 뒤
+SELECT pg_terminate_backend(<pid>);
+```
+
+**행 채우기 마이그레이션(030·032)을 기동에서 넘기기.** 아래로 두 마이그레이션을 적용됨으로 기록하면 기동은 나머지만 적용한다. 체크섬은 이미지에 든 마이그레이션 본문의 SHA-384 이고, 한 바이트라도 다르면 이후 모든 기동이 `migration 30 was previously applied but has been modified` 로 실패하므로 그대로 옮긴다. 두 마이그레이션 파일은 이후 판에서도 바뀌지 않는다. **스키마를 만드는 다른 마이그레이션에는 이 방법을 쓰지 않는다.**
+
+```sql
+-- psql 에서 트랜잭션 블록(BEGIN) 밖에서. 030 이 도는 중이면 이것을 먼저 커밋한 뒤 위 조건으로 030 세션을 끊는다
+INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES
+  (30, 'meta field float backfill', TRUE,
+   decode('c7a7e6a133c90fcdad53b6848d18478dd4410982674a45f85347650964e370c0ef68af6030f66c0c2772a147bf6fb029', 'hex'), 0),
+  (32, 'sealed sample count backfill', TRUE,
+   decode('64a080ec3919647555e31dd1858684b15973f83c9267a3a62947ca0869846a5d21d79baff73d09b6906a5901a1fdd8bc', 'hex'), 0);
+```
+
+넘긴 동안 달라지는 것은 둘이다. 030 몫은 기존 실수 meta 필드가 `GET .../schema` 에서 `int` 로 보이는 것(그 필드에 실수 값이 새로 적재되면 `float` 가 된다), 032 몫은 기존 sealed 버전 응답에 `sample_count` 가 빠지는 것이다. 기동한 뒤 아래로 채운다. 둘 다 행을 더하기만 해 서비스 중에 돌려도 되고, `samples` 를 넓게 읽으므로 seal 과 겹치지 않는 시각을 고른다.
+
+```sql
+-- 032 몫 (한 트랜잭션)
+INSERT INTO dataset_version_sample_counts (dataset_version_id, sample_count)
+SELECT v.dataset_version_id, count(s.sample_id)
+FROM dataset_versions v
+LEFT JOIN dataset_version_samples dvs ON dvs.dataset_version_id = v.dataset_version_id
+LEFT JOIN samples s ON s.sample_id = dvs.sample_id AND s.is_deleted = FALSE
+WHERE v.status = 'sealed'
+GROUP BY v.dataset_version_id
+ORDER BY 1
+ON CONFLICT DO NOTHING;
+
+-- 030 몫 (데이터셋마다 커밋하고 n/N 을 남긴다. psql 에서 트랜잭션 블록 밖에서)
+DO $$
+DECLARE
+  d uuid;
+  n int := 0;
+  total int;
+BEGIN
+  SELECT count(*) INTO total FROM datasets;
+  FOR d IN SELECT dataset_id FROM datasets ORDER BY dataset_id LOOP
+    INSERT INTO dataset_schema_meta_fields (dataset_id, field, value_type)
+    SELECT DISTINCT s.dataset_id, k, v.t
+    FROM samples s,
+         LATERAL jsonb_object_keys(
+             CASE WHEN jsonb_typeof(s.meta) = 'object' THEN s.meta ELSE '{}'::jsonb END
+         ) k,
+         LATERAL (VALUES
+             (jsonb_typeof(s.meta->k)),
+             (CASE WHEN jsonb_typeof(s.meta->k) = 'number' AND strpos(s.meta->>k, '.') > 0 THEN 'float' END)
+         ) v(t)
+    WHERE s.dataset_id = d
+      AND s.is_deleted = FALSE
+      AND v.t IS NOT NULL
+      AND v.t <> 'null'
+      AND k ~ '^[A-Za-z0-9_]+$'
+    ORDER BY 1, 2, 3
+    ON CONFLICT DO NOTHING;
+    COMMIT;
+    n := n + 1;
+    RAISE NOTICE '030 백필 %/% dataset_id=% %', n, total, d, clock_timestamp();
+  END LOOP;
+END $$;
+```
+
+030 몫이 끊기면 `FROM datasets` 두 곳에 `WHERE dataset_id > '<마지막 줄의 dataset_id>'` 를 더해 이어 돌린다. 처음부터 다시 돌려도 결과는 같다.
+
+## 스냅샷 잔여 점검(reconcile-snapshots)
+
+`nexus-server reconcile-snapshots` 는 manifest 버킷의 `annotations/`·`manifests/` 아래 객체를 훑어, 어느 sealed 버전도 가리키지 않는 객체의 수·크기를 분류별로 보고한다. **아무것도 지우거나 쓰지 않는다** — cas 객체·DB·컨테이너 파일시스템 어디에도 쓰지 않고, 결과는 stdout 의 JSON 하나, 진행 로그는 stderr 다. HTTP 서버로 뜨지 않고 마이그레이션도 돌리지 않는다.
+
+**분류.** 키마다 하나로 나눈다. 위에서부터 먼저 맞는 것이다.
+
+- `recent` — 실행 시작 10 분 전 이후에 쓰인 키. 판정하지 않는다.
+- `referenced` — sealed 버전의 스냅샷이 가리키는 키.
+- `legacy_shard_unreferenced` — 옛 형식 샤드(`annotations/shards/{해시}.ndjson`)인데 어느 sealed 버전도 가리키지 않는 것. 정리 후보.
+- `legacy_manifest_unreferenced` — 옛 형식 이름 기반 manifest 인데 어느 sealed 버전도 가리키지 않는 것. 정리 후보. `delete_cas=false` 로 지운 sealed 버전의 manifest 도 여기 든다.
+- `scoped_nonfinal` — 버전 전용 키인데 끝나지 않은 seal 의 기록만 있는 것.
+- `scoped_untracked` — 버전 전용 키인데 기록이 없는 것. `delete_cas=false` 로 보존한 버전의 스냅샷과 누수가 같은 모양이라 가르지 않는다.
+- `unknown` — 위 모양 어디에도 맞지 않는 키.
+
+분류마다 `keys`(키 수)·`key_bytes`(크기 합)·`samples`(예시 키)를 내고, 정리 후보 두 분류에는 `reclaimable_bytes_upper` 를 더 낸다. 같은 내용의 blob 을 이 버킷의 다른 분류 키가 함께 쓰면 빼고 한 번만 센 값이지만, 다른 버킷이 같은 blob 을 쓰는지는 보지 않으므로 **상한**이다. 버킷 버저닝이 켜져 있으면 삭제가 delete marker 만 남겨 이 값만큼 줄지 않는다. `referenced_missing` 은 sealed 버전이 가리키는데 버킷에 없는 키이고(스냅샷이 깨진 버전), `reference_set_complete` 가 `false` 면 옛 형식 shard manifest 를 읽지 못한 버전이 있어 `legacy_shard_unreferenced` 가 과대일 수 있다. 같은 키를 여러 sealed 버전이 가리키면 `referenced_missing` 에 버전마다 한 항목이 나온다. `other_bucket_refs` 는 옛 형식 shard manifest 가 다른 버킷을 가리킨 샤드 수(참조 집합에 넣지 않는다)이고, `caveats` 는 숫자를 읽을 때의 한계(버킷 버저닝 등)다.
+
+**조건.**
+
+- 이미지 교체가 끝난 뒤 돌린다. 롤링 교체 중 옛 파드가 살아 있으면 분류가 틀릴 수 있다.
+- seal 이 돌지 않을 때 돌린다. 서버 컨테이너 안에서 서버와 메모리 한도를 나눠 쓴다. 실행 중 버전 삭제는 막지 않으며 그 사이의 키는 `recent`·`scoped_*` 로 빠질 뿐이다.
+- 운영자에게 그 네임스페이스의 `pods/exec` 권한이 있어야 한다.
+
+**순서.**
+
+1. cas 정책에서 서버 키에 manifest 버킷의 `annotations/`·`manifests/` 에 대한 `ListObjects` 를 허용한다. **manifest 버킷은 values `cas.defaultBucket` 뒤에 `-manifests` 를 붙인 이름이다** — `cas.defaultBucket` 이 `data` 면 `data-manifests` 이고 `data` 자체가 아니다. 서버 키는 `GetObject` 를 이미 가진다. 권한은 shard manifest 를 읽기 전에 목록을 한 번 물어 확인한다. 권한이 없으면(cas 의 `AccessDenied`) 필요한 동작·버킷·접두사를 적고 종료 코드 1 로 끝난다. 그 밖의 403(`SignatureDoesNotMatch`·`InvalidAccessKeyId` 등 키나 시계 문제, 앞단 프록시가 낸 본문 없는 403)은 세 번 시도한 뒤 받은 응답을 그대로 적고 종료 코드 1 로 끝난다.
+2. 실행한다. stdout 은 로컬 파일로, stderr 진행 로그는 터미널로 받는다. replicaCount 가 1 보다 크면 아무 파드 하나에서 한 번만 돌린다.
+
+   ```bash
+   kubectl -n <ns> exec deploy/<nexus-server 릴리스> -- nexus-server reconcile-snapshots > reconcile-report.json
+   ```
+
+3. 1 의 허용을 회수한다.
+
+옵션은 둘이다 — `--samples <N>`(분류마다 예시 키 수, 기본 20), `--concurrency <N>`(shard manifest 동시 읽기 수, 기본 8). 종료 코드는 정상이면 0(`reference_set_complete=false` 도 0)이고, 인자가 틀렸을 때(모르는 인자, `--concurrency 0` 등)·목록 권한이 없을 때·목록이나 shard manifest 를 세 번 시도해도 못 읽을 때·DB 오류·버전 전용 키 기록 표가 없는 DB 면 1 이며 이유는 stderr 의 마지막 줄에 있다.
+
+**읽는 양과 소요.** 목록은 키 1 만 개당 요청 하나, 본문은 옛 형식 sealed 버전마다 shard manifest 하나만 읽고 HEAD 는 쓰지 않는다. DB 는 읽기 전용 트랜잭션 하나로 한 번 읽는다. 합성 데이터로 잰 메모리 증가분과 소요는 아래와 같다(키 1 만 개 목록 응답을 주는 시험용 cas 스텁, Windows, 키는 버전마다 100 개). 소요는 대부분 스텁의 목록 응답이라 실제 cas 에서는 다르다.
+
+| 키 구성 | 10 만 키 | 100 만 키 |
+|---|---|---|
+| 옛 형식 키 | 22 MB · 0.9 초 | 137 MB · 70 초 |
+| 버전 전용 키 | 38 MB · 0.8 초 | 377 MB · 79 초 |
+
+버전 전용 샤드는 sealed 샘플 1 만 개당 하나다. 실제 cas(키 10 개)에 대고 잰 프로세스 전체 최고 메모리는 14 MB 였다.
+
+**별도 키를 쓰려면** 그 키에 manifest 버킷 `annotations/`·`manifests/` 의 `ListObjects` 와 `annotations/` 의 `GetObject`(옛 형식 shard manifest 를 읽는다)를 허용하고, nexus Secret 에 `NEXUS_RECONCILE_CAS_KEY_ID`·`NEXUS_RECONCILE_CAS_SECRET` 로 더해 파드를 다시 띄운 뒤 2 를 한다. 둘 중 하나만 있으면 종료 코드 1 이다. 명령줄로 넘기지 않는다(셸 이력·프로세스 목록에 남는다).
+
+**exec 를 쓸 수 없으면** 같은 이미지·같은 Secret(`envFrom`)·같은 ServiceAccount·Deployment 와 같은 `env`(`NEXUS__CAS__BASE_URL`·`NEXUS__CAS__REGION`·`NEXUS__CAS__DEFAULT_BUCKET`)로 Job 을 만들고 `args: ["reconcile-snapshots"]` 를 준다. NetworkPolicy 가 라벨로 DB·cas 접근을 가르면 그 라벨도 맞춰야 한다 — 이 경로는 차트가 보장하지 않는다.
 
 ## 헬스 체크와 지표
 
