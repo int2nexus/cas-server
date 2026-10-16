@@ -6,16 +6,16 @@
 #
 # ── 문서 ─────────────────────────────────────────────────────────────────────
 #   아키텍처 (도메인 모델·버전 관리·스냅샷 구조)
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.21/charts/nexus-server/docs/architecture.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.22/charts/nexus-server/docs/architecture.md
 #   사용법 (설치·SDK 연결·Dataset 워크플로우)
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.21/charts/nexus-server/docs/usage.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.22/charts/nexus-server/docs/usage.md
 #   차트 README
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.21/charts/nexus-server/README.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.22/charts/nexus-server/README.md
 # ─────────────────────────────────────────────────────────────────────────────
 
 image:
   repository: int2jieun/nexus-server
-  tag: "0.1.26"
+  tag: "0.1.27"
   # digest 로 핀하려면 여기에 넣으십시오 (`sha256:...`). 값이 있으면 tag 대신 이것이
   # 쓰이고, 렌더 결과가 `repository@sha256:...` 가 됩니다.
   #
@@ -337,7 +337,8 @@ cvat:
   organization: ""             # CVAT organization slug (선택). 쓰면 서비스 계정은 그 organization 의 supervisor 이상,
                                # 작업자는 maintainer 이상이어야 세션 링크(task 페이지)를 연다
   projectNamePrefix: "nexus"   # CVAT project 이름 접두사 — 다른 프로젝트와 구분용
-  segmentSize: ""              # job 분할 크기. 비우면 CVAT 기본 동작
+  segmentSize: ""              # job 분할 크기. 비우면 CVAT 기본 동작(job 하나). 값을 주면 job 경계를 지나는
+                               # CVAT 트랙이 둘로 저장되어 「가져오기」에서 두 track_id 가 된다
   maxSessionSamples: ""        # 세션당 샘플 상한(서버 기본 2000)
   staleCreatingSecs: ""        # 준비 작업의 진행 기록이 이 시간 넘게 멈춘 creating 세션을 failed 로(초, 서버 기본 1800, 180 미만은 180)
   caFile: ""                   # CVAT 호출에 더해 믿을 CA 파일. 예: /etc/nexus/ca/sso-ca.pem (위 caCerts). 못 읽으면 CVAT 연동만 꺼진다(기동은 된다)

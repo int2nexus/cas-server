@@ -38,7 +38,7 @@ pip install --upgrade --extra-index-url https://int2nexus.github.io/cas-server/s
 python -c "import importlib.metadata as m; print(m.version('int2nexus-sdk'))" 
 ```
 
-이 문서는 서버 `0.1.24`(차트 `0.3.19`)와 SDK `0.1.22` 기준이다. SDK는 서버와 따로 발행되므로 위 명령으로 최신을 유지한다 — 문서의 기능이 없다는 에러가 나면 대개 SDK가 낮은 것이다. 버전별 변경은 [차트 CHANGELOG](../CHANGELOG.md)와 [SDK 변경 이력](https://int2nexus.github.io/cas-server/sdk/changelog.html)에 있다.
+이 문서는 서버 `0.1.27`(차트 `0.3.22`)와 SDK `0.1.23` 기준이다. SDK는 서버와 따로 발행되므로 위 명령으로 최신을 유지한다 — 문서의 기능이 없다는 에러가 나면 대개 SDK가 낮은 것이다. 버전별 변경은 [차트 CHANGELOG](../CHANGELOG.md)와 [SDK 변경 이력](https://int2nexus.github.io/cas-server/sdk/changelog.html)에 있다.
 
 ### 2.2 연결 설정
 
@@ -946,10 +946,25 @@ ids = [r["sample_id"] for r in sorted(rows, key=lambda r: r["meta"]["frame_index
 ses = ds.create_annotation_session(ids)
 ```
 
-**CVAT 트랙은 들어오지 않는다.** 「가져오기」(`ses.pull()`)는 프레임별 도형만 들이고, 트랙이 있으면 결과의 `warnings` 에 버린 수를
-남긴다(서버 이미지 `0.1.26`+). 트랙을 들이려면 CVAT 에서 작업을 `CVAT for images 1.1` 로 내보냈다가 같은 작업에 `CVAT 1.1` 로 다시
-들여 프레임별 도형으로 푼 뒤 「가져오기」한다 — 다시 들이기는 그 작업의 주석을 통째로 바꾸므로 그동안 편집하지 않는다. 이렇게 들인
-인스턴스에는 `track_id` 가 없다.
+**CVAT 트랙은 프레임별 인스턴스로 들어온다**(서버 이미지 `0.1.27`+).
+「가져오기」(`ses.pull()`)가 rectangle·polygon·polyline·skeleton 트랙의 키프레임과 보간 프레임을 프레임마다 인스턴스 하나로
+들인다. 보간은 CVAT 화면과 같은 규칙이고, `outside`·삭제 프레임에는 인스턴스가 없다.
+
+- 한 트랙은 모든 프레임에서 같은 인스턴스 `id` 와 같은 `track_id` 다. `track_id` 는 CVAT 화면의 트랙 번호가 아니라 nexus 가 버전과
+  `meta.sequence_id` 의 쌍 안에서 0 부터 매긴 번호이고(자동 주석 트랙도 같다), 같은 트랙은 다시 「가져오기」해도 같은 값이다.
+- 트랙이 지나는 샘플의 `meta.sequence_id` 가 모두 같은 문자열이어야 들어온다. 섞이거나 없으면 그 트랙은 들이지 않고 `warnings`
+  에 사유·프레임 범위를 남긴다 — CVAT 에서 시퀀스 경계에서 트랙을 끊는다. 앞서 들인 트랙이면 기존 인스턴스는 남는다.
+- points(skeleton 아님)·ellipse·cuboid·mask 트랙은 들이지 않는다(종류별 개수가 `warnings` 에 남는다).
+- 트랙에서 나온 구성요소에는 `keyframe`(bool)이 붙는다 — 키프레임이면 `true`, 보간 프레임이면 `false`, skeleton 은 부모나 점 중
+  하나라도 키프레임이면 `true`. 일반 도형에서 나온 구성요소에는 없다. REST `POST /datasets/{dataset_id}/versions/{version}/samples/explorer`
+  의 `annotation` 필터에서 구성요소 속성으로 거를 수 있다(SDK `ds.samples()` 에는 이 필터가 없다):
+  `{"annotation": [{"component": {"type": "bounding_box", "attributes": {"keyframe": {"type": "include", "value": ["true"]}}}}]}`.
+- 두 번째 세션에서 도형으로 나간 `track_id` 인스턴스를 CVAT 에서 트랙으로 합치면, 키프레임 좌표가 원래 도형과 같은 한(0.5 px)
+  원래 `id`·`track_id` 를 잇는다. 서로 다른 인스턴스를 합친 트랙은 새 번호를 받고 `warnings` 에 남는다.
+- **트랙을 쓰는 세션은 job 하나로 만든다**(`cvat.segmentSize` 를 비운 기본값). job 이 여럿이면 CVAT 이 job 경계에서 트랙을 둘로
+  저장해 한 물체가 두 `track_id` 로 들어온다(`warnings` 에 남는다).
+- CVAT 에서 주석 파일을 다시 올리면 트랙 id 가 바뀐다. 트랙에 `nexus_instance_id` 속성이 남아 있으면 같은 인스턴스를 잇고, 없으면
+  기존 인스턴스가 지워지고 새 `id`·`track_id` 로 다시 생긴다.
 
 ### 6.3 고칠 대상만 골라서 세션 만들기
 
@@ -1002,6 +1017,8 @@ print(summary)
 | `removed_instances` | CVAT에서 지워져 사라진 인스턴스 |
 | `updated_components` | 좌표 등이 바뀐 컴포넌트 |
 | `deleted_components` | 지워진 컴포넌트 |
+| `imported_tracks` | 들인 CVAT 트랙 수(서버 `0.1.27`+) |
+| `rejected_tracks` | 들이지 못한 CVAT 트랙 수, 사유는 `warnings`(서버 `0.1.27`+) |
 | `warnings` | 반영되지 않은 것들의 사유 |
 
 > **CVAT에서 반드시 `Save`(Ctrl+S)를 눌러야 한다.** 편집만 하고 저장하지 않으면 서버에 올라가지 않아 `pull()`이 전부 0을 돌려준다.

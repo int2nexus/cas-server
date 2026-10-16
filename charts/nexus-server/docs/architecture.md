@@ -343,7 +343,9 @@ CVAT은 2D 이미지 편집기이므로, 왕복이 무손실인 컴포넌트만 
 
 편집 대상이 아닌 컴포넌트는 병합 과정에서 변경되지 않는다. 3D 정보나 분류 값을 가진 인스턴스의 2D 박스만 수정하는 경우에도 나머지 정보는 유지된다.
 
-CVAT 에서 새로 그린 도형(nexus 신원이 없는 것)은 새 인스턴스가 되고, 컴포넌트 키는 그 라벨의 것이다 — 고른 샘플의 점에서 만든 skeleton 이면 그 점의 컴포넌트 키, `extra_labels` 의 skeleton 이면 `component_key`, 도형 라벨이면 도형 타입(서버 `0.1.26`+, 그 전에는 skeleton 이 늘 `keypoint_2d`). 「가져오기」는 프레임별 도형만 들이고 CVAT **트랙**과 마스크는 들이지 않는다 — 버린 트랙 수는 결과의 `warnings` 에 남는다(서버 `0.1.26`+).
+CVAT 에서 새로 그린 도형(nexus 신원이 없는 것)은 새 인스턴스가 되고, 컴포넌트 키는 그 라벨의 것이다 — 고른 샘플의 점에서 만든 skeleton 이면 그 점의 컴포넌트 키, `extra_labels` 의 skeleton 이면 `component_key`, 도형 라벨이면 도형 타입(서버 `0.1.26`+, 그 전에는 skeleton 이 늘 `keypoint_2d`). 마스크는 들이지 않는다.
+
+CVAT **트랙**(rectangle·polygon·polyline·skeleton)은 「가져오기」가 키프레임과 보간 프레임을 프레임별 인스턴스로 펼쳐 들인다(서버 `0.1.27`+). REST 가 키프레임만 주므로 보간은 nexus 가 CVAT `v2.78.0` 의 `TrackManager` 규칙을 옮겨 계산하고, `outside`·삭제 프레임에는 인스턴스를 만들지 않는다. 한 트랙은 모든 프레임에서 같은 인스턴스 `id`·`track_id` 이고, `track_id` 는 nexus 가 `(버전, meta.sequence_id)` 안에서 0 부터 발급한다. CVAT 트랙 id → `(id, sequence_id, track_id)` 는 세션별 표 `annotation_session_tracks` 가 지고 CVAT 에 되쓰지 않는다 — 이 표 하나로 다음 「가져오기」가 같은 값을 받는다. 시퀀스 하나에 들지 않는 트랙은 들이지 않고, 앞서 들인 트랙을 이번에 들이지 못하면 기존 인스턴스를 지우지 않는다. 단 모든 프레임이 `outside`(또는 삭제 프레임)인 트랙은 작업자가 지운 것으로 보고 그 인스턴스를 지운다. 트랙에서 나온 컴포넌트에는 `keyframe`(bool)이 붙는다(GT 스키마의 편집형 네 컴포넌트에 선택 필드로 선언). job 경계에서 CVAT 이 둘로 저장한 트랙은 합치지 않는다. points·ellipse·cuboid·mask 트랙은 들이지 않는다.
 
 #### 5.5.3 인스턴스 식별
 왕복 과정에서 Nexus 인스턴스와 CVAT Shape를 연결하기 위해, Nexus는 인스턴스 식별자를 CVAT Shape의 속성(attribute)으로 함께 내보낸다.
