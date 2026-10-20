@@ -38,7 +38,7 @@ pip install --upgrade --extra-index-url https://int2nexus.github.io/cas-server/s
 python -c "import importlib.metadata as m; print(m.version('int2nexus-sdk'))" 
 ```
 
-이 문서는 서버 `0.1.27`(차트 `0.3.22`)와 SDK `0.1.23` 기준이다. SDK는 서버와 따로 발행되므로 위 명령으로 최신을 유지한다 — 문서의 기능이 없다는 에러가 나면 대개 SDK가 낮은 것이다. 버전별 변경은 [차트 CHANGELOG](../CHANGELOG.md)와 [SDK 변경 이력](https://int2nexus.github.io/cas-server/sdk/changelog.html)에 있다.
+이 문서는 서버 `0.1.29`(차트 `0.3.23`)와 SDK `0.1.24` 기준이다. SDK는 서버와 따로 발행되므로 위 명령으로 최신을 유지한다 — 문서의 기능이 없다는 에러가 나면 대개 SDK가 낮은 것이다. 버전별 변경은 [차트 CHANGELOG](../CHANGELOG.md)와 [SDK 변경 이력](https://int2nexus.github.io/cas-server/sdk/changelog.html)에 있다.
 
 ### 2.2 연결 설정
 
@@ -251,6 +251,18 @@ Path("upload_refs.json").write_text(json.dumps(records, indent=2, ensure_ascii=F
 
 `nx.upload`는 로컬 파일을 CAS에 올릴 때 쓰는 편의 도구일 뿐이다. 다만, `nx.upload` 과정에서 UI 로딩 최적화용 썸네일(WebP 256px,thumb/<key>)을 함께 생성한다. 업로드를 건너뛰고 CAS URL로 바로 등록하면 썸네일이 없어 UI가 원본으로 폴백한다(동작은 정상, 로딩만 무거움). 필요시 `nx.upload`를 다시 돌려 없는 썸네일만 백필할 수 있다.
 
+**16 비트 그레이스케일(깊이 맵 등)의 썸네일**은 0 이 아닌 값의 2~98 백분위 구간을 1..255 로 선형 사상해 8 비트로 만든다(구간 밖은 클립, 0 은 검정). 8 비트 이미지의 썸네일은 그대로다. 같은 내용을 다시 올리면 썸네일을 다시 쓰지 않으므로, 이미 올린 썸네일을 새 규칙으로 고치려면 `rewrite_thumbnails`를 쓴다(SDK `0.1.24`+).
+
+```python
+r = nx.rewrite_thumbnails(refs.values())     # CasRef 또는 s3://·http(s):// URL 목록
+ds.rewrite_thumbnails("depth")               # 이 버전 샘플의 "depth" 에셋 전부
+# {"written": 120, "skipped": ["bucket/key", ...], "failed": {"bucket/key": "오류"}}
+```
+
+- 원본을 GET 해 썸네일을 만들고 기존 썸네일이 있어도 덮어쓴다. 같은 `(bucket, key)`는 한 번만 처리한다. 에셋 객체만 읽고 쓰며 카탈로그는 바꾸지 않는다.
+- 이미지가 아니어서 썸네일을 못 만든 객체는 `skipped`, 읽기·쓰기 실패와 CAS 참조가 아닌 입력은 `failed`(건당 격리, 배치는 멈추지 않는다)에 담긴다. 키는 `"bucket/key"`이고, CAS 참조가 아닌 입력은 받은 문자열이 키다.
+- `ds.rewrite_thumbnails(role)`은 그 role 이 없는 샘플을 건너뛴다.
+
 #### boto3 · `aws s3` 등으로 직접 올린 경우 — 썸네일 백필
 
 `nx.upload`를 거치지 않고 CAS에 직접 올렸다면 썸네일 생성 단계가 없다. 이미 올라간 데이터에 대해서는 아래 스크립트를 한 번 돌리면 된다. **원본 로컬 파일이 없어도 된다** — CAS에서 받아 생성한다.
@@ -368,6 +380,24 @@ CAS 조회가 401/403이면 아무것도 적재하지 않고 `NexusCasError`를 
 - `assets`는 image 외 추가 모달리티(depth map 등)를 담는 범용 dict(`{role: ref}`).  
 `image`외 새 모달리티(thermal, lidar 등)가 필요하면 필드 추가 없이 이 dict에 role을 추가한다.
 
+#### 이미 등록한 샘플에 에셋 붙이기 — `ds.set_assets`
+
+적재를 마친 뒤 깊이 맵처럼 다른 모달리티를 나중에 붙일 때 쓴다(SDK `0.1.24`+, 서버 이미지 `0.1.29`+). 재적재하지 않는다.
+
+```python
+refs = nx.upload(depth_paths, bucket="depth", prefix="kitti/depth")   # {경로: 리치 CasRef}
+n = ds.set_assets("depth", {sample_id: ref for sample_id, ref in zip(ids, refs.values())})
+ds.set_assets("depth", {sample_id: new_ref}, overwrite=True)            # 이미 있는 role 을 바꿀 때만
+```
+
+- `values`는 `{sample_id: CAS ref}`이고 ref 규칙은 `Sample(assets=)`와 같다(`CasRef`·`s3://`·`http(s)://`). 로컬 경로와 role `"image"`는 `ValueError`다. 반환값은 쓴 건수다.
+- **draft 버전만 된다**(sealed면 `409`). 쓰기이므로 `editor` 이상이다(로봇도 된다).
+- 이미 그 role 이 있는 샘플은 거절이고 `overwrite=True`면 바꾼다. 같은 값을 다시 보내면 거절이 아니라 변경 없음이라 중단된 호출을 그대로 다시 불러도 된다. 같은 값은 bucket·key 가 같고 해시가 둘 다 있으면 해시까지 같은 것이다 — `nx.upload(..., overwrite=True)`로 같은 key 의 내용을 바꾼 뒤 새 `CasRef`로 붙이면 다른 값이다.
+- **sealed 버전에도 든 샘플의 기존 role 은 `overwrite=True`여도 바꿀 수 없다**(그 sealed 버전의 조회가 바뀌어 보이기 때문이다). 새 role 은 붙일 수 있다.
+- 한 요청 안에서 하나라도 거절되면 그 요청은 아무것도 쓰지 않는다. 예외 `NexusError`의 `code == "asset_write_rejected"`, `rejected`(`[{sample_id, role, reason}]`, 사유 `not_found`·`role_exists`·`sealed_role`)를 본다. SDK 는 10,000 건·약 800 KB 단위로 나눠 보내므로, 앞 요청이 이미 적용됐으면 예외의 `applied`가 그 건수다.
+- **에셋은 샘플에 붙는다.** draft 에서 붙인 에셋은 그 샘플이 든 다른 버전의 조회에도 보인다(sealed 버전의 seal 스냅샷은 그대로). 버전마다 다른 에셋이 필요하면 clone 한 뒤 붙인다.
+- `overwrite=True`로 바꾼 옛 CAS 객체는 지워지지 않고 서버가 옛 좌표를 기록하지도 않는다. 나중에 정리하려면 바꾸기 전에 옛 `cas_url`을 적어 둔다.
+
 **서버 교체 중의 적재**(SDK `0.1.19`+, 서버 이미지 `0.1.20`+). `flush` 는 샘플마다 멱등 키(`idempotency_key`)를 실어
 보낸다. 응답을 받지 못한 요청은 서버가 멱등 키를 처리한다고 알린 경우(`X-Nexus-Idempotency` 헤더)에만 다시 보내고, 서버는
 이미 들어간 샘플을 새로 만들지 않고 기존 결과를 돌려준다 — 그 결과는 `r.ok` 이고 `r.replayed` 가 `True` 다. 그래서
@@ -467,6 +497,15 @@ ds.samples(meta={"width": {"type": "ternary", "none": True}})                   
       if len(page) < 500:
           break
       cursor = page[-1]["sample_id"]
+```
+
+**인스턴스 단위 조회(`GET /instances`)는 버전을 함께 준다.** `?dataset_version_id=<버전 id>`를 주면 그 버전에서 보이는 인스턴스
+(그룹마다 그 버전의 수정본 또는 공유 원본)가 오고, 주지 않으면 저장된 행 그대로다 — 다른 버전의 수정본과 공유 원본이 섞여 오고
+「이 버전에서 비웠다」는 기록은 나타나지 않으므로 행의 `dataset_version_id`로 버전의 결과를 재구성할 수 없다. 샘플 단위 조회
+(`ds.samples()`·`get_annotation()`·`to_df()`)는 늘 그 버전에서 보이는 결과다.
+
+```python
+client._get("/instances", params={"sample_id": sid, "dataset_version_id": version_id}).json()
 ```
 
 ### 4.2 태그 제외 필터, 결과 개수, 필터 스코프 일괄 태그
@@ -613,7 +652,7 @@ for s in ds.shuffle(seed=0, split="train"):      # 섞은 순서의 AnnotatedSam
 - **필터**는 `ds.samples()`와 같은 키워드(`split`·`tags`·`exclude_tags`·`meta`·`group_key`·`label`·`confidence_min`/`max`·`track_id`·`sample_ids`)이고 `include_annotations`는 받지 않는다 — annotation 없이 만든 샘플에 그룹을 넣고 저장하면 서버의 그 그룹이 통째로 교체되기 때문이다(가벼운 순회는 `values()`나 `ds.samples(include_annotations=False)`). 모르는 필터 키워드와 `include_annotations`는 `TypeError`다.
 - **`iter_samples(page_size=1000)`**은 `page_size`(1~1000)만큼씩 서버에 묻는 제너레이터이고 순서는 `sample_id` 내림차순이다. 제너레이터라서 인자 오류는 호출할 때가 아니라 첫 샘플을 꺼낼 때 난다. 받은 샘플의 `save()`는 [5.2](#52-객체-api-부분-저장)의 부분 저장이다(서버 이미지 `0.1.18` 미만에서는 `RuntimeWarning`과 함께 통째 교체로 저장한다).
 - **`AnnotatedSample.tags`·`.split`** — `iter_samples`·`shuffle`·`ds.load_sample()`로 받은 샘플은 태그(고칠 수 있는 리스트)와 split(읽기 전용)을 든다. `save()`는 바뀐 그룹·meta를 저장한 뒤 더해진 태그를 붙이고 빠진 태그를 뗀다(순서만 바뀐 것은 변경이 아니다). 태그를 모두 떼려면 `s.tags = []`로 둔다(`None`은 `NexusValidationError`). 핸들의 버전이 sealed인데 태그를 바꿨으면 아무것도 보내지 않고 `NexusError(409)`다. 두 저장은 한 트랜잭션이 아니어서 태그 단계가 실패하면 meta·그룹은 이미 저장된 상태이고, 다시 `save()`하면 태그만 보낸다.
-- **meta와 태그는 샘플에 붙어 있다.** 같은 샘플을 공유하는 다른 버전(sealed 포함)의 조회에도 바뀐 값이 보인다. sealed 버전의 seal 스냅샷(`to_df()`)에는 seal 때의 meta가 남지만, 태그는 스냅샷에 들어가지 않아 언제나 현재 값이다.
+- **meta와 태그는 샘플에 붙어 있다.** 같은 샘플을 공유하는 다른 버전(sealed 포함)의 조회에도 바뀐 값이 보인다. API 조회(`get_sample`·explorer·`samples()`·`iter_samples()`)는 sealed 버전이어도 meta·태그 모두 현재 값을 준다. seal 때의 값은 두 곳에 남는다 — meta 는 annotation 스냅샷(`to_df()` 가 읽는 것)에, 태그·split 은 메인 manifest(`GET .../manifest` 의 `main_manifest`, 서버 이미지 `0.1.29`+)에 샘플별로. `to_df()` 결과에는 태그·split 열이 없어 SDK 로 읽는 sealed 버전의 태그는 현재 값이다.
 - **`len(ds)`는 핸들이 값을 기억한다**(SDK `0.1.22`+). sealed 버전은 서버가 seal 때 저장한 수(`sample_count`, [7.3](#73-sealed-버전))를 읽고 — `Dataset.open`으로 열었거나 `seal()` 직후면 요청 없이 끝난다 — draft 버전은 한 번 세고 기억한다. 이 핸들의 `flush`·`link_samples`·`unlink_samples`·`import_samples`·`seal`·`delete`·`refresh` 뒤에는 버리고 다시 센다. **핸들 밖의 변경**(다른 프로세스·다른 핸들·웹 화면·REST)은 `ds.refresh()` 전까지 반영되지 않는다. 버전이 지워졌으면 `NexusError(404)`다. 서버 이미지 `0.1.23` 이하에서는 sealed 버전도 한 번 세고 기억한다.
 - **`values(field, **필터)`** — `field`는 `"meta.<키>"`·`"tags"`·`"split"`·`"sample_id"`만 받고 그 밖은 `ValueError`다. `"tags"`의 값은 리스트다.
 - **`distinct(field, **필터)`** — `None`은 빼고 배열 값은 원소를 펼친다. 객체 값이 있으면 `ValueError`, 값이 없는 키는 `[]`다. 숫자는 숫자 순서로 정렬되고 `1`과 `1.0`은 하나다. 필터 없이 부를 때 스칼라 타입이 둘 이상 섞인 meta 필드는 값이 모두 문자열(`"3"`·`"true"`)로 나온다.
@@ -664,7 +703,9 @@ ds.patch_annotations(sample_id, {"det": [{"id": "a", "label": "truck"}]})   # �
 - draft 버전에서만 가능(sealed면 409). 이전 patch를 완전 교체하는 방식(누적 아님).
 - 교체 단위는 group_key 단위가 아닌 샘플 전체(이 버전 한정). 기존 그룹을 유지하려면 바꾸지 않는 그룹도 `annotation_data`에 같이 넣어야 한다. 그룹 단위로만 바꾸려면 아래 [부분 저장](#52-객체-api-부분-저장)을 쓴다.
 - **그룹 키를 하나도 보내지 않으면(`meta`만, 또는 `{}`) 인스턴스를 건드리지 않는다** — `meta`만 바뀐다. 키를 빼는 것이 그 그룹을 지운다는 뜻이 아니다. 그룹을 비우려면 그 키를 빈 배열로 보낸다(`{"det": []}`).
-- **보낸 그룹이 전부 비는데 그 샘플에 공유 원본(적재한 GT)이 있으면 `409`다** — 이 버전에서 원본을 가린 채 비워 둘 방법이 없기 때문이다. 이 버전에서 그 샘플을 비우려면 버전에서 unlink한다.
+- **보낸 그룹이 전부 비어도 저장된다**(`200`, 서버 이미지 `0.1.29`+). 그 버전에서 그 그룹이 빈 상태로 남고, 공유 원본(적재한 GT)이 다른 버전에 있어도 이 버전에서 되살아나지 않는다. **`meta` 밖의 최상위 키는 값이 배열이 아니어도 그룹 키로 본다.** 그래서 배열이 아닌 키만 보낸 본문(예: `{"split": "train"}`)은 「그룹 키를 하나도 보내지 않은」 경우(위)가 아니다 — 그 키는 버려지고(응답의 `skipped_reasons.group_not_an_array` 로만 드러나고 SDK 는 경고하지 않는다) 이 경로가 보내지 않은 그룹을 비우는 것으로 보므로 이 버전의 인스턴스가 모두 비고, **아래 직접 모드면 적재 때의 annotation(공유 원본)까지 되돌릴 수 없게 지워진다.** `split`·`tags` 는 이 경로로 바꾸지 않는다.
+- **바뀐 그룹만 실제로 쓴다.** 서버가 보낸 그룹을 지금 값과 비교해 같은 그룹은 쓰지 않으므로 그 그룹의 인스턴스 id(`instance_id`)가 바뀌지 않는다(서버 이미지 `0.1.29`+). 보내지 않은 그룹은 이 경로에서는 비우는 것으로 보므로 바뀐 그룹이 된다.
+- **이 샘플을 읽는 버전이 이 draft 하나뿐이면 적재 원본을 고친다.** 다른 버전이 없으면 버전 전용 사본을 만들지 않고 공유 원본을 바로 고치므로(서버 이미지 `0.1.29`+), 이후 이 샘플을 다른 버전에 링크해도 적재 때의 annotation 으로 돌아갈 수 없다. 적재 원본을 남겨야 하면 고치기 전에 fork 한다. 다른 버전이 이미 이 샘플을 읽고 있으면 그 버전은 영향을 받지 않는다([아키텍처 5.2](architecture.md#52-copy-on-write)).
 - `save_annotation`/`patch_annotations`에 그룹 키가 없는 본문(`meta`만, 또는 `{}`)을 넘기면 SDK가 `RuntimeWarning`을 낸다(아무것도 지워지지 않으므로). `-W error`로 도는 스크립트는 여기서 멈출 수 있다. 그룹을 비우려면 그 키를 빈 배열로 보낸다(`{"det": []}`).
 
 한 그룹의 일부만 고치고 싶을 때 안전한 방법은 전체를 가져와서 필요한 부분만 바꾼 뒤 통째로 다시 보내는 것이다. 
@@ -696,7 +737,7 @@ rep = ds.save_annotation(sample_id, ann)                  # 그대로 다시 저
 # rep == {"instances": 12, "skipped": 0,
 #         "skipped_reasons": {"missing_label": 0, "not_an_object": 0, "group_not_an_array": 0}}
 ```
-- `save_annotation`은 내부적으로 `patch_annotations`와 동일하게 동작한다 — **이 버전의 인스턴스를 병합이 아니라 통째로 교체**한다. 받은 것 중 일부 그룹만 빼고 보내면 그 그룹은 사라진다(위 패턴대로 건드리지 않는 그룹도 함께 넣어 보낼 것). 위의 빈 그룹·`409` 규칙도 똑같이 적용된다.
+- `save_annotation`은 내부적으로 `patch_annotations`와 동일하게 동작한다 — **이 버전의 인스턴스를 병합이 아니라 통째로 교체**한다. 받은 것 중 일부 그룹만 빼고 보내면 그 그룹은 사라진다(위 패턴대로 건드리지 않는 그룹도 함께 넣어 보낼 것). 위의 빈 그룹·바뀐 그룹 규칙도 똑같이 적용된다.
 - `meta`는 버전이 아니라 샘플에 붙는다 — **모든 버전이 같은 `meta`를 공유**하므로, `get_annotation`으로 받아 그대로 `save_annotation`에 되돌리는 왕복만 해도 `meta`가 다시 쓰인다(다른 버전에서 이미 `meta`를 바꿔 뒀다면 그 값을 덮어쓰지 않도록 왕복 전에 확인할 것). 바꾼 키만 보내려면 아래 부분 저장을 쓴다.
 - `save_annotation`은 **서버가 버린 인스턴스 수를 담은 보고서를 반환한다.** 서버는 형식이 어긋난 원소(`label` 필드가 없는 원소, object가 아닌 원소, 값이 배열이 아닌 그룹)를 버리는데, 교체는 병합이 아니므로 **버려진 만큼 기존 인스턴스가 지워진다.** `skipped`가 0이 아니면 SDK가 `RuntimeWarning`도 함께 낸다 — 반환값을 보지 않는 스크립트에서도 유실이 드러나야 하기 때문이다. `patch_annotations`(단일·배치)도 같은 경고를 낸다.
 
@@ -748,10 +789,25 @@ ds.declare_group_kinds({"extra_gt": "group"})     # 나중에 더할 수도 있�
 ```
 
 - 값은 `"group"`/`"container"`뿐이다(그 밖은 `ValueError`).
-- **선언은 서버에 저장되지 않고 그 `Dataset` 핸들에 있다.** 그 핸들에서 만든 `fork()`·`clone()`·서브셋 `to_version()`의 새 핸들에는 선언이 복사되어 이어진다. `load_or_create`로 새로 연 핸들에는 다시 선언한다.
+- **SDK 의 선언은 그 `Dataset` 핸들에 있다.** 그 핸들에서 만든 `fork()`·`clone()`·서브셋 `to_version()`의 새 핸들에는 선언이 복사되어 이어진다. `load_or_create`로 새로 연 핸들에는 다시 선언한다.
 - 선언하지 않은 그룹은 `RawGroup`으로 와서 손대지 않고 그대로 왕복한다. 객체로 다룰 그룹만 선언하면 된다.
 
-**component 클래스(9종).** `nx.<클래스>`로 쓴다. 등록되지 않은 `type`은 `nx.Label`로 와서 dict 그대로 보존된다(`.to_dict()`).
+**서버에 dataset 단위로 저장하는 선언**(서버 이미지 `0.1.29`+). 여러 스크립트·웹이 같은 종류를 쓰도록 서버에 저장해 둘 수 있다. SDK 의 `declare_group_kinds`·`group_kinds=`는 이 저장소를 읽거나 쓰지 않으므로 저수준으로 부르고, 읽은 값을 핸들에 선언한다.
+
+```python
+client = ds._client
+kinds = client._get(f"/datasets/{ds.dataset_id}/group-kinds").json()["kinds"]
+ds.declare_group_kinds(kinds)                              # 서버 선언을 이 핸들에 적용
+
+client._patch(f"/datasets/{ds.dataset_id}/group-kinds",
+              json={"kinds": {"seatbelt_gt": "group", "old_gt": None}})   # 넣기·덮기, None 은 지움
+```
+
+- 읽기는 로그인한 누구나, 쓰기는 `editor` 이상이다. `PATCH`는 누적이고(적지 않은 키는 그대로) 응답은 쓴 뒤의 전체 `kinds`다.
+- 그룹 키는 128 자까지, 한 요청 256 키까지다. 빈 키·앞뒤 공백·`meta`·샘플 코어 키(`sample_id`·`split`·`tags` 등)는 `400`이다.
+- 버전과 무관한 dataset 단위 선언이라 sealed 여부와 상관없이 고칠 수 있고, seal 스냅샷과 GT 형식에는 들어가지 않는다. clone 은 선언을 새 dataset 에 복사한다.
+
+**component 클래스(10종).** `nx.<클래스>`로 쓴다. 등록되지 않은 `type`은 `nx.Label`로 와서 dict 그대로 보존된다(`.to_dict()`).
 
 | 클래스 | `type` | 고칠 수 있는 속성 | 읽기 전용 | `save()` 때 검사 |
 |---|---|---|---|---|
@@ -764,6 +820,16 @@ ds.declare_group_kinds({"extra_gt": "group"})     # 나중에 더할 수도 있�
 | `Cuboid3D` | `cuboid_3d` | | `center`, `dimensions`, `rotation` | `center`·`dimensions` 숫자 3개씩, `rotation`은 있으면 숫자 9개 |
 | `Polygon` | `polygon` | `points` | | 평탄한 숫자 목록, 3점 이상 |
 | `Polyline` | `polyline` | `points`, `closed` | | 평탄한 숫자 목록, 2점 이상 |
+| `Mask` | `mask` | `rle`, `label`, `confidence` | | `rle={"size": [높이, 너비], "counts": "<문자열>"}` COCO 압축 RLE(픽셀 단위, 열 우선). `size`는 1 이상 정수 둘이고 넓이 5,000 만 화소 이하, 런 합이 넓이와 같고 전경 픽셀이 하나 이상. 정수 목록 `counts`(비압축 RLE)는 거부. `label`·`confidence`는 선택 |
+
+`Mask`는 GT 에서 유일하게 픽셀 단위다(나머지 기하는 정규화 좌표). pycocotools 의 `encode`가 주는 `bytes` `counts`는 만들 때 ASCII 문자열로 바꾸며(호출자의 dict 는 바꾸지 않는다), SDK 안에 디코더가 있어 pycocotools 가 없어도 된다(SDK `0.1.24`+). `validate()`를 통과한 마스크는 서버가 CVAT 로 보낼 수 있는 모양이다 — 단 `size`가 샘플의 `meta.height`·`meta.width`와 다르면 세션에서 빠진다([6.2](#62-세션-생성)).
+
+```python
+from pycocotools import mask as mask_util        # 선택 — 마스크를 만들 때만
+rle = mask_util.encode(np.asfortranarray(binary_mask.astype(np.uint8)))
+inst = nx.Instance(id=None, label="person", components={"mask": nx.Mask(rle=rle, label="person")})
+s["seg_gt"].add(inst)
+```
 
 **새로 만들기.**
 
@@ -794,7 +860,7 @@ rep = s.save()      # PATCH — seatbelt_gt 그룹 통째 + meta 의 width 키�
 - 불러온 시점과 비교해 **바뀐 그룹은 통째로, `meta`는 바뀐 키만** `PATCH .../annotations`로 보낸다. 바뀐 것이 없으면 요청을 보내지 않는다. `s.groups`에서 없앤 그룹은 빈 배열(비우기)로 나간다.
 - 서버는 보낸 그룹만 교체하고 나머지 그룹은 그대로 둔다. 그래서 양쪽 모두 `save()`로 저장하면 두 곳에서 같은 샘플의 **다른** 그룹을 동시에 고쳐도 서로 지우지 않는다(같은 그룹이면 나중 저장이 이긴다). 한쪽이 `save_annotation`/`patch_annotations`·CVAT `pull()`이면 그 저장은 통째 교체라 다른 그룹까지 덮는다.
 - 반환값은 `save_annotation`과 같은 보고서(`instances`/`skipped`/`skipped_reasons`)다.
-- 그룹 하나를 비우는 것(`clear_field`)은 된다. 저장 결과 그 샘플의 인스턴스가 하나도 남지 않고 공유 원본이 있을 때만 위의 `409`다.
+- 그룹 하나를 비우는 것(`clear_field`)은 된다. 저장 결과 그 샘플의 인스턴스가 하나도 남지 않아도 저장된다(서버 이미지 `0.1.29`+).
 
 **FiftyOne 식 필드 함수.** 필드는 그룹 이름 또는 `"meta"`다. 모두 제자리 수정이고 저장은 `save()`로 한다.
 
@@ -919,9 +985,10 @@ ds.create_annotation_session(ids, extra_labels=[
     {"group": "det", "label": "Face", "components": ["bounding_box"]}])
 ```
 
+`components`를 생략하거나 `bounding_box`·`polygon`·`polyline`·`mask`를 주면 도형 라벨 `{group}/{label}` 하나가 생기고, 그 라벨로 상자·다각형·선·마스크를 모두 그릴 수 있다(`mask`는 서버 이미지 `0.1.29`+).
+
 고른 샘플에 그 group/label 의 점(skeleton)이 하나도 없어도 점 라벨을 만들 수 있다(서버 이미지 `0.1.26`+). `keypoints` 의 순서가
-점 번호이고, `component_key` 는 CVAT 에서 새로 그린 점이 들어갈 구성요소 키다(생략하면 `keypoint_2d`). 고른 샘플에 이미 점이 있으면
-그 점으로 skeleton 을 만들고 `keypoints`·`component_key` 는 세션 `warnings` 에 남기고 무시한다.
+점 번호이고, `component_key` 는 CVAT 에서 새로 그린 점이 들어갈 구성요소 키다(생략하면 `keypoint_2d`).
 
 ```python
 ds.create_annotation_session(ids, extra_labels=[
@@ -935,10 +1002,38 @@ ds.create_annotation_session(ids, extra_labels=[
 - `components` 에 `"keypoint_2d"` 만 주면 도형 라벨은 만들지 않는다(도형도 그리려면 `"bounding_box"` 등을 함께 준다).
 - `400` 인 경우: `keypoint_2d` 인데 `keypoints` 가 없거나 빈 목록, 점 이름이 비었거나·앞뒤에 공백이 있거나·겹치거나·64 자를 넘음,
   점이 1,000 개를 넘음, CVAT 라벨 이름(`face/person/kp`)이 64 자를 넘음, `component_key` 에 영문·숫자·`_`·`-` 밖의 문자가 있거나
-  `id`·`label`·`track_id`·`confidence` 임, `keypoint_2d` 없이 `keypoints`·`component_key` 만 줌.
+  `id`·`label`·`track_id`·`confidence` 임, `keypoint_2d` 없이 `keypoints`·`component_key` 만 줌, 같은 (group, label) 의
+  skeleton 항목이 둘.
 
-**CVAT 프레임 순서는 `sample_ids` 의 순서다**(서버 이미지 `0.1.26`+, 그 전에는 `sample_id` 내림차순). 영상처럼 이어진 프레임을
-CVAT 에서 따라가려면 프레임 번호로 정렬해 넘긴다.
+**점이 들어갈 인스턴스의 라벨은 `instance_label`** 로 따로 줄 수 있다(서버 이미지 `0.1.29`+). CVAT 자동 주석 함수가 쓰는 라벨
+이름(`label`)과 nexus 인스턴스의 `label` 이 다를 때 쓴다 — 예: CVAT 라벨 `person-body` 의 점을 `person` 인스턴스에 넣는다.
+
+```python
+ds.create_annotation_session(ids, extra_labels=[
+    {"group": "cvat_ai", "label": "person", "components": ["bounding_box"]},
+    {"group": "cvat_ai", "label": "person-body", "instance_label": "person",
+     "components": ["keypoint_2d"], "keypoints": BODY_POINTS, "component_key": "BODY_KP"},
+    {"group": "cvat_ai", "label": "person-face", "instance_label": "person",
+     "components": ["keypoint_2d"], "keypoints": FACE_POINTS, "component_key": "FACE_KP"}])
+```
+
+- `instance_label` 은 skeleton 항목에만 준다(도형 항목·빈 값·앞뒤 공백은 `400`). 생략하면 `label` 이다. 한 인스턴스에 점 구성요소가
+  둘이면 위처럼 `instance_label` 을 같게 주고 `label`·`component_key` 를 달리한 항목을 각각 둔다(같은 (group, label) 의 skeleton 항목 둘은 `400`).
+- skeleton 라벨은 (group, 인스턴스 라벨, `component_key`) 마다 하나다. 고른 샘플에 같은 단위의 점이 이미 있어도 **`extra_labels` 가
+  이긴다** — CVAT 라벨 이름은 `{group}/{label}/kp`, 점 이름은 `keypoints` 다(관측 점이 더 많으면 `kp_i` 로 채우고 경고).
+  `instance_label` 이 없고 같은 (group, label) 의 관측 구성요소 키가 하나도 맞지 않으면 관측이 이기고 경고가 남는다.
+- 관측 skeleton 의 CVAT 라벨 이름은 `{group}/{label}/kp` 이되, 그 (group, 인스턴스 라벨) 에서 `extra_labels` 가 덮지 않은 관측
+  구성요소 키가 둘 이상이거나 `label` 이 인스턴스 라벨과 같은 extra skeleton 이 `/kp` 를 쓰면 키마다 `{group}/{label}/{키}` 다.
+- **CVAT 라벨 이름이 겹치면 세션이 `failed`** 이고 사유에 겹친 이름이 남는다(CVAT project 를 만들기 전에 거절한다). 흔한 경우는
+  이미 들인 `person-body` 인스턴스가 든 샘플로 `{label: "person-body", instance_label: "person"}` 세션을 만드는 것이다 — 관측
+  skeleton 과 extra 가 같은 `cvat_ai/person-body/kp` 가 된다. 그 인스턴스를 먼저 지우고 세션을 만든다.
+
+**`mask` 구성요소는 CVAT mask 도형으로 나간다**(서버 이미지 `0.1.29`+). 다음은 보내지 않고 세션 `warnings` 에 남기며 원본은 그대로
+둔다: 형식 오류, `rle.size` 가 샘플의 `[meta.height, meta.width]` 와 다름, 전경 픽셀 없음, 넓이 5,000 만 화소 초과. 세션 생성은
+마스크마다 이미지 넓이(높이 × 너비) 바이트의 비트맵을 잠깐 잡고(1080p 약 2 MB, 마스크를 하나씩 처리) 보낼 때까지 런 수 × 8 B 를 쥐므로, 잡음이 많은 마스크를 대량으로 보낼 때는 세션을 작게 나눈다.
+
+**CVAT 프레임 순서는 `sample_ids` 의 순서다**(서버 이미지 `0.1.26`+). 영상처럼 이어진 프레임을
+CVAT 에서 따라가려면 프레임 번호로 정렬해 넘긴다(서버가 정렬·분할까지 해 주는 [세션 계획](#63-고칠-대상만-골라서-세션-만들기)도 있다).
 
 ```python
 rows = ds.samples(split="video01", include_annotations=False)
@@ -999,6 +1094,38 @@ for i in range(0, len(ids), 500):
     ses = ds.create_annotation_session(ids[i:i + 500], wait=False)   # 기다리지 않고 연달아
 ```
 
+**나누기를 서버에 맡기는 세션 계획**(서버 이미지 `0.1.29`+). 위처럼 앞에서부터 자르면 한 시퀀스(영상)가 두 세션에 갈리거나, 한
+세션 안에 파일 이름이 겹쳐 세션이 `failed` 가 된다. 세션 계획은 explorer 필터에 걸린 샘플을 시퀀스 단위로 정렬하고 그 제약을
+지키는 묶음으로 나눠 돌려준다. 세션을 만들지 않는 읽기라 `viewer` 도 부를 수 있고, SDK 메서드가 없어 저수준으로 부른다.
+
+```python
+plan = ds._client._post(
+    f"/datasets/{ds.dataset_id}/versions/{ds.version}/annotation-sessions/plan",
+    json={"filter": {"tags": ["review"]}, "order_by": ["file_name"], "chunk_size": 500}).json()
+
+for ch in plan["chunks"]:
+    ids = [it["sample_id"] for it in plan["items"][ch["start"]:ch["start"] + ch["count"]]]
+    ds.create_annotation_session(ids, extra_labels=LABELS, wait=False)   # 묶음마다 같은 라벨
+```
+
+- `filter` 는 explorer 요청 본문과 같은 모양이다(`offset`·`fields` 는 `400`). `order_by` 는 시퀀스 **안**의 순서로 `file_name`(이미지
+  key 의 마지막 조각, `frame_9` < `frame_10` 처럼 숫자를 아는 비교)·`meta.<키>` 를 1~3 개, 생략하면 `["file_name"]` 이다. 시퀀스
+  (`meta.sequence_id`)가 늘 첫 정렬 키이고, 시퀀스가 없는 샘플은 뒤에 온다. `chunk_size` 는 1 이상 서버 세션 상한(`session_cap`) 이하,
+  생략하면 상한이다.
+- 응답: `matched`(필터에 걸린 수)·`items`(정렬된 전체 — `sample_id`·`sequence_id`·`file_name`·`sort`)·`chunks`(`start`·`count`·
+  `sequences`·`first`·`last`·`split_sequences`)·`excluded_by_open_sessions`(열린 세션이 잡은 샘플의 세션별 개수)·`unsendable`
+  (`sample_id`·`reason`)·`missing_sort_key`(정렬 값이 없어 맨 뒤로 간 행 수).
+- 빠지는 샘플: 열린 세션이 잡은 샘플, 세션 준비가 실패시킬 샘플 — `no_image`·`no_dimensions`·`url_too_long`(서명한 이미지 URL 이
+  1024 자 초과, key 를 줄인다)·`invalid_location`·`duplicate_file_name`(같은 시퀀스 안 파일 이름 겹침 — 그 이름의 행을 **전부** 뺀다).
+  크기가 0 이하인 샘플은 빠지지 않는다 — 세션은 열리지만 그 샘플의 annotation 은 CVAT 으로 가지 않으므로 `ds.backfill_dims()` 로
+  먼저 고친다.
+- 묶음은 시퀀스를 가르지 않는다. 시퀀스 하나가 혼자 `chunk_size` 를 넘을 때만 잘라 `split_sequences` 에 싣는다(그 경계에서 트랙이
+  끊긴다).
+- **계획은 스냅샷이다.** 세션 생성이 `409`(겹침)·`400`(삭제된 샘플 등)이면 남은 묶음을 보내지 말고 계획을 다시 부른다. 계획은
+  라벨을 보지 않으므로 묶음마다 같은 `extra_labels`·`groups` 를 보낸다.
+- 필터에 걸린 수가 10,000 을 넘으면 `400` `code: "plan_too_large"`(`matched` 필드) — 필터를 좁힌다. sealed 버전 `409`, CVAT 미구성
+  `503`.
+
 > 대상을 좁히면 CVAT에 보내는 이미지가 줄어 준비도 빨라진다. 다만 **한 샘플의 편집형 컴포넌트는 전부 나간다** — `label="sedan"`으로 골라도 그 샘플의 다른 인스턴스와 차선 등이 함께 보인다(그리는 화면에서 맥락이 필요하기 때문). 특정 그룹만 보이게 하려면 `groups=["road_obj_ma"]`를 함께 준다.
 
 ### 6.4 편집 결과 반영
@@ -1025,7 +1152,26 @@ print(summary)
 
 - `pull()`은 **여러 번 호출해도 안전하다.** 작업 도중에 중간중간 불러도 되고, 편집이 없으면 전부 0이다.
 - `pull()`은 샘플의 `meta`를 쓰지 않는다 — CVAT은 `meta`를 편집하지 않으므로, 그 사이 다른 곳에서 고친 `meta`를 옛 값으로 되돌리지 않는다.
-- **한 프레임의 도형을 전부 지웠는데 그 샘플에 공유 원본(적재한 GT)이 있으면 그 샘플은 반영되지 않는다**(`warnings`에 사유가 온다). 이 버전에서 원본을 가린 채 비워 둘 방법이 없기 때문이다([5.1](#51-dict-api-통째-교체)의 `409`). 이때 반영 기준시각이 멈춰 `close()`가 `force` 없이 막힌다 — 도형을 다시 그리거나, 그 샘플을 버전에서 unlink하거나, 편집을 버리고 `close(force=True)`로 닫는다.
+- 한 프레임의 도형을 전부 지우면 그 샘플의 그 그룹은 이 버전에서 빈다. 공유 원본(적재한 GT)이 있어도 반영된다(서버 이미지 `0.1.29`+).
+- **같은 CVAT `group` 으로 묶은 새 도형은 인스턴스 하나가 된다**(서버 이미지 `0.1.29`+). nexus 신원이 없는 새 도형은 `group` 번호(0 이
+  아닌 값)가 같으면 인스턴스 하나로 묶이고 도형마다 구성요소 하나가 된다 — 상자와 skeleton, 상자와 마스크를 같은 물체로 묶을 때
+  CVAT 에서 Group(G) 으로 묶고 저장한다. 인스턴스 `label` 은 라벨의 인스턴스 라벨(`instance_label`, 없으면 라벨 이름)이다.
+  - 묶지 않는 경우는 `warnings` 에 한 줄 남는다: 인스턴스 라벨이 갈리면 도형마다 각자, 같은 구성요소 키가 둘 이상이면 그 도형들만
+    각자, 같은 번호가 다른 그룹 키에 걸치면 그룹 키마다 따로.
+  - 이미 신원이 있는(한 번 들인) 도형과 같은 번호의 새 도형은 기존 인스턴스에 합류하지 않고 새 인스턴스가 된다. 이미 들여 id 가
+    되쓰인 도형은 다시 가져와도 묶이지 않는다.
+  - 묶인 인스턴스를 CVAT 에서 다른 라벨로 바꾸려면 대상 라벨의 skeleton 도 `extra_labels` 로 선언해 두어야 점이 따라간다.
+- **들이지 않는 도형은 종류별로 경고한다.** 새로 그린 도형 중 ellipse·cuboid·skeleton 이 아닌 points 등은 「CVAT 도형 N개를 들이지
+  않았다(unsupported_type: …)」, 형식 오류 도형은 도형마다 한 줄과 끝에 「CVAT 도형 N개가 형식 오류라 들이지 않았다」 한 줄이 `warnings` 에 남는다. 들이는
+  종류는 rectangle·polygon·polyline·skeleton·mask 다.
+- **mask 도형**은 픽셀로 비교해 반영한다 — 같은 픽셀이면 CVAT 이 경계를 다시 잘라 돌려줘도 쓰지 않는다. 새로 그린 마스크는 새
+  인스턴스의 `mask` 구성요소가 되고, 경계가 이미지 밖이면 이미지 범위로 자른다. 마스크 트랙은 들이지 않는다.
+- **도형 종류를 바꾼 도형은 반영하지 않는다.** 신원(`nexus_instance_id`)이 남은 도형의 종류가 원본 구성요소와 다르면(주석 파일을
+  고쳐 올린 경우 등) 기하를 반영하지 않고 원본을 유지하며 `warnings` 에 한 줄 남긴다(라벨 변경은 반영된다). CVAT 화면의 종류 변환
+  (다각형 → 마스크 등)이 신원을 남기지 않으면 이 규칙에 걸리지 않고, 옛 도형은 지워진 것으로·새 도형은 새 인스턴스로 들어온다.
+  종류를 바꾸려면 옛 도형을 지우고 새로 그린다.
+- **다른 그룹의 라벨로 바꾼 도형은 반영하지 않는다.** 옮겨 간 그룹에 같은 id 의 인스턴스가 있어도 합치지 않고 원래 인스턴스를
+  남기며 `warnings` 에 한 줄 남긴다. 다른 그룹으로 옮기려면 지우고 새로 그린다.
 - `warnings`를 버리지 말 것 - "CVAT에서 지웠는데 annotation에 남아 있다"의 이유가 대개 여기 있다. 일부 샘플 반영 실패도 예외가 아니라 이 목록으로 온다.
 
 ### 6.5 종료 - `close`와 `delete`는 다르다
@@ -1065,7 +1211,7 @@ ds.annotation_sessions()                            # 이 dataset·version의 �
 
 ### 6.7 알아둘 것
 
-- CVAT으로 나가는 컴포넌트는 `bounding_box`/`polygon`/`polyline`/`keypoint_2d` **4종뿐**이다. 3D(`cuboid_3d` 등)·classification·scalar는 편집 대상이 아니며 **그대로 보존**된다.
+- CVAT으로 나가는 컴포넌트는 `bounding_box`/`polygon`/`polyline`/`keypoint_2d`/`mask` **5종뿐**이다. 3D(`cuboid_3d` 등)·classification·scalar는 편집 대상이 아니며 **그대로 보존**된다.
 - 같은 버전 안에서 한 샘플은 하나의 활성 세션(`creating`·`open`)에만 속할 수 있다. 겹치면 세션 생성이 `409`로 거부되고(준비 중인 세션 포함, 서버 이미지 `0.1.21`+), 해당 세션을 `close()`하면 풀린다.
 - sealed 버전에는 세션을 만들 수 없다.
 - 세션 삭제는 CVAT project를 통째로 지우므로 **회수하지 않은 편집도 함께 사라진다.**
@@ -1169,7 +1315,7 @@ Seal 하면 그 시점 상태로 불변 스냅샷이 된다. 이후:
 - 수정이 필요할 경우 `fork`해서 새 Draft 버전을 생성하여 작업한다(§7.5).
 
 ### 7.4 DataFrame 변환
-`ds.to_df()`는 sealed 버전의 GT annotation 스냅샷(NDJSON)을 pandas DataFrame으로 로드한다.  
+`ds.to_df()`는 sealed 버전의 GT annotation 스냅샷(NDJSON)을 pandas DataFrame으로 로드한다(draft 버전은 아래 「draft 버전의 `to_df()`」).  
 각 행 = 한 샘플 = `{sample_id, meta, <group_key>:[instances...]}`.  
 seal 시 이 스냅샷은 여러 NDJSON 샤드로 나뉘어 CAS에 저장되고, nexus는 그 샤드들의 위치를 가리키는 manifest만 갖고 있다.  
 `to_df()`는 nexus 서버에 manifest만 한 번 조회한 뒤, 실제 annotation 데이터(샤드 NDJSON)는 CAS에서 직접 다운로드해 DataFrame으로 조립한다 - 대량의 annotation을 읽어도 nexus 서버에 부하가 몰리지 않는다.  
@@ -1193,6 +1339,44 @@ for _, row in df.iterrows():
 
 DataFrame에는 annotation과 이미지 경로(meta.filename)만 담기고, 이미지 바이트 자체는 안 담긴다 - 필요하면 그 경로에서 따로 받는다.  
 대용량 데이터의 경우 ds.to_df(chunksize=1000)으로 한 번에 다 메모리에 올리지 않고 나눠 처리할 수 있다.
+
+**draft 버전의 `to_df()`**(SDK `0.1.24`+). draft 에는 스냅샷이 없으므로 explorer 를 1,000 행씩 읽어 sealed 와 같은 모양의 행
+(`sample_id`·`meta`·그룹 배열)을 낸다. 이 경로는 annotation 이 nexus 서버를 지나므로 sealed 보다 서버 부하가 크다.
+
+- explorer 에만 있는 `split`·`tags`·`created_at`·`image_url`·`thumbnail_url` 은 열에서 뺀다. `groups=` 에 이 이름과 같은 그룹이
+  있으면 그 열은 `None` 이다.
+- `meta` 는 읽는 시점의 현재 값이고(sealed 는 seal 때의 사본) 읽는 동안의 편집이 섞일 수 있어 핸들당 한 번 `RuntimeWarning` 을 낸다.
+- `chunksize` 가 없으면 `sample_id` 오름차순(sealed 와 같은 순서)으로 모아 내고, 있으면 서버 순서(`sample_id` 내림차순) 그대로 청크를
+  흘린다. `chunksize` 가 양수가 아니거나 `path` 와 함께 주면 서버를 부르기 전에 `ValueError` 다.
+- 샘플 300,000 개(인스턴스 1,200,000 개) draft 버전의 `to_df()` 는 약 0.6 분(34~40 초) 걸렸다(서버·PostgreSQL 18·SDK 를 한 대 — 14 코어, 메모리
+  32 GB — 에서 돌린 측정, explorer 응답 약 1.36 MB / 1,000 행, SDK 프로세스 메모리 증가 약 2 GB). 같은 버전을 seal 한 뒤의 `to_df()` 는 22 초였다.
+- **운영자가 draft 대량 읽기를 껐으면**(서버 설정 `explorer.draft_bulk_read_enabled=false`, 서버 이미지 `0.1.29`+) draft 의 `to_df()`·
+  `iter_samples()`·`samples()`(기본 `include_annotations=True`)·`shuffle()`·`fingerprint()` 가 `NexusError`(`status_code=403`,
+  `code == "draft_bulk_read_disabled"`, 「운영자가 draft 대량 읽기를 껐습니다 — sealed 버전을 쓰십시오」)다. 다시 보내지 않는다 —
+  sealed 버전을 읽는다. 서버는 표시 헤더만 보므로, SDK 가 표시를 붙이지 않는 id·projection 읽기(`include_annotations=False`·
+  `values()`)는 막히지 않고, 다른 경로인 `Subset` 읽기·개수·facet 도 막히지 않는다.
+
+**읽은 내용의 지문 — `ds.fingerprint()`**(SDK `0.1.24`+). draft 에서 읽어 학습한 데이터가 나중에 seal 한 버전과 같은지 대조할 때 쓴다.
+
+```python
+fp_draft = ds.fingerprint()                 # draft: explorer 를 읽어 계산 → "nxfp1:<blake3 hex>"
+df = ds.to_df()                             # chunksize 없이 읽으면 df.attrs["nexus_fingerprint"] 에도 같은 값
+ds.seal()
+assert ds.fingerprint() == fp_draft         # sealed: 스냅샷으로 계산 — 그 사이 바뀐 것이 없으면 같다
+```
+
+- 행 순서·키 순서를 보지 않고 `meta` 가 없는 것과 `{}` 를 같게 보므로 같은 내용이면 출처와 무관하게 같은 값이다. `groups=` 는
+  `to_df(groups=)` 와 같게 줄인 행으로 계산한다. pandas 가 필요 없다.
+- `source="auto"`(기본)는 sealed 면 스냅샷, draft 면 explorer 를 읽는다. `"snapshot"` 은 스냅샷만(draft 면 `NexusError`), `"explorer"`
+  는 sealed 에서도 explorer 를 읽는다. explorer 의 `meta` 는 현재 값이라 seal 뒤 meta 를 고친 샘플이 있으면 스냅샷 지문과 다르다.
+- 같은 sealed 버전에서 `source="snapshot"` 과 `source="explorer"` 의 지문은 같았다 — 샘플 300,000 개 버전과, 샘플 삭제·fork 뒤 annotation
+  교체·그룹 부분 저장·unlink·일괄 meta 쓰기를 거친 버전 둘에서 seal 직후 두 지문이 같았고 행 단위 차이도 없었으며, seal 전 draft 에서 읽은
+  `to_df()` 의 지문과도 같았다.
+
+**seal 시점의 `tags`·`split`** 은 NDJSON 스냅샷이 아니라 메인 manifest(버전 전체 JSON 하나)에 있다. `GET .../manifest` 응답의
+`main_manifest`(`cas_url`·`hash_hex`, sealed 이고 `manifest_hash` 가 있을 때만)가 그 위치다(서버 이미지 `0.1.29`+). 받은 본문의 BLAKE3 를
+`hash_hex` 와 대조하고 다르면 쓰지 않는다 — 오래전에 seal 한 버전은 이름 기반 위치를 가리켜 이름 변경·재생성으로 덮였을 수 있다.
+읽으려면 CAS 키에 manifest 버킷(`<기본 버킷>-manifests`)의 `manifests/` 접두사 읽기 권한이 있어야 한다(`to_df` 가 읽는 `annotations/` 와 접두사가 다르다).
 
 ### 7.5 Fork
 기존 버전을 기반으로 새로운 작업용 버전을 만든다.
@@ -1338,7 +1522,8 @@ except NexusError as e:
 ```
 
 - `e.status_code`(`int | None`)와 `e.server_message`(`str | None`)로 서버가 보낸 실제 에러 사유를 프로그램적으로 분기할 수 있다. `str(e)`에도 같은 내용이 포함되지만(사람이 읽는 용도), 상태코드로 분기하려면 이 두 속성을 쓴다.
-- 같은 상태 코드에 뜻이 여럿인 오류는 `e.code`로 가른다(SDK `0.1.22`+, 서버 본문의 `code` — 없으면 `None`). 지금은 seal의 `already_sealed`·`seal_key_collision`·`seal_busy`·`seal_in_progress`([7.2](#72-seal--버전-잠금))와 meta 일괄 쓰기의 `meta_write_rejected`([5.4](#54-meta-일괄-쓰기--set_valuesupdate_meta))다. 마지막은 `e.rejected`(`[{"sample_id", "reason"}]`)를 함께 단다.
+- 같은 상태 코드에 뜻이 여럿인 오류는 `e.code`로 가른다(SDK `0.1.22`+, 서버 본문의 `code` — 없으면 `None`). seal의 `already_sealed`·`seal_key_collision`·`seal_busy`·`seal_in_progress`([7.2](#72-seal--버전-잠금)), meta 일괄 쓰기의 `meta_write_rejected`([5.4](#54-meta-일괄-쓰기--set_valuesupdate_meta)), 에셋 붙이기의 `asset_write_rejected`([3.4](#이미-등록한-샘플에-에셋-붙이기--dsset_assets)), draft 대량 읽기 거절의 `draft_bulk_read_disabled`(403, [7.4](#74-dataframe-변환)), 세션 계획의 `plan_too_large`([6.3](#63-고칠-대상만-골라서-세션-만들기)) 등이다. `meta_write_rejected`는 `e.rejected`(`[{"sample_id", "reason"}]`), `asset_write_rejected`는 `e.rejected`(`[{"sample_id", "role", "reason"}]`)를 함께 단다.
+- 인증된 응답에는 서버 판 헤더 `X-Nexus-Version` 이 붙는다(서버 이미지 `0.1.29`+). 「어느 판의 서버가 이 응답을 냈는가」를 확인할 때 본다 — 인증된 응답인데 헤더가 없으면 그보다 옛 서버다(교체 중 옛 파드 등).
 - `flush`/`patch_annotations`의 배치 호출은 건당 결과를 `IngestResult(ok, sample, sample_id, error, status_code, index, replayed)`로 모아서 반환한다 — `strict=True`면 실패가 하나라도 있을 때 `NexusBatchError(failures=[...])`를 던진다. `replayed`는 멱등 재전송으로 서버가 기존 결과를 돌려준 건이고 성공으로 센다([3.4](#34-샘플-생성과-등록)).
 
 ### 9.1 401과 403을 구분한다
@@ -1378,6 +1563,8 @@ except NexusError as e:
 |`nx.annotation_sessions(status=, dataset_id=, mine=, limit=)`|CVAT 편집 세션 목록(전역, 기본 진행 중인 것만). 한 번에 최대 50건(`limit=` 최대 200)이고 자동 페이지 순회는 하지 않는다|
 |`nx.annotation_session(session_id)`|세션 id로 다시 잡기|
 |`nx.cas_client()` → CasClient|현재 연결의 CAS 클라이언트(연결마다 하나를 재사용)|
+|`nx.rewrite_thumbnails(refs, workers=8, verbose=True)` → dict|이미 올린 객체의 썸네일을 조건 없이 다시 만들어 쓴다(SDK `0.1.24`+, [3.3](#33-원본-파일-업로드))|
+|`nx.Mask(rle=, label=, confidence=)`|마스크 구성요소(COCO 압축 RLE, 픽셀 단위, SDK `0.1.24`+, [5.2](#52-객체-api-부분-저장))|
 
 ### Dataset
 |||
@@ -1393,13 +1580,15 @@ except NexusError as e:
 |`.get_field_schema()`|`{"meta.<키>": 타입}` — `int`·`float`·`string`·`enum`·`bool`·`datetime`·`list`·`object`·`any`|
 |`.tags` / `.add_tag(*tags)` / `.remove_tag(*tags)`|dataset 태그(튜플) 읽기 / 더하기 / 빼기|
 |`.set_values("meta.<키>", {sample_id: 값})` → int|샘플마다 다른 meta 값을 일괄로 쓴다([5.4](#54-meta-일괄-쓰기--set_valuesupdate_meta))|
+|`.set_assets(role, {sample_id: ref}, overwrite=False)` → int|적재한 샘플에 에셋을 붙인다(SDK `0.1.24`+, 서버 이미지 `0.1.29`+, [3.4](#이미-등록한-샘플에-에셋-붙이기--dsset_assets))|
+|`.rewrite_thumbnails(role, **kw)` → dict|이 버전 샘플의 그 role 에셋 썸네일을 다시 쓴다(SDK `0.1.24`+)|
 |`.update_meta(meta, /, confirm=None, **필터)` → dict|필터에 걸린 샘플 전부의 meta에 같은 키들을 병합한다(서버 이미지 `0.1.24`+, [5.4](#54-meta-일괄-쓰기--set_valuesupdate_meta))|
 |`.add(sample)` / `.flush()`|	샘플 등록|
 |`.list_samples()` / `.get_sample(id)`|	조회|
 |`.samples(sample_ids=, group_key=, label=, confidence_min=, confidence_max=, track_id=, split=, tags=, exclude_tags=, meta=, include_annotations=True, limit=, after=)`|	조건 조회(기본 전체, limit=주면 한 페이지). `exclude_tags`는 그 태그를 하나라도 가진 샘플을 뺀다. `include_annotations=False`면 annotation 없는 경량 코어만|
 |`.patch_annotations(sample_id, data)`|	annotation 수정(그 버전의 인스턴스를 통째로 교체)|
 |`.load_sample(sample_id)` → `.save()`|	annotation을 타입 객체로 받아 바뀐 그룹·`meta` 키·샘플 태그만 저장([5.2](#52-객체-api-부분-저장), 태그는 [4.8](#48-fiftyone-식-조회와-집계))|
-|`.declare_group_kinds({그룹: "group"\|"container"})`|	`load_sample`이 타입 객체로 다룰 그룹 선언(누적, 서버에 저장되지 않는다 — fork·clone·`to_version` 핸들에는 복사되어 이어진다)|
+|`.declare_group_kinds({그룹: "group"\|"container"})`|	`load_sample`이 타입 객체로 다룰 그룹 선언(누적, 핸들에 둔다 — fork·clone·`to_version` 핸들에는 복사되어 이어진다. 서버의 dataset 단위 선언은 [5.2](#52-객체-api-부분-저장))|
 |`.get_annotation(sample_id)` / `.save_annotation(sample_id, ann)`|	annotation 왕복 — 받은 dict를 고쳐 그대로 저장([5.1](#51-dict-api-통째-교체))|
 |`.transfer_owner(email)`|	담당자 이전. 현재 담당자만 호출할 수 있다([8.2](#82-담당자-이전))|
 |`.backfill_dims(workers=8, chunk_size=500, overwrite=False, dry_run=False)` → dict|	`meta.width/height`를 실측값으로 보정. 기본은 **빈칸만** 채우고, `overwrite=True`면 **기록된 값도 교체한다**(적재 당시 선언값 자체가 틀린 경우). 그 모드는 `dry_run=True`가 개수가 아니라 변경 목록(`from` → `to`)을 준다|
@@ -1411,7 +1600,8 @@ except NexusError as e:
 |`.update(name=, description=)`|	이름/설명 수정|
 |`.seal(if_sealed="error", wait=600, description=)`|	버전 확정([7.2](#72-seal--버전-잠금)). 동시 seal 상한 `429`는 `wait`초까지 기다린다|
 |`.set_description(text)` / `.description`|	버전 설명 쓰기·읽기([7.7](#77-버전-설명))|
-|`.to_df(groups=, path=, format=, chunksize=)`|	DataFrame 변환|
+|`.to_df(groups=, path=, format=, chunksize=)`|	DataFrame 변환. draft 버전은 explorer 를 읽는다(SDK `0.1.24`+, [7.4](#74-dataframe-변환))|
+|`.fingerprint(groups=None, source="auto")` → str|	읽은 행의 지문 `nxfp1:<blake3>` — draft 에서 읽은 것과 seal 한 것의 대조(SDK `0.1.24`+, [7.4](#74-dataframe-변환))|
 |`.delete(confirm=, delete_cas=, confirm_dataset_name=)`|	버전 삭제. `confirm`은 버전 문자열(또는 `True`). `delete_cas` 미지정 시 대화형으로 한 번 묻고, 비대화형이면 CAS 원본을 유지한다. `confirm_dataset_name`은 admin이 sealed 버전을 지울 때의 데이터셋명 확인([8.3](#83-삭제-정책))|
 |`.favorite()` / `.unfavorite()`|	즐겨찾기. 그룹·순서는 [4.7](#47-즐겨찾기-그룹) 참조|
 |`.create_subset(name, filter)` / `.list_subsets()`|	저장된 explorer 필터(뷰). `Subset`을 돌려준다|
@@ -1445,6 +1635,7 @@ except NexusError as e:
 |`client.add_tags_bulk(sample_ids, tags)` / `.remove_tags_bulk(...)`|태그 일괄 처리|
 |`client.count_samples(dataset_id, version, filter=None, exact=False)` → (개수, 정확한가)|필터에 걸리는 샘플 수만 조회(목록을 받지 않는다). 기본은 10,000에서 멈추고 `exact=True`가 전수|
 |`client.facet_counts(dataset_id, version, field, filter=None, exact=False)`|필터 옵션별 개수([4.4](#44-필터-옵션별-개수)). `exact=True`가 전수 모드(서버 이미지 `0.1.24`+)|
+|`client.patch_asset_items(dataset_id, version, items, overwrite=False)`|에셋 붙이기 경로를 해석 없이 감싼다(SDK `0.1.24`+, 서버 이미지 `0.1.29`+)|
 |`client.patch_meta_items(dataset_id, version, items)` / `client.patch_meta_by_filter(dataset_id, version, filter, meta, confirm=None)`|meta 일괄 쓰기 경로를 해석 없이 감싼다(서버 이미지 `0.1.24`+, [5.4](#54-meta-일괄-쓰기--set_valuesupdate_meta))|
 |`client.version_stats` / `.facet_values` / `.histogram` / `.version_schema` / `.add_dataset_tags` / `.remove_dataset_tags`|서버 경로를 그대로 감싸고 응답 JSON을 해석 없이 돌려준다|
 |`client.delete_version(dataset_id, version, confirm=, delete_cas=False, confirm_dataset_name=None)`|버전 삭제 저수준([8.3](#83-삭제-정책))|

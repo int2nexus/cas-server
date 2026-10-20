@@ -29,6 +29,15 @@ metadata:
     {{- include "nexus-server.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  {{- with .Values.strategy }}
+  {{- /* 비어 있으면 렌더하지 않는다(쿠버네티스 기본 RollingUpdate). Recreate 로 바꿀 때는 API 서버가 채워 둔
+         rollingUpdate 를 null 로 지워야 업그레이드 패치가 거부되지 않는다(values 의 strategy 주석). */}}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+    {{- if and (eq (toString .type) "Recreate") (not (hasKey . "rollingUpdate")) }}
+    rollingUpdate: null
+    {{- end }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "nexus-server.selectorLabels" . | nindent 6 }}
@@ -169,6 +178,14 @@ spec:
             {{- if and (not (kindIs "invalid" $sealMax)) (ne ($sealMax | toString) "") }}
             - name: NEXUS__SEAL__MAX_CONCURRENT
               value: {{ $sealMax | quote }}
+            {{- end }}
+            {{- /* 서버 기본이 true 라 false 일 때만 주입한다. .Values.explorer 가 없는 옛 values 에서는 키가 없는
+                   것을 false 로 읽지 않도록 explorer 가 있고 값이 정확히 false 일 때만 본다. */}}
+            {{- if .Values.explorer }}
+            {{- if eq (toString .Values.explorer.draftBulkReadEnabled) "false" }}
+            - name: NEXUS__EXPLORER__DRAFT_BULK_READ_ENABLED
+              value: "false"
+            {{- end }}
             {{- end }}
             {{- if .Values.cvat.baseUrl }}
             {{- /* baseUrl이 있을 때만 주입한다. 빈 값이라도 넣으면 cvat 섹션이 생겨,

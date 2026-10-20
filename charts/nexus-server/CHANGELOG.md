@@ -81,6 +81,315 @@ nexus-server 는 마이그레이션이 바이너리에 임베드되어 **기동 
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.3.23
+
+image: `int2jieun/nexus-server:0.1.27` → `int2jieun/nexus-server:0.1.29`
+digest: `sha256:53b74dffede2c13dd67fb228bc796d3c804c9332d4621ec65fb8e90ca4b725df`
+
+**운영 조치** — **이 판은 `strategy.type=Recreate` 로 교체합니다.** 옛 파드를 모두 내린 뒤 새 파드를 띄우므로 그동안 서비스가
+끊깁니다. 마이그레이션은 즉시라(아래 **마이그레이션**) 끊기는 시간은 대부분 파드 종료(종료 유예 최대 30 초, preStop 5 초 포함)와
+이미지 받기·기동입니다. 적재·seal 은 교체 전에 멈추게 합니다 — SDK 는 서버 부재를 첫 실패부터 120 초(`retry_timeout`)까지
+재시도하고(SDK `0.1.19` 이상), 그보다 길게 끊기면 호출이 실패합니다. 적재는 멱등 키 덕에 다시 돌려도 중복되지 않습니다.
+
+이유: 이 판에서 annotation 의 버전 격리가 샘플 단위에서 그룹 단위로 바뀝니다(동작 변경 1). 옛 파드(`0.1.27` 이하)와 새 파드가
+함께 도는 동안 새 파드가 그룹 단위로 한 번이라도 쓴 뒤 옛 파드가 아래를 하면 **손상이 영구히 남습니다.**
+- seal: 표식이 없는 그룹이 빠진 스냅샷이 CAS 에 박제됩니다.
+- fork: 표식 없이 버전 행만 복제해 새 버전에서 고치지 않은 그룹이 영구히 빕니다.
+- clone·`samples/import`: 빠진 annotation 이 새 샘플의 원본으로 굳습니다.
+- annotation 쓰기(PUT·PATCH·CVAT 「가져오기」): 표식이 있는 샘플을 옛 형식으로 써 표식 없는 그룹의 편집이 반영되지 않습니다.
+- 옛 파드의 읽기(explorer·`to_df` 등)에는 고치지 않은 그룹이 비어 보입니다(일시적).
+
+마이그레이션 035 가 적용된 DB 에서는 옛 이미지가 새로 기동하지 못하지만, 교체 중 이미 떠 있는 옛 파드는 막지 못합니다 — 그래서
+RollingUpdate 로는 막을 수 없습니다.
+
+**절차.** 아래 `<릴리스>` 는 `helm list -n <namespace>` 로 확인한 릴리스 이름이고, `<fullname>` 은 Deployment 이름입니다 —
+`kubectl -n <namespace> get deploy -l app.kubernetes.io/instance=<릴리스>` 로 확인합니다(릴리스 이름이 `nexus-server` 를 포함하면 그
+이름, 아니면 `<릴리스>-nexus-server`, `fullnameOverride` 를 주었으면 그 값).
+
+1. 진행 중인 작업이 없는지 DB 에서 확인합니다. 세 질의가 모두 0 행이어야 합니다.
+
+   ```sql
+   -- 진행 중인 seal (서버가 seal 진행 여부를 판정하는 식과 같습니다)
+   SELECT v.dataset_id, v.version, a.xact_start
+   FROM dataset_versions v
+   CROSS JOIN LATERAL (SELECT hashtextextended('nexus:seal:' || v.dataset_version_id::text, 0) AS k) h
+   JOIN pg_locks l ON l.locktype = 'advisory' AND l.granted AND l.objsubid = 1
+    AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
+    AND l.classid = ((h.k >> 32) & 4294967295)::oid AND l.objid = (h.k & 4294967295)::oid
+   LEFT JOIN pg_stat_activity a ON a.pid = l.pid
+   WHERE v.status = 'draft';
+   -- 준비 중인 CVAT 세션
+   SELECT session_id, dataset_id, updated_at FROM annotation_sessions WHERE status = 'creating';
+   -- 도는 clone job
+   SELECT job_id, source_dataset_id, updated_at FROM clone_jobs WHERE status IN ('running', 'cancelling');
+   ```
+
+   남은 채로 교체하면: seal 은 종료 유예 안에 못 끝나면 버전이 draft 로 남고 다시 부르면 됩니다. `creating` 세션은
+   `cvat.staleCreatingSecs`(기본 1800 초) 뒤에 `failed` 가 되고 그동안 그 샘플을 다른 세션에 넣을 수 없습니다(세션을 지우면 바로
+   풀립니다). clone job 은 마지막 진행 뒤 10~15 분 안에 `failed` 가 되고 만들던 dataset 은 롤백됩니다.
+2. 교체 직전에 `pg_dump` 스냅샷을 뜹니다(예: `pg_dump -Fc -d <DB> -f nexus-before-0.1.29.dump`). 복원은 DB 를 통째로 다시
+   만듭니다 — `pg_restore --clean --create -d postgres nexus-before-0.1.29.dump`(파드 0 개, 그 DB 에 다른 접속이 없어야 하고 DB 를 지우고
+   만들 권한이 필요합니다). **`--clean` 만으로는 안 됩니다** — 이 판이 만든 `instance_overrides`·`dataset_group_kinds` 는 스냅샷에 없어
+   지워지지 않고, 그 FK 때문에 `datasets`·`dataset_versions` 가 복원되지 않은 채 `_sqlx_migrations` 만 34 로 돌아가 이전 이미지가 섞인
+   DB 위에서 오류 없이 기동합니다(PostgreSQL 18.6, kind 에서 실측). `dropdb`·`createdb` 뒤 `pg_restore -d <DB>` 도 DB 를 다시 만드는 같은
+   방식입니다(이 경로는 실측하지 않았습니다). 복원하면 스냅샷 뒤의 모든 쓰기를 잃으므로 가능한 한 교체 바로 앞에 뜹니다. 이 판에서 그룹 단위 쓰기가 한 번이라도 일어난 뒤에는
+   이 스냅샷 복원 말고 되돌릴 방법이 없습니다(아래 **마이그레이션**). 복원은 파드를 0 개로 내린 뒤 하고, 0.3.22 리비전으로 rollback
+   한 뒤 replicas 를 올립니다(README 「되돌리기」의 1·4 단계와 같은 명령) — 0.1.29 파드가 떠 있는 채 복원하면 그 파드가 035·036 을
+   다시 적용합니다. 복원 시점 뒤에 seal 이 CAS 에 쓴 스냅샷 객체는 DB 에 행이 없는 잔여로 남습니다.
+3. Deployment 를 먼저 Recreate 로 바꿉니다. strategy 만 바뀌므로 파드는 다시 뜨지 않습니다.
+
+   ```bash
+   kubectl -n <namespace> patch deploy <fullname> --type=json \
+     -p '[{"op":"replace","path":"/spec/strategy/type","value":"Recreate"},{"op":"remove","path":"/spec/strategy/rollingUpdate"}]'
+   kubectl -n <namespace> get deploy <fullname> -o jsonpath='{.spec.strategy}'   # {"type":"Recreate"} 이어야 합니다
+   ```
+
+   `remove` 만 보내면 type 이 RollingUpdate 라 API 서버가 기본값을 다시 채워 효과가 없습니다. 이미 Recreate 이고 `rollingUpdate` 가
+   없으면 `remove` 가 `The request is invalid: the server rejected our request due to an error in our request` 로 실패하는데, 그때는
+   jsonpath 가 `{"type":"Recreate"}` 이면 상태가 이미 맞으므로 그대로 4 로 갑니다. **helm 4 에서는 3 이 필수입니다**(아래).
+4. 같은 값을 차트에도 주고 올립니다. `--install` 을 붙이지 않습니다 — 릴리스 이름이 틀리면 새 릴리스가 생겨 옛 파드와 함께
+   돕니다. 처음 설치 때 values 파일 대신 `--set` 으로 준 값이 있으면 `helm get values <릴리스> -n <namespace> -o yaml > current.yaml` 로
+   받아 `-f current.yaml` 로 넘깁니다(그 안의 `image.tag` 는 아래처럼 확인합니다).
+
+   ```bash
+   helm repo update
+   helm upgrade <릴리스> int2nexus/nexus-server -n <namespace> --version 0.3.23 \
+     -f <기존 values 파일> --set strategy.type=Recreate
+   ```
+
+   - **`--reuse-values` 를 쓰지 않습니다.** 직전 릴리스의 values(옛 차트 기본값 `image.tag: 0.1.27` 포함)가 렌더되어 이미지가 0.1.27 로
+     남고, strategy 만 바뀌어 파드는 다시 뜨지도 않습니다. 그런데도 `helm history` 에는 그 리비전이 `nexus-server-0.3.23` /
+     `Upgrade complete` 로 보입니다(helm 3.22.1·4.1.3, kind 의 Kubernetes 1.37 에서 실측, helm 3·4 같음). `--reset-then-reuse-values`(helm 3.14 이상)는 새
+     차트 기본값(0.1.29)으로 정상 교체됩니다. `--reuse-values` 를 써야 한다면 `--set image.tag=0.1.29` 를 함께 줍니다. 기존 values 파일이
+     `image.tag`·`image.digest` 를 고정해 두었다면 `0.1.29`(digest 로 핀하려면 `--set image.digest=<위 digest>`)로 바꿉니다.
+   - 3 은 건너뛰지 않습니다. helm 3 은 차트가 함께 렌더하는 `rollingUpdate: null` 로 3 없이도 Recreate 로 바뀌지만, **helm 4(server-side
+     apply)는 `spec.strategy.rollingUpdate: Forbidden` 으로 거부합니다** — 옛 파드는 그대로이고 `helm history` 에 failed 리비전이
+     남습니다(helm 3.22.1·4.1.3, kind 의 Kubernetes 1.37 에서 실측). 거부되면 3 을 한 뒤 4 를 다시 실행합니다.
+5. 교체 뒤 확인합니다.
+   - `kubectl -n <namespace> get deploy <fullname> -o jsonpath='{.spec.strategy.type} {.spec.template.spec.containers[0].image}'` 가
+     `Recreate int2jieun/nexus-server:0.1.29`(digest 로 핀했으면 그 digest).
+   - 파드 로그에 `마이그레이션 완료 applied=2`(여러 파드가 함께 뜨면 기다린 파드도 같은 값을 찍습니다. `applied=0` 만 보이면 이미
+     적용된 DB 입니다).
+   - `SELECT max(version) FROM _sqlx_migrations;` 가 `36`.
+   - 인증된 요청의 응답 헤더 `X-Nexus-Version: 0.1.29`(예: `curl -s -D - -o /dev/null -H 'Authorization: Bearer <토큰>'
+     <nexus 주소>/datasets`).
+   - 파드가 재시작을 반복하면 로그의 마지막 오류를 봅니다 — `lock timeout` 이면 `pg_stat_activity` 에서 그 표를 쥔 nexus 밖의 긴
+     트랜잭션을 찾습니다.
+
+**이 판 뒤의 교체.** 다음 업그레이드가 Recreate 를 요구하지 않으면 RollingUpdate 로 되돌립니다(helm 3.22.1·4.1.3, kind 의 Kubernetes 1.37 에서 실측).
+- helm 3: values 에서 `strategy.type: Recreate` 를 지우고 올리면 RollingUpdate(25%)로 돌아갑니다. `--reuse-values` 로 올린다면
+  `--set strategy.type=RollingUpdate` 를 줍니다 — `--set strategy=null` 은 첫 실행에서 Recreate 가 그대로 렌더되고 같은 명령을 한 번 더
+  실행해야 돌아갑니다(`--reset-then-reuse-values --set strategy=null` 은 한 번에 됩니다).
+- **helm 4 는 3 단계의 `kubectl patch` 가 `strategy.type` 의 필드 소유자로 남아**, values 에서 지우기만 하면(`--force-conflicts` 를
+  붙여도) Recreate 가 남고, `--set strategy.type=RollingUpdate` 는 `conflict with "kubectl-patch" using apps/v1: .spec.strategy.type` 으로
+  거부됩니다(failed 리비전이 남습니다). `--force-conflicts --set strategy.type=RollingUpdate` 로 올리거나, 올리기 전에
+  `kubectl -n <namespace> patch deploy <fullname> --type=merge -p '{"spec":{"strategy":{"type":"RollingUpdate"}}}'` 로 되돌립니다
+  (strategy 만 바뀌어 파드는 다시 뜨지 않습니다). 둘 다 그 뒤 strategy 없는 업그레이드에도 RollingUpdate 가 유지됩니다.
+
+돌아갔는지는 `kubectl -n <namespace> get deploy <fullname> -o jsonpath='{.spec.strategy.type}'` 로
+봅니다 — `Recreate` 가 남아 있으면 교체 때 서비스가 끊길 뿐 손상은 없습니다.
+
+**동작 변경** — 열일곱입니다. 1~5 는 annotation 의 버전 격리, 6~10 은 카탈로그 API, 11~16 은 CVAT 편집 세션, 17 은 seal 의 결함 수정입니다.
+
+1. **annotation 의 버전 격리(CoW)가 그룹 단위입니다.** 이전 판은 한 버전에서 샘플의 그룹 하나만 고쳐도 그 샘플의 모든 그룹을 그
+   버전 전용으로 옮겨 적었습니다. 이 판은 새 표 `instance_overrides`(아래 **마이그레이션**)에 (샘플, 버전, 그룹) 표식을 두고, 표식이
+   있는 그룹만 그 버전 전용 행을 읽고 나머지 그룹은 여러 버전이 함께 쓰는 공유 행을 읽습니다. PUT·PATCH·CVAT 「가져오기」가 같은
+   규칙을 지납니다.
+   - **바뀐 그룹만 씁니다.** 쓰기 결과를 그룹마다 지금 값과 비교해(인스턴스의 `source_id`·`label`·`track_id`·`confidence`·
+     구성요소, 순서 포함. 인스턴스 id 는 보지 않습니다) 다른 그룹만 씁니다. 바뀐 그룹이 없으면 인스턴스를 쓰지 않습니다.
+   - 이 판 이전에 버전 전용으로 옮겨 적힌 샘플(옛 형식)은 그대로 읽히고, 그 샘플을 이 판에서 처음 쓸 때 모든 그룹에 표식을 넣어
+     그룹 단위로 바꿉니다. 이미 쌓인 버전 전용 사본의 정리는 이 판에 없습니다.
+   - fork 는 버전 행과 표식을 함께 복제하고, 버전 삭제·clone 롤백·샘플 삭제는 표식을 함께 지웁니다. seal 스냅샷·manifest 형식과
+     응답 모양은 바뀌지 않습니다.
+   - 새 지표 `nexus_annotation_instance_writes_total{mode}`(`direct`·`group`·`legacy_converted`·`unchanged`)가 그룹을 보낸 쓰기를
+     커밋 뒤 샘플마다 한 번 셉니다(meta 만 보낸 쓰기는 세지 않습니다).
+2. **샘플을 읽을 수 있는 버전이 그 draft 하나뿐이고 그 draft 에 그 샘플의 버전 전용 행·표식이 아직 없으면 공유 행을 바로
+   고칩니다(직접 모드).** 「읽을 수 있는 버전」은 그 샘플이 링크된 버전, 그 샘플의 버전 전용 행이 남은 버전, 그 샘플의 표식이 남은
+   버전을 합친 것입니다 — 링크를 끊었어도(unlink) 그 샘플을 고친 적이 있는 버전은 셉니다. 버전 전용 행을 만들지 않으므로 표식도
+   남지 않습니다. 버전 전용 행만 있는 옛 형식 샘플은 읽을 수 있는 버전이 하나여도 그룹 단위로 바꿔 씁니다. 달라지는 것: 이전
+   판에서는 그 샘플을 fork 없이 다른 버전에 링크하면 그 버전이 적재 때의 annotation 을 보았는데, 직접 모드로 고친 샘플은 고친 값을
+   봅니다. **적재 때의 annotation 으로 돌아가는
+   경로가 없어집니다.** **직접 모드에서 그룹을 비우면 공유 행이 지워지며 되돌릴 수 없습니다.**
+3. **「비우기」 409 가 사라집니다.** 보낸 그룹이 모두 비고 그 샘플에 공유 원본이 있을 때 PUT·PATCH 가 내던 `409` 가 `200` 이 됩니다
+   (그 버전에서 그 그룹이 빈 상태로 남습니다). CVAT 「가져오기」에서 한 프레임의 도형을 모두 지운 샘플이 반영되지 않고 남기던 경고
+   줄도 없어지고 그 샘플이 반영됩니다. `meta` 밖의 최상위 키는 값이
+   배열이 아니어도 그룹 키로 보므로, 배열이 아닌 키만 보낸 PUT(예: `{"split": "train"}`)은 그 키가 버려진 채(응답의
+   `skipped_reasons.group_not_an_array` 로만 드러나고 SDK 는 경고하지 않습니다) 그 버전의 인스턴스를 모두 비웁니다. **직접 모드(2)면 적재 때의 annotation 까지 되돌릴 수 없게 지워집니다** — 이전 판에서 공유 원본이 있으면 `409` 로 막히던
+   이 요청이 이제 통과합니다.
+4. **바뀌지 않은 그룹의 인스턴스 id(`instance_id`)를 다시 발급하지 않습니다.** PUT·PATCH·CVAT 「가져오기」가 바꾸지 않은 그룹의
+   행을 다시 쓰지 않으므로, `GET .../instances` 를 keyset 으로 읽는 호출자가 같은 인스턴스를 새 id 로 다시 받던 동작이 그 그룹에서는
+   없어집니다. 같은 내용을 다시 보내도 id 가 바뀌지 않습니다. 바뀐 그룹은 그 그룹의 인스턴스가 모두 새 id 를 받습니다.
+5. **`GET /instances`(버전을 주지 않은 조회)는 저장된 행 그대로입니다.** 직접 모드가 고친 공유 행이 보이고, 그룹을 비운 표식(빈
+   그룹)은 나타나지 않습니다. 행의 `dataset_version_id` 필드로는 버전에서 보이는
+   결과를 재구성할 수 없습니다. 버전에서 보이는 결과는 `?dataset_version_id=` 로 조회합니다.
+6. **draft 대량 읽기를 끌 수 있습니다.** 새 설정 `explorer.draft_bulk_read_enabled`(values `explorer.draftBulkReadEnabled`, 기본
+   `true` = 이전 판과 같음)를 `false` 로 두면, 요청 헤더 `X-Nexus-Bulk-Read: 1` 이 붙은 draft 버전의 explorer 읽기
+   (`POST .../samples/explorer`)를 `403` `code: "draft_bulk_read_disabled"`(「운영자가 draft 대량 읽기를 껐습니다 — sealed 버전을
+   쓰십시오」)로 거절합니다. SDK `0.1.24` 가 annotation 을 싣고 페이지로 읽는 호출(draft `to_df`·`fingerprint` 의 explorer 읽기·
+   `iter_samples`·`samples()`(기본 `include_annotations=True`)·`shuffle` 의 본 조회)에 이 헤더를 붙입니다.
+   - 서버 전체에 하나이고(dataset·사용자별 구분 없음) 바꾸려면 파드를 다시 띄워야 합니다. 적용 값은
+     `GET /api/v1/admin/config-effective` 의 `explorer.draft_bulk_read_enabled` 입니다.
+   - 헤더가 붙은 draft explorer 읽기만 막습니다. 헤더를 붙이지 않는 웹 화면·옛 SDK·직접 호출, SDK 가 헤더를 붙이지 않는
+     id·projection 읽기, sealed 버전 읽기, 다른 경로인 `Subset` 읽기·개수(`.../explorer/count`)·facet 은 막히지 않습니다. 보안 경계가
+     아니라 협조하는 클라이언트용 운영 장치입니다.
+   - 켜 둔 채로도 헤더가 붙은 draft 읽기는 요청 로그에 `bulk_read=draft`·`dataset_id`·`version`·`rows` 로 남습니다(거절은 `rows=0`).
+   - **헤더가 붙은 요청이 없는 버전을 가리키면 `404` 입니다**(이전 판은 annotation 필터가 없으면 `200 []`, 있으면 `404`). 헤더를
+     위해 버전 상태를 읽기 때문입니다. 헤더 없는 요청의 응답은 이전 판과 같습니다.
+7. **그룹 종류를 dataset 단위로 저장합니다.** 새 경로 `GET|PATCH /datasets/{dataset_id}/group-kinds` 가 annotation 그룹 키의 종류
+   (`group`·`container`)를 새 표 `dataset_group_kinds`(아래 **마이그레이션**)에 둡니다.
+   - `GET` 은 로그인한 사용자 누구나, 응답 `{"kinds": {"<그룹 키>": "group"|"container"}}`(선언이 없으면 빈 객체)입니다. 없는
+     dataset 은 `404` 입니다.
+   - `PATCH` 는 `editor` 이상(`viewer` 403, 로봇 가능)이고 본문 `{"kinds": {"<그룹 키>": "group"|"container"|null}}` — 문자열은
+     넣거나 덮고 `null` 은 지우며 적지 않은 키는 그대로입니다. 응답은 쓴 뒤의 전체 `kinds` 입니다. 그룹 키는 128 자까지, 한 요청
+     256 키까지이고 빈 `kinds`·빈 키·앞뒤 공백·`meta`·샘플 코어 키는 code 없는 `400`, 없는 dataset 은 `404` 입니다.
+   - sealed 버전과 무관하게 쓸 수 있고 seal 스냅샷·GT 형식에는 들어가지 않습니다. `clone-jobs` 가 선언을 새 dataset 에 복사합니다.
+     선언이 없는 그룹의 모양을 추론하지 않습니다.
+   - SDK `0.1.24` 는 이 경로를 쓰지 않습니다(그룹 종류 선언은 SDK 핸들 안에만 둡니다).
+8. **manifest 응답에 메인 manifest 위치가 실립니다.** `GET .../manifest` 응답에 `main_manifest: {"cas_url", "hash_hex"}` 가
+   더해집니다. seal 이 CAS 에 쓴 버전 전체 JSON(샘플별 `tags`·`split` 이 든 것)의 위치이고, sealed 이며 `manifest_hash` 가 있을 때만
+   있습니다(draft 는 키가 없습니다). 서버 `0.1.23` 이하가 seal 한 버전은 이름 기반 키를 가리키는데, 그 키는 이름 변경·재생성으로
+   덮였을 수 있으므로 받은 본문의 BLAKE3 를 `hash_hex`(= `manifest_hash`)와 대조하고 다르면 쓰지 않습니다. 읽으려면 사용자 CAS 키에
+   manifest 버킷(`<기본 버킷>-manifests`)의 `manifests/` 접두사 읽기 권한이 있어야 합니다(`to_df` 가 읽는 `annotations/` 와 접두사가
+   다릅니다).
+9. **인증된 응답에 서버 판 헤더 `X-Nexus-Version` 이 붙습니다**(값 예: `0.1.29`). 사람 JWT·로봇 토큰·OIDC 로 인증이 성공한 요청은
+   응답 코드와 무관하게(인증 뒤의 403·404·409 포함) 붙습니다. `401`, 인증을 요구하지 않는 경로(`auth/register`·`auth/login`·`auth/password-reset/inspect`·
+   `auth/password-reset/complete`·`_internal/live`·`_internal/health`·`api-docs/openapi.json`·Swagger UI 셸), `_internal/metrics`,
+   매칭되지 않은 `404` 에는 붙지 않습니다. 인증된 응답에 이 헤더가 없으면 이 헤더를 모르는 옛 서버의 응답입니다.
+10. **적재한 샘플에 에셋을 붙입니다.** 새 경로 `PATCH /datasets/{dataset_id}/versions/{version}/samples/assets`, 본문
+    `{"items": [{"sample_id", "assets": {"<role>": {"bucket", "key", "size", "content_type", "hash_hex"}}}], "overwrite": false}`.
+    SDK 는 `ds.set_assets(role, values, overwrite=False)`(SDK `0.1.24`).
+    - 에셋 값의 규칙은 적재(`/ingest`)의 `assets` 와 같습니다(bucket/key 문법·예약 접두사 검사, `ingest.verify_assets` 면 CAS HEAD).
+    - 전부 또는 없음입니다. 하나라도 거절되면 아무것도 쓰지 않고 `400` `code: "asset_write_rejected"`, `rejected: [{sample_id, role,
+      reason}]` 입니다. 사유는 `not_found`(그 버전에 링크 안 됨·삭제됨·없는 id)·`role_exists`(같은 role 이 다른 값으로 있고
+      `overwrite` 가 false)·`sealed_role`(sealed 버전에도 든 샘플의 기존 role — `overwrite` 여도 바꾸지 않습니다. 새 role 은 됩니다)
+      셋입니다.
+    - 응답 `{"updated", "unchanged"}`. 같은 bucket·key 이고 해시가 둘 다 있으면 해시까지 같을 때 `unchanged` 로 세므로 같은 요청을
+      다시 보내도 거절되지 않습니다. 같은 key 의 내용을 CAS 에서 바꾼 뒤 새 해시로 붙이면 다른 값입니다.
+    - 한 요청 10,000 건, 빈 `items`·중복 `sample_id`·빈 `assets`·빈 role 이나 앞뒤 공백·role `"image"` 는 `400`, 본문·항목의 모르는 키는 `422`(에셋 값 안의
+      모르는 키는 적재처럼 무시),
+      sealed 버전 `409`, 없는 버전 `404`, `viewer` `403`(로봇은 됩니다).
+    - 덮어쓴 옛 CAS 객체는 지우지 않고 어디에도 남기지 않습니다(정리가 필요하면 덮어쓰기 전에 좌표를 따로 적어 둡니다). 에셋은 샘플 단위(버전 격리 없음)라 draft 에서 붙인 에셋은 그 샘플이 든
+      다른 버전의 조회에도 보입니다(sealed 버전의 seal 스냅샷·manifest 는 그대로). 버전마다 다른 에셋이 필요하면 clone 한 뒤
+      붙입니다.
+11. **세션 계획 API.** 새 경로 `POST /datasets/{dataset_id}/versions/{version}/annotation-sessions/plan` 이 explorer 필터에 걸린
+    샘플을 세션으로 보낼 순서로 정렬하고 세션 묶음으로 나눠 돌려줍니다. 세션을 만들지 않고 아무것도 쓰거나 잠그지 않으며, `viewer`
+    도 부를 수 있습니다. 응답은 정렬된 `items` 와 묶음 `chunks: [{start, count, sequences, first, last, split_sequences}]`, 뺀 샘플
+    `excluded_by_open_sessions`(세션별)·`unsendable: [{sample_id, reason}]` 이고, 묶음마다 `items[start..start+count]` 의 `sample_id`
+    를 그 순서대로 세션 생성에 보냅니다.
+    - 본문 `{"filter": <explorer 필터>, "order_by": ["file_name"], "chunk_size": 500}`. `order_by` 는 시퀀스 **안**의 순서로
+      `file_name`(이미지 key 의 마지막 조각, 숫자를 아는 정렬)·`meta.<키>` 를 1~3 개, 생략하면 `["file_name"]` 입니다. 시퀀스
+      (`meta.sequence_id`)가 늘 첫 정렬 키이고 마지막 동순위는 `sample_id` 라 같은 입력이면 순서가 같습니다. `chunk_size` 는 1 이상
+      `cvat.maxSessionSamples` 이하, 생략하면 그 값입니다.
+    - 열린 세션(`creating`·`open`)이 잡은 샘플과 세션 준비가 실패시킬 샘플(`no_image`·`no_dimensions`·`url_too_long`·
+      `invalid_location`·같은 시퀀스 안 파일 이름 겹침 `duplicate_file_name`)을 빼고 따로 돌려줍니다. 판정은 세션 준비와 같은
+      규칙입니다.
+    - 묶음은 시퀀스를 가르지 않고 묶음 안 파일 이름이 유일합니다. 시퀀스 하나가 혼자 `chunk_size` 를 넘으면 그 시퀀스만 잘라
+      `split_sequences` 에 싣습니다(그 경계에서 트랙이 끊깁니다).
+    - 결과는 스냅샷입니다. 세션 생성이 `409`·`400` 을 내면 남은 묶음을 보내지 말고 계획을 다시 부릅니다. 계획은 라벨을 보지
+      않으므로 묶음마다 같은 `extra_labels`·`groups` 를 보냅니다.
+    - 필터에 걸린 수가 10,000 을 넘으면 `400` `code: "plan_too_large"`(`matched` 필드), 모르는 정렬 키·범위 밖 `chunk_size`·`offset`/
+      `fields` 는 code 없는 `400`, 타입이 틀린 값(`chunk_size: -1`, 문자열 `order_by` 등)은 `422`, sealed 버전 `409`, 없는 dataset·버전
+      `404`, CVAT 미구성 `503` 입니다.
+12. **CVAT `group` 묶기와 `instance_label`.** 「가져오기」가 신원이 없는 새 도형을 CVAT `group` 번호(0 이 아닌 값)가 같으면
+    인스턴스 하나로 묶어 들입니다(이전 판은 도형마다 인스턴스). 도형마다 구성요소 하나가 되고 새 id 는 도형마다 CVAT 에 되씁니다.
+    - **이 판 이전에 만든 세션의 「가져오기」에도 적용됩니다.** 열린 세션에서 아직 들이지 않은 같은 `group` 의 새 도형은 교체 뒤 첫
+      「가져오기」에서 인스턴스 하나가 됩니다. 이미 들여 id 가 되쓰인 도형은 다시 가져와도 묶이지 않고, 신원 있는 도형과 같은 번호의
+      새 도형도 기존 인스턴스에 합류하지 않습니다. 인스턴스 라벨이 갈리면 그 번호의 도형을 모두 따로 들이고, 같은 구성요소 키가 둘
+      이상이면 그 도형만 따로 들이며, 같은 번호가 다른 그룹 키에 걸치면 그룹 키마다 따로 묶습니다. 셋 다 `warnings` 에 한 줄
+      남습니다.
+    - 세션 생성의 `extra_labels` skeleton 항목이 `instance_label`(그 점이 들어갈 인스턴스의 `label`, 생략하면 `label`)을 받습니다.
+      도형 항목에 주거나 빈 값·앞뒤 공백이면 `400` 입니다. 한 인스턴스 라벨에 점 구성요소가 둘이면 `instance_label` 을 같게 주고
+      `label`·`component_key` 를 달리한 항목을 각각 둡니다(같은 (group, label) 의 skeleton 항목 둘은 `400`). 라벨 투표는 인스턴스 라벨로 합니다.
+    - skeleton 라벨의 단위가 (group, 인스턴스 라벨, 구성요소 키)입니다. **같은 단위에서 `extra_labels` 가 관측을 이깁니다**(이전 판은
+      관측). 그래서 같은 요청으로 만든 세션의 CVAT 라벨 이름·점 이름이 바뀔 수 있습니다. `instance_label` 이 없는 extra 가 같은
+      (group, label) 의 다른 키 관측과 겹치면 이전처럼 관측이 이기고 이전 경고가 남습니다.
+    - 같은 (group, label) 의 skeleton `extra_labels` 둘은 `400` 입니다(이전 판은 첫 번째만 쓰고 경고).
+    - 한 (group, 인스턴스 라벨)에 관측 구성요소 키가 둘 이상이면(또는 `label` 이 인스턴스 라벨과 같은 extra skeleton 이 `/kp` 를
+      쓰면) 관측 skeleton 의 CVAT 라벨 이름이 키마다 `{group}/{label}/{키}` 가 됩니다(이전 판은 `/kp` 하나). 교체 뒤 만드는
+      세션부터이고 열린 세션은 영향이 없습니다.
+    - 이름(`label`)이 같은데 `instance_label` 이 다른 extra 와 관측 skeleton 이 같은 `{group}/{label}/kp` 가 되면 세션이 `failed` 이고
+      사유에 겹친 이름이 남습니다. 이미 들인 인스턴스와 같은 이름으로 `instance_label` 을 달리하려면 그 인스턴스를 먼저 지웁니다.
+    - 묶인 인스턴스를 CVAT 에서 재라벨하려면 대상 라벨의 skeleton 도 `extra_labels` 로 선언해야 점이 따라갑니다. CVAT 에서
+      skeleton 의 라벨을 같은 인스턴스 라벨의 다른 구성요소 키 라벨로 바꾸면 그 도형의 기하는 반영하지 않고 라벨을 되돌립니다.
+    - 되쓰기 실패 경고 문구가 「신규 인스턴스가 중복될 수 있습니다」에서 「id 가 바뀔 수 있습니다」로 바뀝니다.
+    - 실측(CVAT 2.78): 같은 CVAT `group` 번호를 붙인 신원 빈 상자·다각형·skeleton 둘(인스턴스 라벨이 같고 구성요소 키가 다른 두 skeleton 라벨)을 「가져오기」하면 `created_instances` 1 로 인스턴스 하나(구성요소 넷 — `bounding_box`·`polygon`·두 점 키)가 되고 네 도형에 같은 id 가 되쓰였으며, 무편집으로 다시 「가져오기」하면 `updated_samples` 0 이었습니다. 그 인스턴스로 새로 만든 세션에서 두 점 구성요소는 각자의 skeleton 라벨로 나갔고 무편집 「가져오기」 쓰기도 0 이었습니다.
+13. **들이지 않는 도형 종류를 경고합니다.** 「가져오기」가 새로 그린 도형 중 들이지 않는 종류(ellipse·cuboid·skeleton 이 아닌
+    points 등)를 이전 판은 경고 없이 버렸습니다. 이제 종류마다 「CVAT 도형 N개를 들이지 않았다(unsupported_type: <종류>) — 들이는
+    종류는 … 이다」 한 줄, 형식 오류 도형은 도형마다 한 줄과 끝에 「CVAT 도형 N개가 형식 오류라 들이지 않았다」 한 줄을 `warnings` 에 남깁니다. 들이는
+    종류는 rectangle·polygon·polyline·skeleton·mask 입니다. 묶음 판정(12) 전에 세고 빼므로 같은 번호의 다른 도형을 쪼개지 않습니다.
+14. **구성요소 `mask`.** GT 스키마에 구성요소 타입 `mask` 가 선언됩니다. `rle: {"size":
+    [높이, 너비], "counts": "<문자열>"}` 의 COCO 압축 RLE(열 우선, pycocotools 와 같은 규칙)이고 GT 에서 유일하게 픽셀 단위입니다.
+    SDK 는 `nx.Mask(rle=, label=, confidence=)`(SDK `0.1.24`).
+    - 세션 생성이 `mask` 를 CVAT mask 도형으로 보냅니다. 형식 오류·`size` 가 샘플의 `meta.height/width` 와 다름·전경 없음·넓이
+      5,000 만 화소 초과는 보내지 않고 `warnings` 에 남기며 원본을 보존합니다.
+    - 「가져오기」는 신원 있는 mask 도형을 좌표가 아니라 픽셀로 비교해 반영하고(같은 픽셀이면 쓰기 없음, CVAT 이 경계를 다시 잘라
+      돌려줘도 같음 — 이 괄호의 뒤 절은 단위 시험으로만 확인했습니다), 새로 그린 mask 도형을 새 인스턴스의 `mask` 구성요소로 들입니다. 같은 CVAT `group` 의 상자와 마스크는
+      인스턴스 하나의 두 구성요소입니다. 경계가 이미지 밖이면 이미지 범위로 자릅니다. 마스크 트랙은 이전처럼 들이지 않고 종류별
+      개수를 경고합니다.
+    - 세션 생성의 `extra_labels.components` 에 `mask` 를 주면 도형 라벨을 만듭니다(그 라벨로 상자·다각형·선·마스크를 그릴 수
+      있습니다).
+    - 인스턴스 필터의 구성요소 속성은 최상위 속성만 보므로 `rle` 는 다른 기하 필드와 같이 `400` 입니다.
+    - 실측(CVAT 2.78): pycocotools 로 만든 1920×1080 마스크 셋(사람 실루엣, 구멍 있는 두 조각 + 상자, 첫 픽셀이 전경인 마스크)으로 만든 세션에서 CVAT 가 돌려준 mask 도형은 보낸 points 와 같았고, 무편집 「가져오기」는 두 번 모두 쓰기 0(`updated_samples`·`updated_components` 0)이었으며, 받은 `counts` 는 원본 문자열과 같아 `pycocotools.mask.decode` 로 푼 결과가 원본과 픽셀까지 같았습니다. 화면 저장과 같은 경로(job annotations)로 새로 만든 mask 도형은 `created_instances` 1 의 새 인스턴스로 들어오고 `counts` 가 pycocotools `encode` 결과와 같았으며, 다시 「가져오기」하면 `updated_samples` 0 이었습니다.
+    - 실측: 1920×1080 사람 실루엣 마스크 하나(전경 149,447 화소)의 구성요소 JSON 은 2,282 바이트(인스턴스 전체 2,350 바이트)이고 COCO 런은 1,437 개였습니다. 같은 마스크를 세션에 보낼 때는 비트맵 2,073,600 바이트(1080 × 1920)를 잠깐 잡고 CVAT points 3,449 개 × 8 B(약 27 KB)를 쥡니다(REST 로 오가는 points JSON 은 18,414 바이트).
+15. **도형 종류가 원본 구성요소 타입과 다르면 반영하지 않습니다.** 신원(`nexus_instance_id`)이 남은 도형의 종류가 원본 구성요소
+    타입과 다르면(주석 파일을 고쳐 올린 경우 등) 기하를 반영하지 않고 원본을 유지하며 `warnings` 에 한 줄 남깁니다. **편집형 다섯 종류(`bounding_box`·`polygon`·
+    `polyline`·`keypoint_2d`·`mask`) 모두의 동작 변경입니다** — 이전 판은 원본 구성요소를 새 종류로 덮어썼습니다. 라벨 변경은 이
+    경우에도 반영됩니다. 종류를 바꾸려면 옛 도형을 지우고 새로 그립니다.
+    - CVAT 2.78 화면에는 기존 다각형을 마스크로 바꾸는 기능이 없고(마스크 도구로 새로 그린 뒤 다각형을 지우는 것뿐이며 새로 그린 도형은 신원 속성이 비어 있습니다) 이 규칙에 걸리지 않습니다: 옛 다각형은 지워진 것으로, 새 마스크는 새 인스턴스로 들어오고 「내보낸 컴포넌트가 하나도 돌아오지 않았는데 같은 그룹에 신규 shape가 있다」 경고가 남습니다. 편집형 구성요소가 그 다각형뿐이던 인스턴스는 `confidence`·`track_id` 와 함께 사라지고, 비편집 구성요소가 있던 인스턴스는 다각형만 빠진 채 남습니다.
+16. **결함 수정: 다른 그룹의 라벨로 바꾼 도형이 그 그룹의 같은 id 인스턴스에 합쳐지지 않습니다.** 이전 판은 CVAT 에서 도형의
+    라벨을 다른 그룹의 라벨로 바꾸면 옮겨 간 그룹의 같은 id 인스턴스에 합치고 원래 인스턴스를 지웠습니다(경고가 없거나 「shape 가
+    둘 이상」 한 줄). 이제 같은 id 유무와 관계없이 반영하지 않고 원래 인스턴스를 남기며 `warnings` 에 「… 로 바뀌어 인스턴스 '…' 에
+    반영하지 않았다 — 다른 그룹으로 옮기려면 …」 한 줄을 남깁니다. 그 도형 때문에 `deleted_components`·`removed_instances`·
+    `updated_components` 가 늘지 않습니다. 다른 그룹으로 옮기려면 지우고 새로 그립니다. 이 판 이전에 만든 세션은 도형의 원래 그룹이
+    기록돼 있지 않아 드물게 옮긴 도형이 반영될 수 있습니다. 이 판에서 만든 세션에는 이 틈이 없습니다. CVAT 트랙의 라벨을 다른 그룹으로 바꾼 경우는 이전 판과
+    같습니다(옛 그룹의 인스턴스를 지우고 새 그룹에 같은 `id`·`track_id` 로 만듭니다).
+
+17. **결함 수정: seal 이 이미 CAS 에 있는 내용을 올릴 때 간헐적으로 실패하던 것.** seal 은 스냅샷 파일(샤드·manifest)을 내용
+    해시(`x-cas-hash`)와 함께 올리는데, 같은 내용이 cas 에 이미 있으면 cas 가 본문을 다 받지 않고 먼저 응답합니다. 이전 판은 이 응답을
+    간헐적으로 전송 오류(`error sending request`)로 받아, 객체는 저장됐는데도 seal 이 실패하고 버전이 draft 로 남았습니다(다시 seal
+    하면 이미 올린 파일을 건너뛰어 대개 통과했습니다). 샤드 내용이 다른 버전과 같은 경우 — 예: fork 한 뒤 annotation 을 거의 바꾸지
+    않고 seal — 에 걸립니다. 이제 해시를 보낸 업로드가 전송 오류로 끝나면 같은 키를 확인해 해시가 같을 때만 성공으로 보고, 다르면
+    이전처럼 실패합니다. 실제 cas 에서 같은 내용을 20 번 다시 올리는 시험이 수정 전 19 번 실패, 수정 후 20 번 모두 성공이었습니다.
+    서버 이미지 `0.1.23`~`0.1.27` 에 있던 결함입니다.
+
+**마이그레이션** — 둘입니다(035·036). **이 버전은 마이그레이션 035·036 을 추가하며, 수동 절차 없이는 이미지 `0.1.27` 이하로
+롤백할 수 없습니다**(이전 이미지는 기동을 거부합니다). 롤백 가능한 하한은 이 버전의 이미지(`0.1.29`)입니다. 수동 절차(두 표 DROP 과
+`_sqlx_migrations` 의 두 행 삭제)는 `SELECT NOT EXISTS (SELECT 1 FROM instance_overrides)` 가 참일 때만 쓸 수 있고 README
+「되돌리기」에 있습니다. **참이 아니면 되돌리지 않습니다** — 표식이 사라지면 그룹 단위로 고친 샘플을 이전 이미지가 옛 형식으로
+읽어 고치지 않은 그룹이 빕니다. 그때는 올리기 전의 DB 스냅샷(`pg_dump`) 복원이 유일한 수단입니다.
+
+- `035_instance_overrides` — **영향받는 테이블**: 신규 `instance_overrides`(샘플·버전·그룹 키 표식, 기본키와 인덱스 하나),
+  FK 가 가리키는 `dataset_versions`. `samples` 에는 FK 를 두지 않습니다.
+- `036_dataset_group_kinds` — **영향받는 테이블**: 신규 `dataset_group_kinds`(dataset·그룹 키·종류), FK 가 가리키는 `datasets`.
+- **예상 소요시간**: 둘 다 새 표만 만들고 기존 행을 훑거나 채우지 않아 행 수와 무관하게 즉시입니다. FK 때문에 `dataset_versions`·
+  `datasets` 에 SHARE ROW EXCLUSIVE 락을 잠깐 잡습니다. seal 이 쥐는 락과는 충돌하지 않지만 그 표들의 쓰기와는 충돌하며,
+  `lock_timeout` 3 초 안에 잡지 못하면 실패하고 파드가 재기동해 다시 시도합니다. Recreate 로 교체하면 옛 파드가 모두 내려간 뒤에
+  돌므로 이 경합이 거의 없습니다. 남으면 nexus 밖의 긴 트랜잭션입니다(`pg_stat_activity`).
+
+**설정 키** — 둘입니다.
+- 서버: `explorer.draft_bulk_read_enabled`(env `NEXUS__EXPLORER__DRAFT_BULK_READ_ENABLED`, 기본 `true`). values
+  `explorer.draftBulkReadEnabled`(기본 `true`)가 `false` 일 때만 env 를 주입합니다. 동작은 동작 변경 6.
+- 차트: `strategy`(기본 `{}`, 렌더하지 않음 = 쿠버네티스 기본 RollingUpdate). Deployment `spec.strategy` 로 그대로 렌더하고, type 이
+  Recreate 이며 `rollingUpdate` 를 적지 않으면 `rollingUpdate: null` 을 더합니다.
+
+**호환성**
+- **이 판은 Recreate 로 교체합니다**(맨 위 **운영 조치**).
+- SDK 는 올리지 않아도 됩니다. `nx.Mask`·`ds.set_assets`·draft `to_df`·`fingerprint`·draft 대량 읽기 헤더는 SDK `0.1.24` 이상입니다.
+  옛 SDK 는 헤더를 붙이지 않으므로 `explorer.draftBulkReadEnabled=false` 에도 막히지 않습니다. `ses.pull()`·`ds.samples()` 는 서버
+  값을 그대로 돌려주므로 어느 SDK 판에서도 `mask` 구성요소가 보입니다.
+- 이 판의 변경은 아니지만 0.3.19 의 8 번에 빠진 설명입니다. `GET .../schema` 에서 한 번 `float` 로 관측된 meta 숫자 필드는 이후 값이
+  정수만 남아도 `float` 로 남습니다. 관측 기록은 dataset 단위로 쌓이기만 하고 샘플·버전을 지워도 지워지지 않으며, dataset 을 지울
+  때만 함께 사라집니다(label·component 관측과 같은 방식).
+- 이미 annotation 에 `"type": "mask"` 를 넣어 둔 dataset 은 이 판부터 그 구성요소가 세션에 나가고, CVAT 에서 지우면 지워집니다.
+  위 형식이 아니면 보내지 않고 경고하며 보존합니다.
+- 직접 모드로 고친 샘플은 적재 때의 annotation 을 잃습니다(동작 변경 2). 적재 때의 annotation 을 다른 버전에서 다시 써야 하면
+  고치기 전에 fork 하거나 clone 합니다(fork 한 뒤에는 그 샘플을 읽는 버전이 둘이라 그룹 단위로 씁니다).
+- 마스크가 많은 dataset 은 `ds.samples()` 한 페이지(최대 1,000 장)에 annotation 이 인라인이라 응답이 커지고, seal 은 샤드 하나
+  (`NEXUS__INGEST__ANNOTATION_SHARD_SIZE`, 기본 10,000 샘플)의 annotation 을 메모리에서 만들므로 이 값을 낮춥니다(values 키가 없어 `extraEnv` 로 줍니다, values 의
+  `resources` 주석). 서버에 마스크 크기 상한은 넓이 5,000 만 화소 하나입니다. 세션 생성은 마스크마다 이미지 넓이(높이 × 너비)
+  바이트의 비트맵을 잠깐 잡고(1080p 약 2 MB, 마스크를 하나씩 처리), 보낼 때까지 런 수 × 8 B 를 쥡니다(잡음이 많은 마스크일수록
+  런이 많습니다). 「가져오기」도 픽셀 비교에 마스크당 비트맵 둘을 잠깐 잡습니다.
+
 ## 0.3.22
 
 image: `int2jieun/nexus-server:0.1.26` → `int2jieun/nexus-server:0.1.27`

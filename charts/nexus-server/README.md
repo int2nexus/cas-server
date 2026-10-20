@@ -4,9 +4,9 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
 
 ## 문서
 
-- [아키텍처](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.22/charts/nexus-server/docs/architecture.md)
+- [아키텍처](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.23/charts/nexus-server/docs/architecture.md)
   — 도메인 모델, Version 생명주기, Annotation CoW, 스냅샷·Manifest 구조
-- [사용법](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.22/charts/nexus-server/docs/usage.md)
+- [사용법](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.23/charts/nexus-server/docs/usage.md)
   — 설치, Python SDK 연결, Dataset 적재·검색·seal 워크플로우, API 레퍼런스
 - [변경 이력](CHANGELOG.md)
   — 버전별 동작 변경·마이그레이션·설정 키. 각 항목은 해당 GitHub Release 본문과 동일하다
@@ -22,7 +22,7 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
   선택 키가 셋 더 있고, 쓰는 기능이 있을 때만 넣는다 — CVAT annotation 편집 세션의
   `NEXUS__CVAT__PASSWORD`, superuser의 `NEXUS__AUTH__SUPERUSER_PASSWORD`,
   지표의 `NEXUS__METRICS__TOKEN`(values 스위치가 없다 — 이 키가 곧 스위치다).
-  전체 목록은 [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.22/charts/nexus-server/examples/secret.example.yaml).
+  전체 목록은 [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.23/charts/nexus-server/examples/secret.example.yaml).
 - **CVAT은 선택** — 설정하지 않아도 서버는 정상 동작한다. 세션 생성·결과 회수만 503이 되고 카탈로그·업로드·seal·조회는 영향이 없다.
 - **superuser도 선택** — 설정하지 않으면 관리자를 만들 부트스트랩 수단이 없다(`users.role = admin`은 백필하지 않는다). 다만 **CVAT과 달리 반쪽 설정은 조용히 꺼지지 않고 기동을 실패시킨다**(아래 참조).
 
@@ -30,7 +30,7 @@ DB 마이그레이션은 바이너리에 임베드되어 **기동 시 자동 적
 
 **한 번도 vacuum 되지 않은 대형 표**(예: `instances`)의 autovacuum 임계를 낮출 때는 값이 아니라 **순서**가 중요하다. analyze 축(`autovacuum_analyze_*`)은 임계만 걸면 되지만, vacuum 축(`autovacuum_vacuum_*`)은 **① `autovacuum_vacuum_cost_delay` 를 먼저 걸고 → ② 창을 잡아 첫 `VACUUM` 을 손으로 돌린 뒤 → ③ 임계**를 건다. 첫 vacuum 을 끝내기 전에 임계부터 걸면 visibility map 이 비어 있어 힙 전량을 읽는 대규모 vacuum 이 예고 없이 발동한다 — 수동 `VACUUM` 은 `autovacuum_vacuum_cost_delay` 를 쓰지 않으므로(기본 0) 세션에서 `SET vacuum_cost_delay` 를 먼저 걸어 I/O 를 눌러 둔다.
 
-> **업그레이드 전에 [CHANGELOG](CHANGELOG.md)를 읽을 것.** 버전별 동작 변경·마이그레이션·롤백 하한은 그곳에만 적는다. 마이그레이션이 추가된 버전은 이전 이미지로 롤백할 수 없다.
+> **업그레이드 전에 [CHANGELOG](CHANGELOG.md)를 읽을 것.** 버전별 동작 변경·마이그레이션·롤백 하한은 그곳에만 적는다. 마이그레이션이 추가된 버전은 이전 이미지로 롤백할 수 없다(수동으로 되돌릴 수 있는 경우는 아래 [되돌리기](#되돌리기)). 옛 파드와 새 파드가 함께 돌 수 없는 판은 `strategy.type=Recreate` 로 교체하라고 그 판의 절에 적는다.
 
 ## 설치
 
@@ -56,7 +56,7 @@ kubectl create secret generic nexus-server -n <namespace> --dry-run=client -o ya
 kubectl apply -f sealed-nexus-server.yaml -n <namespace>
 ```
 
-평문 예시: [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.22/charts/nexus-server/examples/secret.example.yaml).
+평문 예시: [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.23/charts/nexus-server/examples/secret.example.yaml).
 Secret 이름은 `secret.existingSecret`(비우면 릴리즈 fullname, 기본 `nexus-server`)과 일치해야 한다.
 
 - `NEXUS__JWT__SECRET`은 직접 생성하는 임의의 비밀 키(로그인 JWT HS256 서명용)  
@@ -89,6 +89,8 @@ helm upgrade nexus-server int2nexus/nexus-server -n <namespace> \
 | `database.maxConnections` | `16` | 워크로드 풀 상한. 적재가 쓸 수 있는 자리는 **이 값 - 4**(조회·관리·seal 몫)이고, readiness 전용 커넥션이 이 풀 **밖에** 하나 더 붙는다(Postgres 쪽 계산은 replica당 이 값 + 1). `ingest.batchItemConcurrency`와의 불변식은 [`values.yaml`](values.yaml) 주석 |
 | `seal.maxConcurrent` | `""` | 이 파드에서 동시에 도는 seal 의 상한(비우면 이미지 기본 `1`). 넘친 seal 은 시작하지 않고 **`429`**(`code: seal_busy`, `Retry-After: 10`). `0` 이면 기동이 실패한다. 메모리 지침(`resources`)은 seal 하나 기준이라 올리면 `limits.memory` 도 그 배수만큼 올린다. seal 하나는 풀에서 최대 둘을 예약 4(고정)에서 쓰므로 2 면 적재 포화 때 조회·관리 몫이 0 이 될 수 있다 — `database.maxConnections` 를 올려도 예약은 늘지 않는다 |
 | `ingest.admissionWaitMs` | `""` | 적재가 자리를 기다리는 상한(ms). 넘기면 대기가 아니라 **`429` + `Retry-After: 1`**. 비우면 서버 기본 3000. `0`이면 기다리지 않는다(자리가 비어 있으면 통과, 없으면 그 자리에서 `429`) |
+| `explorer.draftBulkReadEnabled` | `true` | `false` 면 SDK 가 표시 헤더 `X-Nexus-Bulk-Read: 1` 을 붙인 draft 버전의 explorer 대량 읽기(draft `to_df`·`iter_samples`·`samples()`(기본 `include_annotations=True`)·`shuffle`·`fingerprint`)를 **`403`**(`code: draft_bulk_read_disabled`)으로 거절한다. 웹 화면·표시 없는 클라이언트·sealed 읽기는 영향이 없다 — 협조하는 클라이언트용 운영 장치이지 보안 경계가 아니다. 서버 전체에 하나이고 파드를 다시 띄워야 반영된다. 켜 둔 채로도 표시가 붙은 draft 읽기는 요청 로그에 `bulk_read=draft`·`dataset_id`·`version`·`rows` 로 남는다. 적용 값은 `GET /api/v1/admin/config-effective` 의 `explorer.draft_bulk_read_enabled` |
+| `strategy` | `{}` | Deployment 교체 방식. 비우면 쿠버네티스 기본 RollingUpdate. 옛 파드와 함께 돌 수 없는 판은 `--set strategy.type=Recreate` 로 교체한다(그 판의 CHANGELOG 에 적는다) — 옛 파드를 모두 내린 뒤 새 파드를 띄우므로 그동안 서비스가 끊긴다. Recreate 로 바꿀 때는 업그레이드 **전에** `kubectl -n <ns> patch deploy <fullname> --type=json -p '[{"op":"replace","path":"/spec/strategy/type","value":"Recreate"},{"op":"remove","path":"/spec/strategy/rollingUpdate"}]'` 로 Deployment 를 먼저 바꾸고(strategy 만 바뀌어 파드는 다시 뜨지 않는다, `remove` 만 보내면 API 서버가 기본값을 다시 채워 효과가 없다) `kubectl -n <ns> get deploy <fullname> -o jsonpath='{.spec.strategy}'` 로 확인한 뒤 같은 값으로 올린다. 차트도 Recreate 면 `rollingUpdate: null` 을 함께 렌더해 helm 3 은 patch 없이도 통과하지만, **helm 4(server-side apply)는 `spec.strategy.rollingUpdate: Forbidden` 으로 거부하므로 patch 가 필수다**(kind 에서 helm 3·4 로 확인). **`--reuse-values` 로 올리면 직전 릴리스 values 가 렌더되어 이미지가 옛 태그로 남고 파드가 다시 뜨지도 않는데 `helm history` 는 새 차트로 업그레이드 완료로 보인다**(helm 3·4 확인) — 쓰지 않거나 `--set image.tag=<새 태그>` 를 함께 주고, `--reset-then-reuse-values` 는 새 차트 기본값을 쓴다. RollingUpdate 로 되돌릴 때 helm 4 는 patch 가 `strategy.type` 을 소유해 values 에서 지우기만 하면 Recreate 가 남고 `--set strategy.type=RollingUpdate` 는 field manager 충돌로 거부된다 — `--force-conflicts --set strategy.type=RollingUpdate` 로 올리거나 `kubectl -n <ns> patch deploy <fullname> --type=merge -p '{"spec":{"strategy":{"type":"RollingUpdate"}}}'` 로 먼저 되돌린다 |
 | `secret.existingSecret` | `""` | 비밀 Secret 이름(비우면 fullname) |
 | `service.type` / `service.nodePort` | `NodePort` / `30090` | 서비스 노출 |
 | `ingress.enabled` | `false` | Ingress 사용 여부 |
@@ -172,13 +174,13 @@ requests.post(f"{base}/api/v1/admin/datasets/transfer-owner",
 - **임시 비밀번호는 응답에 한 번만 실려 온다.** 서버 어디에도 저장되지 않으니 그 자리에서 전달하고, 받은 사람은 곧바로 `client.change_password(...)`로 바꾼다. 재설정해도 그 사람의 기존 토큰은 만료(`jwt.ttlHours`)까지 유효하다 — "잊어버림"을 푸는 도구지 "탈취 즉시 차단"이 아니다.
 - **재설정 링크는 임시 비밀번호 대신 쓰는 일회용 토큰이다.** 발급은 본문 `{"email", "expires_in_hours"}`(1~72, 필수)이고 `201` 응답에 `token` 평문이 한 번만 실린다. 사용자는 인증 없이 `POST /api/v1/auth/password-reset/inspect`(`{token}` → 이메일·만료 확인)와 `POST /api/v1/auth/password-reset/complete`(`{token, new_password}` → `204`, 로그인은 따로 한다)를 부른다. 판정 실패(없음·이미 씀·만료·대상 부적격)는 모두 `400` `reset_link_invalid` 하나이고 사유는 요청 로그의 `reset_error` 에만 남는다. 새 비밀번호가 규칙에 맞지 않으면 `code` 없는 `400` 이고 링크는 소모되지 않는다. 사용자당 살아 있는 링크는 하나이며, 다시 발급하거나 임시 비밀번호 재설정·본인 비밀번호 변경을 하면 이전 링크는 무효다. 링크를 사용자에게 전달하는 경로의 보안은 운영자 몫이다.
 - **계정 정지는 삭제가 아니다.** 이메일을 계속 점유하므로 그 주소로 재가입할 수 없고, `active: true`로 해제하면 그대로 돌아온다. 정지하면 로그인이 `403 forbidden`이 되고, **이미 발급된 토큰도 캐시 수명(`auth.revocationCacheTtlSecs`, 기본 5초) 안에 막힌다.**
-- **담당자 이전은 인가를 옮기지 않는다.** 이전 담당자도 계속 쓰고 지울 수 있다 — 역할이 `editor`이기 때문이다. 옮겨가는 것은 「다시 넘길 자격」 하나다. 담당자가 없는 dataset(`GET /datasets?unowned=true`)은 위험한 상태가 아니라 **인수 대기**이고, `editor` 이상이면 그대로 쓰고 지울 수 있다. 담당자가 있는 dataset을 넘기는 것은 담당자 본인이 한다([사용법 8.2](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.22/charts/nexus-server/docs/usage.md#82-담당자-이전)).
+- **담당자 이전은 인가를 옮기지 않는다.** 이전 담당자도 계속 쓰고 지울 수 있다 — 역할이 `editor`이기 때문이다. 옮겨가는 것은 「다시 넘길 자격」 하나다. 담당자가 없는 dataset(`GET /datasets?unowned=true`)은 위험한 상태가 아니라 **인수 대기**이고, `editor` 이상이면 그대로 쓰고 지울 수 있다. 담당자가 있는 dataset을 넘기는 것은 담당자 본인이 한다([사용법 8.2](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.23/charts/nexus-server/docs/usage.md#82-담당자-이전)).
 
 **로그인·가입·갱신·OIDC 교환의 `200` 응답은 모두 `{ token, user_id, email }`이다** — 로그인 화면이 실어 쓰는 토큰 필드는 `token`이다. 가입이 승인 대기(`auth.approvalRequired`)면 `202`이고 타입이 다르다.
 
 ### 로봇 계정 발급
 
-사람이 없는 워크로드(적재 잡·스케줄러·CI)용 계정이다. 쓰는 쪽은 [사용법 2.3](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.22/charts/nexus-server/docs/usage.md#23-로봇-토큰으로-연결)의 `nx.connect(robot_token=...)`로 붙는다.
+사람이 없는 워크로드(적재 잡·스케줄러·CI)용 계정이다. 쓰는 쪽은 [사용법 2.3](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.23/charts/nexus-server/docs/usage.md#23-로봇-토큰으로-연결)의 `nx.connect(robot_token=...)`로 붙는다.
 
 계정 생성(`POST /api/v1/admin/robots`, body `{"name": "...", "role": "editor", "display_name": "..."}`, `display_name`만 선택)의 이름은 소문자·숫자·하이픈 1~48자이고 하이픈으로 시작하거나 끝날 수 없다(`400`). **이름 검사가 `role` 검사보다 먼저 돈다** — 이름이 틀린 동안에는 `role` 오류를 볼 수 없다. 로봇의 `role`은 `editor`·`viewer`뿐이고 `admin`은 `400`이다 — `admin` 로봇의 장수명 토큰은 그대로 관리 평면 전권이 되기 때문이다. 경로의 `user_id`는 정수다(UUID를 넣으면 본문 검사 전에 `400`).
 
@@ -273,7 +275,7 @@ helm upgrade --install nexus-server int2nexus/nexus-server -n <namespace> \
 | `cvat.organization` | `""` | CVAT organization slug (선택) |
 | `cvat.projectNamePrefix` | `nexus` | 생성되는 CVAT project 이름 접두사 |
 | `cvat.segmentSize` | `""` | job 분할 크기. 비우면 CVAT 기본 동작(job 하나). 값을 주면 job 경계를 지나는 CVAT 트랙이 둘로 저장되어 「가져오기」에서 두 `track_id` 가 된다 — 트랙을 쓰면 비워 둔다 |
-| `cvat.maxSessionSamples` | `""` | 세션당 샘플 상한(서버 기본 2000) |
+| `cvat.maxSessionSamples` | `""` | 세션당 샘플 상한(서버 기본 2000). 세션 계획 API 의 묶음 크기 상한(`session_cap`)도 이 값이다 |
 | `cvat.staleCreatingSecs` | `""` | 준비 작업의 진행 기록(60 초마다)이 이 시간(초)보다 오래 멈춘 `creating` 세션을 `failed` 로 정리한다(서버 기본 1800). 각 파드가 5 분마다(기동 직후 포함) 검사하고, 다른 파드가 준비 중인 살아 있는 세션은 건드리지 않는다. 180 미만이면 180 으로 올려 쓰고 기동 로그에 경고를 남긴다(`config-effective` 에는 올린 값이 보인다) |
 | `cvat.caFile` | `""` | CVAT 호출에 더해 믿을 CA 파일. 예: `/etc/nexus/ca/sso-ca.pem`([사내 CA](#사내-ca)의 `caCerts`). 못 읽으면 CVAT 연동만 꺼지고 기동은 된다. 기동 때 읽으므로 바꾸면 파드를 다시 띄워야 한다 |
 | `cvat.publicUrl` | `""` | 작업자 링크(`cvat_url`) 주소. 비우면 `cvat.baseUrl`. API 는 늘 `cvat.baseUrl` 로 부른다 |
@@ -427,6 +429,44 @@ END $$;
 
 030 몫이 끊기면 `FROM datasets` 두 곳에 `WHERE dataset_id > '<마지막 줄의 dataset_id>'` 를 더해 이어 돌린다. 처음부터 다시 돌려도 결과는 같다.
 
+## 되돌리기
+
+`helm rollback` 은 차트와 이미지만 되돌리고 적용된 스키마는 그대로 둔다. nexus-server 는 기동 때 DB 의 `_sqlx_migrations` 와 이미지에 든 마이그레이션 집합을 대조해, **DB 에만 있는 마이그레이션이 있으면 기동하지 않는다**(`was previously applied but is missing in the resolved migrations`). 그래서 마이그레이션이 추가된 판에서 이전 이미지로 되돌리려면 그 마이그레이션을 손으로 걷어야 하고, 걷어도 되는지는 마이그레이션마다 다르다. 걷을 수 없으면 업그레이드 전에 떠 둔 `pg_dump` 스냅샷 복원이 유일한 수단이다. 복원은 DB 를 통째로 다시 만든다 — `pg_restore --clean --create -d postgres <덤프>`(그 DB 에 다른 접속이 없어야 하고 DB 를 지우고 만들 권한이 필요하다) 또는 `dropdb`·`createdb` 뒤 `pg_restore -d <DB>`. **`--clean` 만으로는 안 된다** — 새 마이그레이션이 만든 표는 덤프에 없어 지워지지 않고, 그 FK 때문에 그 표가 가리키는 표가 복원되지 않은 채 `_sqlx_migrations` 만 옛 상태로 돌아가 이전 이미지가 섞인 DB 위에서 오류 없이 기동한다(kind 에서 확인). 복원은 스냅샷 뒤의 모든 쓰기를 잃는다. 순서는 파드를 0 개로 내리고(아래 1) → 복원 → 이전 판 리비전으로 rollback(아래 4) → replicas 를 올리는 것이다. 새 이미지 파드가 떠 있는 채 복원하면 그 파드가 마이그레이션을 다시 적용한다.
+
+### 035·036 이 적용된 DB
+
+035(`instance_overrides`, annotation 의 그룹 단위 버전 격리 표식)·036(`dataset_group_kinds`, 그룹 종류 선언)이 적용된 DB 에서 이전 이미지는 기동하지 않는다.
+
+**되돌려도 되는지는 이 질의 하나로 정한다.** `instance_overrides` 표가 없으면(035 가 적용되지 않은 채 끝남) 판정 없이 절차 3 으로 간다.
+
+```sql
+SELECT NOT EXISTS (SELECT 1 FROM instance_overrides);
+```
+
+- **참이 아니면 되돌리지 않는다.** 표식이 있는 샘플은 그룹 단위로 고친 샘플이고, 표식을 지우면 이전 이미지가 그 샘플을 옛 형식으로 읽어 고치지 않은 그룹이 그 버전에서 빈다. 그렇게 생긴 손상은 영구히 남는다.
+- 참이면 아래 절차로 되돌릴 수 있다. 표식 없이 쓴 결과(샘플을 읽는 버전이 그 draft 하나뿐일 때 고친 것)는 이전 이미지도 바르게 읽는다.
+- `dataset_group_kinds` 에 행이 있으면 그 선언은 함께 사라진다(다시 올린 뒤 다시 선언해야 한다).
+
+**절차.** 이 판에서 만든 CVAT 세션이 열려 있으면(`creating`·`open`) 되돌리기 전에 「가져오기」하고 close 한다 — 이 판의 규칙으로 만든 세션을 이전 이미지가 「가져오기」했을 때의 동작은 확인하지 않았다. 판정과 DROP 사이에 새 표식이 생기지 않도록 nexus-server 파드를 먼저 내린다.
+
+1. `kubectl -n <ns> scale deploy <fullname> --replicas=0` 으로 파드를 모두 내리고, `kubectl -n <ns> get pods -l app.kubernetes.io/instance=<릴리스>` 가 빌 때까지 기다린다. `<fullname>` 은 Deployment 이름이다 — `kubectl -n <ns> get deploy -l app.kubernetes.io/instance=<릴리스>` 로 확인한다(릴리스 이름이 `nexus-server` 를 포함하면 그 이름, 아니면 `<릴리스>-nexus-server`, `fullnameOverride` 를 주었으면 그 값).
+2. 위 판정 질의가 참인지 확인한다. 참이 아니면 여기서 멈추고 `--replicas` 를 원래 값으로 되돌린다.
+3. 진행 중인 seal 이 없을 때(1 을 했으면 없다) 아래를 파일로 저장해 `psql -v ON_ERROR_STOP=1 -f <파일>` 로 한 세션에서 돌린다. `ON_ERROR_STOP` 이 없으면 실패해도 psql 종료 코드가 0 이다 — 있으면 실패 때 종료 코드가 0 이 아니고, 출력 끝이 `COMMIT` 이 아니다. 실패(대개 lock timeout)하면 트랜잭션 전체가 롤백되어 두 표와 `_sqlx_migrations` 행이 그대로 남으므로 같은 명령을 다시 시도한다.
+
+   ```sql
+   BEGIN;
+   SET LOCAL lock_timeout = '3s';
+   DROP TABLE IF EXISTS instance_overrides;
+   DROP TABLE IF EXISTS dataset_group_kinds;
+   DELETE FROM _sqlx_migrations WHERE version IN (35, 36);
+   COMMIT;
+   ```
+
+   `IF EXISTS` 는 035 만 적용되고 036 이 실패한 상태에서도 이 블록이 끝나게 하려는 것이다(`DELETE` 는 없는 행에도 안전하다). `lock_timeout` 을 거는 이유: DROP 은 FK 가 가리키는 `dataset_versions`·`datasets` 에 AccessExclusiveLock 을 잡는다. seal 은 도는 내내 `dataset_versions` 에 AccessShareLock 을 쥐므로, timeout 없이 기다리면 그 뒤로 그 표를 읽는 거의 모든 요청이 DROP 뒤에 줄을 선다.
+4. `helm history <릴리스> -n <ns>` 에서 이전 판(차트 이전 버전, 이전 이미지)으로 배포됐던(`deployed`·`superseded`) 리비전 번호를 확인하고 `helm rollback <릴리스> <그 번호> -n <ns>` 로 띄운다. 리비전을 생략하면 바로 앞 리비전으로 가는데, 업그레이드가 한 번 거부됐다면 그것은 실패한 새 판 리비전이다. 띄운 뒤 `kubectl -n <ns> get deploy <fullname> -o jsonpath='{.spec.template.spec.containers[0].image}'` 가 이전 이미지인지 확인한다. `scale` 로 0 으로 내린 replicas 는 rollback 이 릴리스 값으로 되돌린다(kind 에서 helm 3·4 로 확인 — 그래도 0 개로 남아 있으면 `kubectl -n <ns> scale deploy <fullname> --replicas=<원래 수>`). strategy 는 helm 3 에서 RollingUpdate 로 돌아가지만 helm 4 에서는 Recreate 로 남는다(교체 때의 `kubectl patch` 가 그 필드를 소유한다). 남으면 `kubectl -n <ns> patch deploy <fullname> --type=merge -p '{"spec":{"strategy":{"type":"RollingUpdate"}}}'` 로 되돌린다(strategy 만 바뀌어 파드는 다시 뜨지 않는다).
+
+이 절차를 거친 DB 에 다시 이 판을 올리면 035·036 이 다시 적용된다.
+
 ## 스냅샷 잔여 점검(reconcile-snapshots)
 
 `nexus-server reconcile-snapshots` 는 manifest 버킷의 `annotations/`·`manifests/` 아래 객체를 훑어, 어느 sealed 버전도 가리키지 않는 객체의 수·크기를 분류별로 보고한다. **아무것도 지우거나 쓰지 않는다** — cas 객체·DB·컨테이너 파일시스템 어디에도 쓰지 않고, 결과는 stdout 의 JSON 하나, 진행 로그는 stderr 다. HTTP 서버로 뜨지 않고 마이그레이션도 돌리지 않는다.
@@ -505,6 +545,7 @@ curl -H "Authorization: Bearer $METRICS_TOKEN" localhost:8090/_internal/metrics
 | 삭제 정리 | `nexus_cas_delete_failures_total`(라벨 `kind` = `asset`·`thumbnail`·`snapshot`) | 삭제와 seal 잔여 정리에서 지우지 못하고 남긴 객체 누적. 셋 다 `0` 부터 나온다. **버전·샘플 삭제에서 오른 것은 다시 정리되지 않는다**(seal 잔여 정리에서 오른 `snapshot` 은 그 버전을 지울 때 다시 지운다) — bucket·key 는 같은 시각의 로그 `CAS object 삭제 실패`·`CAS 썸네일 삭제 실패`·`스냅샷 객체 CAS 삭제 실패` 줄에 있다 |
 | seal 결과 | `nexus_seal_total`(라벨 `result` = `completed`·`failed`) · `nexus_seal_duration_seconds`(히스토그램, 같은 라벨) | 끝난 seal 의 수와 소요. 요청이 끊긴 seal 도 끝날 때 기록하므로 앞단 프록시의 읽기 타임아웃을 소요 분포에 맞춰 정한다. `seal_busy`·`seal_in_progress`·`already_sealed` 거절은 세지 않는다. 히스토그램은 첫 seal 이 끝나야 나온다 |
 | 끊긴 요청 | `nexus_http_requests_cancelled_total`(라벨 `method`·`endpoint`) | 응답 전에 클라이언트나 프록시가 연결을 끊은 요청 누적. `endpoint` 는 아래 HTTP 요청 지표와 같은 규칙이다. 첫 끊김이 생겨야 나온다 |
+| annotation 쓰기 | `nexus_annotation_instance_writes_total`(라벨 `mode` = `direct`·`group`·`legacy_converted`·`unchanged`) | 그룹을 보낸 annotation 쓰기(PUT·PATCH·CVAT 가져오기)를 커밋 뒤 샘플마다 한 번 센다. 넷 다 `0` 부터 나온다. `direct` 는 샘플을 읽는 버전이 그 draft 하나라 공유 행을 고친 쓰기, `group` 은 바뀐 그룹만 버전 전용으로 쓴 쓰기, `legacy_converted` 는 옛 형식 샘플을 첫 쓰기에서 그룹 단위로 바꾼 쓰기, `unchanged` 는 바뀐 그룹이 없어 인스턴스를 쓰지 않은 것이다 |
 | 할당자 | `nexus_jemalloc_allocated_bytes` · `_resident_bytes` | `resident − allocated` 가 대략 할당자가 붙든 몫이라, 메모리가 오를 때 할당자가 쥔 것인지 애플리케이션이 쥔 것인지를 가른다 |
 | 집계 성공 | `nexus_metrics_db_stats_ok` | 이번 스크레이프에서 위 넷을 실제로 읽었으면 `1`, 못 읽었으면 `0` |
 | HTTP 요청 | `axum_http_requests_total`(라벨 `method`·`status`·`endpoint`) · `axum_http_requests_duration_seconds`(히스토그램, 같은 라벨) · `axum_http_requests_pending`(`method`·`endpoint`) | 이름·라벨 키·지연 구간이 cas-server와 같다 |

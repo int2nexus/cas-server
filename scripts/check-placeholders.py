@@ -35,7 +35,9 @@ cr 의 skip_existing 과 같은 기준이라 판정이 어긋나지 않는다.
    통과한다. digest 는 사람이 Docker Hub 의 값과 대조해야 한다 —
    `curl -s https://hub.docker.com/v2/repositories/<repo>/tags/<tag>` 의 `digest` 필드다.
 2. **대괄호 형태만 본다.** `TBD`, `<태그>`, `xxx` 같은 자리표시자는 이 검사 밖이다.
-   새 형태를 도입하면 아래 KNOWN 에 함께 넣을 것.
+   새 형태를 도입하면 아래 KNOWN 에 함께 넣을 것. 무엇을 채울지 안에 적는
+   `[MEASURE_X: 채울 내용]` 꼴(이름 뒤 콜론)도 잡는다 — 지시문을 토큰 밖에 두면 토큰만
+   바꾼 뒤 지시문이 그대로 발행되므로, 채울 내용은 토큰 안에 적는다.
 3. **markdown 링크 라벨은 일부러 뺀다.** `[CHANGELOG](CHANGELOG.md)` 처럼 뒤에 `(` 나
    `[` 가 오면 링크로 보고 넘긴다. 그래서 `[FOO](bar)` 꼴의 진짜 placeholder 는 못 잡는데,
    KNOWN 에 이름이 적힌 것은 그 경우에도 잡는다.
@@ -62,6 +64,9 @@ KNOWN = ("[IMAGE_TAG]", "[IMAGE_DIGEST]")
 
 # 그 밖의 [UPPER_SNAKE] 꼴. 뒤에 "(" 나 "[" 가 오면 markdown 링크 라벨이므로 뺀다.
 GENERIC_RE = re.compile(r"\[[A-Z][A-Z0-9_]{2,}\](?![(\[])")
+
+# 채울 내용을 안에 적은 [UPPER_SNAKE: ...] 꼴. 링크 라벨일 수 없으므로 뒤 글자와 무관하게 잡는다.
+ANNOTATED_RE = re.compile(r"\[[A-Z][A-Z0-9_]{2,}:[^\]\n]*\]")
 
 SKIP_DIRS = {".git", "node_modules", "__pycache__"}
 TEXT_EXT = {".md", ".yaml", ".yml", ".txt", ".tpl"}
@@ -114,6 +119,10 @@ def find_hits(chart_dir):
                 for m in GENERIC_RE.finditer(line):
                     if m.group(0) not in found:
                         found.append(m.group(0))
+                for m in ANNOTATED_RE.finditer(line):
+                    token = m.group(0).split(":", 1)[0] + ":…]"
+                    if token not in found:
+                        found.append(token)
                 for token in found:
                     hits.append((rel, i, token))
     return hits
