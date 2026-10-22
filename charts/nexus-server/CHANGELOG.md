@@ -81,6 +81,113 @@ nexus-server 는 마이그레이션이 바이너리에 임베드되어 **기동 
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.3.24
+
+image: `int2jieun/nexus-server:0.1.29` → `int2jieun/nexus-server:0.1.30`
+digest: `sha256:8692ad573024f7465298ea9d95d3ac77849b8ab40c3fe2f93ed7ce2fa06c75eb`
+
+**운영 조치** — 교체는 `strategy.type=Recreate` 입니다. `values.yaml` 의 `strategy` 기본값은 비어 있으므로 `0.3.23` 때와 같은
+절차(필요하면 `kubectl patch` 먼저, 그다음 `--set strategy.type=Recreate`)로 다시 줍니다. `0.1.29` 파드와 섞이면 그 파드로 간 요청에는
+동작 변경 1~4 가 적용되지 않습니다 — 「가져오기」 겹침을 막지 않고, 배열이 아닌 그룹을 보낸 PUT 이 그 버전을 비우고, fork 가 옛 형식을
+만듭니다. 태그 항목이 든 세션의 「가져오기」가 `0.1.29` 파드로 가면 글 칸 편집을 반영하지 않은 채 기준시각을 앞당길 수 있어, 그 뒤
+`force` 없는 `close` 가 통과해 그 편집이 사라질 수 있습니다. 태그 항목으로 세션을 만드는 요청은 `0.1.29` 파드에서 422 입니다.
+
+**동작 변경** — 일곱입니다.
+1. **CVAT 세션이 이미지 단위 글 한 칸을 왕복시킵니다.** 세션 생성 요청의 `extra_labels` 에 태그 항목
+   `{"type": "tag", "label", "attribute", "meta_key"}` 을 줄 수 있고, 샘플 `meta` 의 한 칸과 CVAT 프레임 태그의 글 속성이 짝이 됩니다.
+   - 태그 항목은 세션당 하나이고 `type` 이 정확히 `"tag"` 입니다. 그 밖의 `type` 값은 무시하고 세션 경고 한 줄(「extra_labels 항목의
+     type '…' 는 무시했다」)을 남깁니다 — 단 `attribute`·`meta_key` 가 함께 오면 400 입니다. `meta_key` 는 `a` 또는 `a.b`(조각은 비지 않고 공백·`/`
+     가 없음)이며 최상위 `sequence_id`·`keypoint_info` 는 400 입니다. `label`·`attribute` 에 `/` 를 쓸 수 없고 둘 다 64 자
+     이하입니다.
+   - 세션을 만들 때 문자열 값은 그 글로, 값이 없거나 `null` 이면 빈 칸 태그로 채웁니다. 문자열이 아니거나, 바깥이 객체가 아니거나,
+     `meta` 가 객체도 `null` 도 아니거나, CVAT 글 속성 상한(4,096 자)을 넘는 글은 미리 채우지 않고 세션 생성 경고만 남깁니다. 업로드
+     뒤 CVAT 가 저장한 값을 다시 읽어(최대 3 회) 기준으로 삼으며, 끝내 읽지 못하면 세션이 `failed` 입니다. CVAT 는 글을 저장할 때 앞뒤 공백을 지우고, 그 차이만으로는 「가져오기」가 쓰지 않습니다.
+   - 「가져오기」는 CVAT 가 저장한 직전 값(기준)과 다른 프레임만 `meta` 에 쓰고, 기준은 가져오기마다 옮겨집니다. **태그를 두고 글을
+     비우면 그 키를 지웁니다**(`a.b` 는 안쪽 키만 지우고 바깥 객체는 남깁니다). **태그가 지워진 프레임은 변경 없음**으로 두고 그 수를
+     경고 한 줄로 남깁니다(job 의 「Remove annotations」 한 번이 모든 글 칸을 지우지 않게 합니다 — 글을 지우려면 태그를 두고 글을
+     비웁니다). 인스턴스 쓰기는 거치지 않고, 응답과 `last_import` 에 `updated_meta_samples`(쓴 샘플 수)가 더해집니다 — 0 이면
+     싣지 않아 태그 항목이 없는 세션의 응답은 이전과 같습니다.
+   - 세션이 열린 동안 `meta` 가 바뀌었고 CVAT 에서도 바뀌었으면 CVAT 값으로 쓰고 `warnings` 에 샘플 id 를 남깁니다. 그 사이 쓸 수 없는
+     모양이 된 자리는 쓰지 않고 `warnings` 만 남깁니다. `meta` 쓰기가 실패하거나 반영하지 못한 글 칸 편집(같은 프레임에 값이 다른
+     태그 둘, 그 사이 쓸 수 없는 모양이 된 자리)이 남으면 세션 기준시각을 앞당기지 않아, `force` 없는 `close` 가 미반영 변경으로
+     409 를 냅니다. 그런 가져오기는 `warnings` 맨 앞에 그 사실과 `force=true` 로 닫는 방법을 적고, `close` 의 409 문구도 같은 안내를
+     담습니다. CVAT 에서 고친 뒤 다시 가져오거나 `force` 로 닫습니다. **세션 도중 버전에서 빠지거나 삭제된 샘플의 글 칸 편집은 반영할
+     길이 없어 버리고**(`warnings` 에 샘플 id, 버린 값은 서버 로그) 기준시각을 막지 않습니다 — 도형 편집과 같습니다. 버린 뒤 그
+     샘플을 다시 링크해도 그 편집은 되살아나지 않으며, CVAT 에서 다시 고치면 다음 가져오기가 씁니다. 미리 채우지 않은(쓸 수 없는) 프레임에 작업자가 태그를 새로 달아도 반영하지 않고 경고만 남기며 `close` 를 막지 않습니다.
+   - **알려진 겹침 경로**: 세션이 열린 동안 사용자가 새 글을 넣었는데 작업자가 CVAT 에서 글을 비우면 사용자 값이 지워지고
+     `warnings` 에 샘플 id 가 남습니다(지운 값은 서버 로그에 남습니다).
+   - 도형·skeleton 항목에서 `group` 이 빠지면 이전과 같은 422 입니다. OpenAPI 의 `ExtraLabelRequest` 는 도형 항목
+     (`ExtraLabelShapeDoc`, `group`·`label` 필수)과 태그 항목(`ExtraLabelTagDoc`)의 `oneOf` 입니다.
+2. **같은 세션의 「가져오기」가 겹치면 뒤엣것이 409 입니다**(오류 본문 `code` 는 `import_in_progress`). 태그 항목 유무와 무관하게 모든
+   세션에 적용됩니다. 줄 세우기는 세션 행에 적는 임대(5 분, 가져오기가 도는 동안 1 분마다 연장)라 가져오기가 도는 동안
+   데이터베이스 커넥션을 따로 쥐지 않습니다. 가져오기 도중 파드가 죽으면 그 세션은 임대가 끝나는 최대 5 분 뒤 다시 가져올 수 있고,
+   그 전에는 409 입니다. 가져오기 요청이 중간에 끊기면 임대는 곧바로 풀리지만 뒤에서 놓으므로, 끊긴 직후의 재시도는 잠시 409 일 수
+   있습니다. 임대 연장이 5 분 넘게 멈춰 다른 가져오기가 임대를 잡으면, 먼저 돌던 가져오기는 남은 쓰기를 멈추고 409
+   `import_in_progress` 로 끝나며 기준시각을 앞당기지 않습니다(이 확인은 쓰기 도중 5 초 간격입니다).
+3. **annotation 쓰기가 버려질 그룹·원소와 형식이 틀린 공통 필드를 400 으로 거절합니다.** `PUT`·`PATCH .../samples/{sample_id}/annotations` 에서 `meta` 가
+   아닌 최상위 키의 값이 배열이 아니거나(`null` 포함), 그룹 배열의 원소가 객체가 아니거나 문자열 `label` 이 없으면 요청 전체가
+   400 이고 아무것도 쓰지 않습니다(문구 `group '<키>' must be an array`·`group '<키>'[<i>] must be an object`·
+   `group '<키>'[<i>] must have a string 'label'`). 이전에는 PATCH 의 배열이 아닌 그룹만 400 이었고, 나머지는 그 그룹·원소를 버리고
+   `skipped_reasons` 에 세어 200 이었습니다 — 보낸 그룹은 교체되므로 버린 만큼 기존 인스턴스가 지워졌습니다(배열이 아닌 키만 보낸
+   PUT 은 그 버전의 인스턴스를 모두 비웠고, `label` 오타 하나가 그룹을 비웠습니다). 샘플 조회 결과(`sample_id`·`split`·`created_at`
+   등이 섞인 행)를 그대로 PUT 하던 호출은 400 이 됩니다 — `GET .../annotations` 의 결과를 쓰십시오. 응답의 `skipped`·`skipped_reasons`
+   는 남아 있고 늘 0 입니다. CVAT 「가져오기」가 그런 annotation 을 만들면 그 샘플은 반영하지 않고 「반영 실패」 경고로 남습니다
+   (이전에는 버리고 스킵 경고였습니다).
+   - 같은 쓰기에서 원소의 공통 필드가 형식에 맞지 않아도 요청 전체가 400 입니다: `id` 는 문자열, `track_id` 는 32 비트 부호 있는
+     정수(`"3"`·`3.0` 도 거절), `confidence` 는 32 비트 실수로 나타낼 수 있는 수입니다. `null`·키 없음은 값 없음으로 받습니다. 문구는
+     첫 위반 하나(그룹 키 사전순, 원소 안은 객체 → `label` → `id` → `track_id` → `confidence` 순)이고 위치를 담습니다(예: `group
+     'objects'[2] field 'track_id' must be an integer or null`, 범위를 넘으면 `… must fit in a 32-bit signed integer`·`… must fit in a
+     32-bit float`). 이전에는 그 필드를 조용히
+     비워 저장했고(`track_id: "3"` 이 트랙을 지웠고, 숫자 `id` 가 빈 문자열이 됐습니다) 32 비트를 넘는 `track_id` 는 잘라 저장했습니다.
+     `GET .../annotations` 가 돌려주는 모양을 그대로 보내면 통과합니다. **지금 200 을 받던 호출 가운데 400 이 되는 것**: COCO 처럼
+     정수 `id`(`"id": 123`)를 보내는 호출, 다른 행에 결측이 있어 실수가 된 표 열(`track_id: 3.0`)이나 CSV 에서 읽은 문자열
+     (`confidence: "0.9"`)을 그대로 보내는 호출, 적재 본문을 그대로 `PUT` 에 다시 보내면서 최상위에 배열이 아닌 키
+     (`"image_id": 3`, `"split": "train"` 등)가 있는 호출입니다(`PATCH` 는 이전에도 400 이었습니다). 앞의 세 경우(정수 `id`·실수
+     `track_id`·문자열 `confidence`)는 이전에도 그 값이 저장되지 않았습니다.
+   - 적재(`/ingest`)는 원소 단위 스킵과 「형식이 다른 공통 필드는 값 없음」을 유지합니다. 다만 32 비트를 넘는 `track_id` 는 잘라
+     저장하지 않고 값 없음으로, 32 비트 실수 범위를 넘는 `confidence` 도 값 없음으로 저장합니다(이전에는 잘린 값·무한대였습니다).
+4. **fork 가 옛 형식 부모를 복제할 때 그룹 표식을 함께 만듭니다.** 옛 형식은 그 샘플·버전에 버전 행이 있고 그룹 표식이 없는 것입니다.
+   자식이 읽는 내용은 같습니다. fork 의 복제 읽기는 같은 회차 측정에서 이전의 1.4~1.8 배였고 비용이 버전의 샘플 수에 비례합니다(합성 데이터에서 옛
+   형식이 많은 버전 0.31 → 0.51 초, 버전 행이 없는 버전 0.16 → 0.23 초).
+5. **annotation 쓰기의 「안 바뀜」 판정이 `confidence` 를 비트로 비교합니다.** `-0.0` 과 `0.0` 을 다른 값으로 보고 씁니다.
+6. **seal 의 샤드 읽기가 그 트랜잭션에서 JIT 을 끕니다.** 한 묶음(샘플 1 만)에 수만 행을 돌려주는 짧은 색인 스캔이라 JIT 컴파일
+   비용을 되찾지 못합니다(합성 데이터 518 → 403 ms). 같은 읽기를 쓰는 버전 비교·clone/import·explorer annotation 읽기는 그대로이고,
+   DB 설정은 바꾸지 않습니다.
+7. **새 서브커맨드 `compact-instances` — annotation 버전 행 정리.** **`--apply` 로 실행할 때만** 데이터를 바꾸고 **되돌릴 수 없습니다.** 기본은
+   dry-run 이고 `--apply` 는 `--dataset <id>` 또는 `--all` 과 `--undo-log <dir>` 를 요구합니다. 이 판의 서버로 올린 뒤에만
+   실행합니다(dry-run 도 마이그레이션 대조로 이전 판의 DB 를 거부합니다). 종료 코드 5 는 계획 자기 검증 실패이고 dry-run 에서도
+   나옵니다 — 5 면 다음 단계로 넘어가지 않습니다. 하는 일·결과·조건·Job 예시는 README 「annotation 버전 행
+   정리(compact-instances)」에 있습니다. 실행한 뒤에는 그 버전의 `GET /instances?dataset_version_id=` 가 내는 `instance_id` 가
+   바뀔 수 있고(내용은 같습니다), 버전을 주지 않은 `GET /instances` 의 행 수와 내용이 바뀌며, 정리된 샘플을 fork 없이 다른 버전에
+   링크하면 적재 때 값이 아니라 옮긴 버전의 값을 보고, 모든 버전이 따로 쓴 그룹의 공유 행을 지운 샘플은 새로 링크하면 그 그룹이 비어
+   보입니다. 디스크는 줄지 않습니다. 이미지에 설정 파일이 없어 Job 에는 Secret 과 함께 Deployment 와 같은 `env`
+   (`NEXUS__SERVER__PORT`·`NEXUS__SERVER__HOST`·`NEXUS__CAS__BASE_URL`·`NEXUS__CAS__REGION`·`NEXUS__CAS__DEFAULT_BUCKET`)를 줍니다 —
+   하나라도 빠지면 설정을 읽지 못해 종료 코드 1 입니다(dry-run 에 `NEXUS_COMPACT_DATABASE_URL` 을 줄 때는 필요 없습니다). 같은 이유로
+   `reconcile-snapshots` Job 에도 이 다섯이 필요합니다.
+
+**마이그레이션** — 하나입니다(037). **이 버전은 마이그레이션 037 을 추가하며, 이미지 `0.1.29` 이하로 롤백할 수 없습니다**(이전 이미지는
+`VersionMissing` 으로 기동을 거부합니다). 롤백 가능한 하한은 이 버전의 이미지(`0.1.30`)입니다. 수동 되돌리기는 표
+`annotation_session_tag_baselines` DROP, `ALTER TABLE annotation_sessions DROP COLUMN import_lease_token, DROP COLUMN import_lease_until`,
+`_sqlx_migrations` 의 037 행 삭제입니다. **진행 중인 세션의 글 칸 기준이 함께 사라지므로**
+태그 항목이 든 세션이 열려 있을 때는 되돌리지 않고 닫은 뒤에 합니다. 절차는 README 「되돌리기」의 037 항목입니다. 올리기 전의 DB
+스냅샷(`pg_dump`)을 복원해도 `0.1.29` 로 기동할 수 있지만 스냅샷 뒤의 모든 쓰기를 잃습니다.
+- `037_annotation_session_tag_baselines` — **영향받는 테이블**: 신규 `annotation_session_tag_baselines`(세션·프레임별 보낸 값과 CVAT
+  값), FK 가 가리키는 `annotation_session_frames`, 가져오기 임대 칸 둘(`import_lease_token`·`import_lease_until`, nullable)이 더해지는
+  `annotation_sessions`.
+- **예상 소요시간**: 새 표만 만들고 기존 행을 훑거나 채우지 않아 행 수와 무관하게 즉시입니다. FK 때문에 `annotation_session_frames` 에
+  SHARE ROW EXCLUSIVE 락을, 칸 추가 때문에 `annotation_sessions` 에 ACCESS EXCLUSIVE 락을 잠깐 잡습니다(기본값 없는 nullable 칸이라
+  기존 행을 다시 쓰지 않습니다). 어느 쪽이든 `lock_timeout` 3 초 안에 잡지 못하면 실패하고 파드가 재기동해 다시 시도합니다.
+
+**설정 키** — 없음
+
+**호환성**
+- SDK 를 올리지 않아도 동작하지만 단서가 하나 있습니다. 태그 항목은 `ds.create_annotation_session(extra_labels=)` 에 그대로 실어
+  보내는 값입니다. 동작 변경 3 의 400 은 SDK `0.1.24` 이하에서 `save_annotation()`·`merge_annotation()`·`AnnotatedSample.save()`·
+  단건 `patch_annotations()` 의 `NexusError` 로 나옵니다(이전의 스킵 경고 대신). **배치 `patch_annotations({...})` 는 기본
+  `strict=False` 에서 결과의 `ok=False`(`status_code=400`)로만 돌려주고 경고를 내지 않습니다** — SDK 를 올리지 않을 때는 반환값을
+  확인하거나 `strict=True` 를 주십시오. SDK `0.1.25` 는 코어 키가 섞인 행 모양 dict 를 보내기 전에 막고, 서버의 400 을
+  `NexusValidationError` 로 내며, 배치 실패에 `RuntimeWarning` 을 냅니다.
+
 ## 0.3.23
 
 image: `int2jieun/nexus-server:0.1.27` → `int2jieun/nexus-server:0.1.29`

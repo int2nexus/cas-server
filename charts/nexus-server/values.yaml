@@ -6,16 +6,16 @@
 #
 # ── 문서 ─────────────────────────────────────────────────────────────────────
 #   아키텍처 (도메인 모델·버전 관리·스냅샷 구조)
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.23/charts/nexus-server/docs/architecture.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.24/charts/nexus-server/docs/architecture.md
 #   사용법 (설치·SDK 연결·Dataset 워크플로우)
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.23/charts/nexus-server/docs/usage.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.24/charts/nexus-server/docs/usage.md
 #   차트 README
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.23/charts/nexus-server/README.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.24/charts/nexus-server/README.md
 # ─────────────────────────────────────────────────────────────────────────────
 
 image:
   repository: int2jieun/nexus-server
-  tag: "0.1.29"
+  tag: "0.1.30"
   # digest 로 핀하려면 여기에 넣으십시오 (`sha256:...`). 값이 있으면 tag 대신 이것이
   # 쓰이고, 렌더 결과가 `repository@sha256:...` 가 됩니다.
   #
@@ -318,7 +318,7 @@ auth:
 # 나머지 엔드포인트와 달리 JWT가 아니라 별도 bearer를 받는다 — 스크레이퍼는 로그인할 수
 # 없고, JWT를 쓰게 하면 모니터링 스택이 카탈로그 전체를 읽는 계정을 들고 있어야 한다.
 #
-# 내는 지표 이름 열아홉:
+# 내는 지표 이름 스물셋:
 #   nexus_db_pool_connections            워크로드 풀의 현재 커넥션 수(상한이 아니다)
 #   nexus_db_pool_idle_connections       그중 유휴. 현재 - 유휴 = 사용 중
 #   nexus_db_pool_acquire_timeouts_total 풀 획득 타임아웃 누적 — 이 값이 오르기
@@ -330,6 +330,12 @@ auth:
 #   nexus_seal_permits_available         그중 비어 있는 자리. total - available = 지금 도는 seal 수
 #                                        (요청이 끊긴 seal 은 axum_http_requests_pending 에 안 잡힌다 —
 #                                        진행 중인 seal 은 이 둘로만 보인다)
+#   nexus_seal_total                     끝난 seal 누적. 라벨 result = completed·failed(둘 다 0 부터).
+#                                        입장 거절(seal_busy·seal_in_progress)은 세지 않는다
+#   nexus_seal_duration_seconds          끝난 seal 의 소요 히스토그램. 라벨 result
+#   nexus_http_requests_cancelled_total  응답 전에 클라이언트가 끊은 요청 누적. 라벨 method·endpoint
+#   nexus_annotation_instance_writes_total  그룹을 보낸 annotation 쓰기를 커밋 뒤 샘플마다 센 누적.
+#                                        라벨 mode = direct·group·legacy_converted·unchanged(넷 다 0 부터)
 #   nexus_cas_delete_failures_total      삭제와 seal 잔여 정리에서 지우지 못한 객체 누적.
 #                                        라벨 kind = asset·thumbnail·snapshot, 셋 다 0 부터.
 #                                        버전·샘플 삭제에서 오른 것은 다시 정리되지 않는다
