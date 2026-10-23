@@ -81,6 +81,50 @@ nexus-server 는 마이그레이션이 바이너리에 임베드되어 **기동 
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.3.25
+
+image: `int2jieun/nexus-server:0.1.30` → `int2jieun/nexus-server:0.1.31`
+digest: `sha256:00d9860f93a4ff8a8772be8db69ddf69c45001722d89d7905a1417341714a96c`
+
+**운영 조치** — 교체 뒤, 이전 서버에서 지운 버전이 남긴 스냅샷을 정리하려면 README 「스냅샷 잔여 점검(reconcile-snapshots)」의
+「정리」 순서대로 합니다: dry-run → `delete_targets`·`bucket` 확인 → `reconcile-snapshots --apply --confirm <delete_targets> --bucket <bucket>`.
+그 manifest 버킷을 다른 nexus 가 함께 쓰지 않을 때만 합니다. 실행하는 cas 키에는 `annotations/`·`manifests/` 의 `ListObjects`(정리가 끝날 때까지
+잠시 허용했다가 회수합니다)와 `DeleteObject` 가 있어야 하고, 별도 키(`NEXUS_RECONCILE_CAS_*`)를 쓰면 `annotations/` 의 `GetObject`
+도 있어야 합니다. 정리는 선택입니다.
+
+**동작 변경** — 셋입니다.
+1. **버전을 지우면 그 버전의 seal 스냅샷(샤드·shard manifest·메인 manifest)을 `delete_cas` 와 무관하게 늘 지웁니다.** 이전에는
+   sealed 스냅샷을 `delete_cas=true` 일 때만 지웠습니다(끝나지 않은 seal 의 잔여는 이전에도 늘 지웠습니다). 스냅샷은 seal 이 만든 파생물이라 버전과 함께 지우고, `delete_cas` 는 사용자가 올린 샘플
+   에셋(이미지·썸네일)만 정합니다 — 스냅샷을 가리키는 기록이 버전과 함께 사라져 nexus 로는 다시 읽을 길이 없고, 남겨 두면 누수와
+   구분되지 않습니다. dataset 통째 삭제도 같습니다. 0.1.23 이하가 seal 한 버전은 그 버전의 이름 기반 manifest 둘만 지우고 여러 버전이
+   공유하는 샤드는 남기며, 같은 dataset 의 다른 살아 있는 옛 형식 sealed 버전이 같은 이름 기반 키를 쓰면 그 키도 남깁니다(이전에는 `delete_cas=true` 일 때 그 키까지
+   지워, 남은 버전의 스냅샷 읽기가 404 가 될 수 있었습니다). 2026-07-22 이전에
+   seal 한 버전의 메인 manifest 는 이 규칙으로 지워지지 않습니다.
+   - **잃는 것:** `GET .../manifest` 의 CAS 위치를 따로 적어 두고 cas 에서 직접 읽던 외부 기록은 그 버전을 지우면 더 이상 읽히지
+     않습니다. 재현이 필요한 버전은 지우지 않습니다.
+2. **`reconcile-snapshots --apply --confirm <n> --bucket <이름>` 이 스냅샷 잔여를 지웁니다.** 대상은 `scoped_untracked`,
+   `legacy_shard_unreferenced`(`reference_set_complete` 가 `true` 일 때만), `legacy_manifest_unreferenced`(키의 dataset 자리가 이 DB 의
+   dataset 이름과 같으면 남기고 그 수를 `legacy_manifest_name_like` 로 보고)입니다. dry-run 결과에 `mode`·`delete_targets`(지울 수)·
+   `legacy_manifest_name_like`·`exit_code` 가 더해집니다(기존 필드는 그대로). apply 결과에는 `apply` 객체(`confirm`·`matched`·`deleted`·
+   `failed`·`failed_keys`·`forbidden_count`·`not_started`·`forbidden`)가 더해지고, 지울 때마다 stderr 에 키·분류·결과 한 줄이 남습니다
+   (`RUST_LOG` 와 무관). 종료 코드는 0 정상, 1 결과 JSON 없이 끝남(인자·설정 오류, `--bucket` 불일치, 또는 DB·cas 읽기 실패 — 아무것도
+   지우지 않음), 2 확인값 불일치(아무것도 지우지 않음), 3 지우지 못한 키가 남음, 4 cas 가 삭제를 403 으로 거부해 멈춤입니다.
+   `--help` 를 받습니다.
+3. **`reconcile-snapshots`·`compact-instances` 가 쓰는 설정만 읽습니다.** `compact-instances` 는 DB 주소만,
+   `reconcile-snapshots` 는 DB 주소·cas 좌표 셋(`NEXUS__CAS__BASE_URL`·`NEXUS__CAS__REGION`·`NEXUS__CAS__DEFAULT_BUCKET`)·cas 키 한
+   짝을 읽습니다 — Job 에 `NEXUS__SERVER__PORT`·`NEXUS__SERVER__HOST`·`NEXUS__JWT__SECRET` 을 줄 필요가 없고, `compact-instances` 는
+   cas 키도 읽지 않습니다. reconcile 의 cas 키는 서버 키 또는
+   `NEXUS_RECONCILE_CAS_KEY_ID`·`NEXUS_RECONCILE_CAS_SECRET` 중 한 짝이면 되고, 별도 키만 줄 때 서버 키가 없어도 됩니다.
+
+**문서 정정** — 차트 문서(README·values·docs)를 서버 `0.1.31` 코드와 전수 대조해 낡거나 틀린 서술을 고쳤습니다. 운영에 영향이 있던 것은 `compact-instances` 를 멈추는 명령입니다 — 이미지에 `kill` 실행 파일이 없어 `kubectl exec <pod> -- kill -TERM 1` 은 실패하고, `kubectl exec <pod> -- sh -c 'kill -TERM 1'` 로 셸의 내장 명령을 씁니다.
+
+**마이그레이션** — 없음. 롤백 안전 — 이미지 `0.1.30` 으로 되돌리면 동작 변경 1~3 이 이전으로 돌아갑니다(`delete_cas=false` 삭제가
+다시 스냅샷을 남기고, `reconcile-snapshots` 에 `--apply` 가 없으며, Job 으로 돌릴 때 두 도구 모두 `NEXUS__SERVER__PORT`·
+`NEXUS__SERVER__HOST`·cas 좌표 셋과 Secret 의 서버 cas 키 한 짝·`NEXUS__JWT__SECRET` 이 다시 필요합니다 — `reconcile-snapshots` 는 별도
+키를 줄 때도 서버 키가 있어야 합니다).
+
+**설정 키** — 없음
+
 ## 0.3.24
 
 image: `int2jieun/nexus-server:0.1.29` → `int2jieun/nexus-server:0.1.30`

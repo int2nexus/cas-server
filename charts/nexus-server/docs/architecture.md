@@ -37,7 +37,7 @@ Python SDK는 Ingest 과정을 단순화하기 위해 CAS 업로드 및 Thumbnai
 | PostgreSQL |	nexus-server의 메타데이터 저장소 |
 | cas-server(CAS) |	콘텐츠 주소 기반 파일 저장소. 원본 파일과 Seal된 스냅샷(NDJSON)을 저장한다. |
 | Python SDK(nexus) |	Nexus와 CAS를 사용하는 공식 클라이언트 라이브러리 |
-| nexus-client |	데이터 탐색, 검색 및 검토를 위한 사용자 UI인터페이스. |
+| nexus-client |	데이터 탐색, 검색 및 검토를 위한 사용자 인터페이스. |
 | CVAT |	Annotation 편집기. Nexus가 편집 세션 단위로 연동하며, 이미지는 CAS에서 직접 받는다. 선택 구성 요소이다. |
 | 학습 파이프라인 |	Seal된 DatasetVersion을 이용하여 학습, 평가를 수행하는 외부 시스템 |
 
@@ -121,7 +121,7 @@ Dataset은 Sample과 Dataset Version을 포함하는 관리 범위이다. 접근
 Dataset Version은 특정 시점의 Dataset 상태를 나타내는 논리적 스냅샷이다.  
 Version에는 여러 Sample이 포함될 수 있으며, 하나의 Sample은 여러 Version에서 재사용될 수 있다.  
 Version은 Draft 상태에서 수정할 수 있으며, Seal되면 불변(Immutable)이 된다.  
-Version 이름은 API 경로에 그대로 쓰인다. Seal 스냅샷의 CAS key 는 이름이 아니라 바뀌지 않는 Dataset id·Version id 와 내용 해시로 만든다(서버 `0.1.24`+, [6.2](#62-shard-기반-저장)) — 이름은 Version 을 지운 뒤 같은 이름으로 다시 만들 수 있어, key 에 넣으면 서로 다른 Version 의 스냅샷이 같은 위치에 겹치기 때문이다. `0.1.23` 이하가 Seal 한 Version 의 스냅샷은 이름 기반 key(`manifests/{dataset_id}/{version}.json` 등, Version 이름의 `/`는 `_`로 바뀐다)에 그대로 남는다. Version 이름 규칙은 그 key 에 맞춘 그대로 유지한다 — key가 될 수 없는 이름(`%`·백슬래시·제어문자, 지나치게 긴 이름)과 URL로 가리킬 수 없는 이름(빈 이름·공백뿐인 이름·`.`·`..`)은 만들 때 거부하고, 같은 Dataset 안에서 `/`와 `_`만 다른 두 이름(`a/b`와 `a_b`)은 공존시키지 않으며, 이미 겹친 쌍이 있으면 한쪽이 Sealed일 때 다른 쪽의 Seal을 거부한다(409 `seal_key_collision`).  
+Version 이름은 API 경로에 그대로 쓰인다. Seal 스냅샷의 CAS key 는 이름이 아니라 바뀌지 않는 Dataset id·Version id 와 내용 해시로 만든다(서버 `0.1.24`+, [6.2](#62-shard-기반-저장)) — 이름은 Version 을 지운 뒤 같은 이름으로 다시 만들 수 있어, key 에 넣으면 서로 다른 Version 의 스냅샷이 같은 위치에 겹치기 때문이다. `0.1.23` 이하가 Seal 한 Version 의 스냅샷은 이름 기반 key(`manifests/{dataset_id}/{version}.json` 등 — 2026-07-22 이전 Seal 은 `dataset_id` 자리가 Dataset 이름 — Version 이름의 `/`는 `_`로 바뀐다)에 그대로 남는다. Version 이름 규칙은 그 key 에 맞춘 그대로 유지한다 — key가 될 수 없는 이름(`%`·백슬래시·제어문자, 지나치게 긴 이름)과 URL로 가리킬 수 없는 이름(빈 이름·공백뿐인 이름·`.`·`..`)은 만들 때 거부하고, 같은 Dataset 안에서 `/`와 `_`만 다른 두 이름(`a/b`와 `a_b`)은 공존시키지 않으며, 이미 겹친 쌍이 있으면 한쪽이 Sealed일 때 다른 쪽의 Seal을 거부한다(409 `seal_key_collision`).  
 Version의 생성과 상태 변화는 다음 장에서 자세히 설명한다.
 
 ### 3.4 Sample
@@ -138,7 +138,7 @@ Asset 은 적재할 때 함께 등록하고, 이미 적재한 Sample 에는 Draf
 ### 3.6 Annotation(Instance)
 Annotation은 Sample에 대한 Ground Truth(GT) 정보를 표현한다.  
 Nexus는 미리 정의된 GT 스키마를 기반으로 Annotation을 관리하며, Instance를 Annotation의 최소 저장 단위로 사용한다.  
-하나의 Instance는 id와 label 등의 공통 정보를 가지며, 하나 이상의 Annotation Component(keypoint_2d, bounding_box, cuboid_3d, polygon, polyline, mask 등)를 포함할 수 있다. Component 는 대부분 정규화 좌표이고 `mask`(COCO 압축 RLE)만 픽셀 단위다.  
+하나의 Instance는 id와 label 등의 공통 정보를 가지며, 하나 이상의 Annotation Component(keypoint_2d, bounding_box, cuboid_3d, polygon, polyline, mask 등)를 포함할 수 있다. 2D Component(`keypoint_2d`·`bounding_box`·`polygon`·`polyline`)는 정규화 좌표, 3D Component(`cuboid_3d`·`keypoint_3d`)는 미터 단위 카메라 좌표이고, `mask`(COCO 압축 RLE)만 픽셀 단위다.  
 Annotation은 Dataset Version별 변경 사항을 효율적으로 관리하기 위해 Copy-on-Write(CoW) 방식을 사용한다. 자세한 Version 관리 방식은 5장에서 설명한다.
 
 ### 3.7 Subset
@@ -182,7 +182,7 @@ Seal 은 Version 하나를 통째로 읽어 직렬화하므로 메모리를 가�
 
 Seal 은 요청과 분리된 태스크로 돈다. 클라이언트나 프록시가 연결을 끊어도 Seal 은 끝까지 진행되고, 끊긴 쪽은 Version 상태를 조회해 결과를 확인한다. 도는 중인 Seal 은 Version 조회에 `seal_in_progress`(와 시작 시각 `seal_started_at`)로 보인다(서버 `0.1.25`+) — 같은 Version 잠금을 DB 에서 보므로 어느 파드가 돌리든 보이고, Seal 이 실패하거나 파드가 죽으면 잠금과 함께 사라진다. 같은 Version 잠금은 Seal 이 끝날 때까지 커넥션 하나를 쥔다(Postgres 에서는 `idle in transaction` 으로 보인다). 서버 종료(SIGTERM)는 연결이 끊긴 채 도는 Seal 을 기다리지 않으므로 그 Seal 은 Draft 로 남는다 — Version 을 Sealed 로 바꾸는 쓰기가 맨 마지막이라 반쯤 Sealed 인 상태는 없다.
 
-Seal 은 마지막 트랜잭션에서 그 Version 의 샘플 수(삭제되지 않은 Sample)를 세어 저장하고, Version 을 돌려주는 응답(Version 조회·목록·설명 수정·Seal)은 Sealed Version 에 그 값을 `sample_count` 로 싣는다(서버 `0.1.24`+). Draft Version 의 수는 저장하지 않는다 — 적재·링크·삭제마다 증감이 필요하고 병렬 적재가 Version 행 하나에서 줄을 서게 되기 때문이다. 이 값은 API 조회(Explorer 개수)와 같은 수이고, Manifest 의 `sample_count`(스냅샷의 수)와는 다를 수 있다 — 스냅샷을 만든 뒤 Seal 이 끝나기 전에 지워진 Sample 은 스냅샷에만 있다.
+Seal 은 마지막 트랜잭션에서 그 Version 의 샘플 수(삭제되지 않은 Sample)를 세어 저장하고, Version 을 돌려주는 응답(Version 조회·목록·설명 수정·Seal)은 Sealed Version 에 그 값을 `sample_count` 로 싣는다(서버 `0.1.24`+). Draft Version 의 수는 저장하지 않는다 — 적재·링크·삭제마다 증감이 필요하고 병렬 적재가 Version 행 하나에서 줄을 서게 되기 때문이다. 이 값은 API 조회(Explorer 개수, Manifest 조회의 `sample_count`)와 같은 수이고, 스냅샷의 수(Shard Manifest 의 `total_samples`)와는 다를 수 있다 — 샤드를 만든 뒤 Seal 이 끝나기 전에 지워진 Sample 은 스냅샷에만 있고, 그 사이 더해진 Sample 은 저장된 수에만 있을 수 있다.
 
 Seal 과정에서 생성되는 Snapshot 구조는 6장에서 설명한다.
 
@@ -207,16 +207,16 @@ Draft Version 은 `editor` 이상의 사람 계정이 `?confirm=<버전>` 을 �
 **단 관리자(`role=admin`인 사람 계정 — 설정 superuser 는 기동 시 `admin` 이 부여된다)는 Sealed Version 을 삭제할 수 있다** — `DELETE /datasets/{id}/versions/{v}` 에 쿼리 파라미터 둘, `?confirm=<버전>` 과 `?confirm_dataset_name=<데이터셋명>` 을 정확히(비어 있지 않게) 함께 줄 때만이다. 하나라도 틀리면 지우지 않는다. **되돌릴 수 없다.** `editor`·`viewer`·로봇은 지울 수 없다. 재현성 보호의 축은 여전히 Seal 이고(§10.3), 관리자에게만 복구(break-glass) 경로를 연 것이다.  
 마지막 Draft Version 이 삭제되고, 해당 Dataset에 남은 Version 이 없다면 Dataset 도 함께 삭제된다(관리자가 마지막 Sealed Version 을 위 절차로 지우는 경우도 같다).
 Dataset 을 버전째 한 번에 지우는 `DELETE /datasets/{id}?confirm_dataset_name=<데이터셋명>`(서버 `0.1.26`+)은 Version 마다 위 규칙으로 지운다. 지우기 전에 이름 → 역할·로봇 → Sealed Version(관리자가 아니면 409) → Seal 이 진행 중인 Version(409) → 열린 CVAT 세션(409)을 모두 보고, 걸리면 아무것도 지우지 않는다. Version 하나씩 지우므로 Dataset 전체로는 원자적이지 않다 — 도중에 멈추면 다시 불러 남은 Version 부터 지운다.  
-이때 삭제 요청에 `delete_cas=true`를 명시적으로 지정한 경우에만, 더 이상 어디에서도 참조되지 않는 원본 파일에 대해 CAS에 삭제 요청을 보내 CAS 내부 GC 로직에 의해 정리될 수 있도록 한다. `delete_cas`는 기본값이 `false`(보존)이므로, 별도로 지정하지 않으면 CAS 객체는 그대로 남는다.  
-**Seal 스냅샷 객체(샤드 NDJSON·Shard Manifest·Main Manifest)는 별도 표(`dataset_version_objects`)가 정한다**(서버 `0.1.24`+, [6.3](#63-manifest-구조)). Version 을 지우면 그 표에 기록된 객체를 다음 규칙으로 지운다. 표에 Sealed 스냅샷 기록이 없는 Sealed Version 은 `0.1.23` 이하가 Seal 한 옛 형식으로 보고, `delete_cas=true` 일 때 이름 기반 Manifest key 를 지운다.
+이때 삭제 요청에 `delete_cas=true`를 명시적으로 지정한 경우에만, 더 이상 어디에서도 참조되지 않는 **Sample 원본 파일**(Asset)에 대해 CAS에 삭제 요청을 보내 CAS 내부 GC 로직에 의해 정리될 수 있도록 한다. `delete_cas`는 기본값이 `false`(보존)이므로, 별도로 지정하지 않으면 Asset 객체는 그대로 남는다. `delete_cas` 는 Asset 만 정하고 Seal 스냅샷에는 관여하지 않는다(아래).  
+**Seal 스냅샷 객체(샤드 NDJSON·Shard Manifest·Main Manifest)는 별도 표(`dataset_version_objects`)가 정한다**(서버 `0.1.24`+, [6.3](#63-manifest-구조)). Version 을 지우면 **`delete_cas` 와 무관하게** 그 표에 기록된 객체를 모두 지운다(서버 `0.1.31`+ — 그 전에는 Sealed 스냅샷을 `delete_cas=true` 일 때만 지웠다). 표에 Sealed 스냅샷 기록이 없는 Sealed Version 은 `0.1.23` 이하가 Seal 한 옛 형식으로 보고, 이름 기반 Manifest key 둘을 지운다. 단 같은 Dataset 의 다른 살아 있는 옛 형식 Sealed Version 이 같은 key 를 쓰면 그 key 는 남긴다.
 
-| 객체 | `delete_cas=false` | `delete_cas=true` |
-|---|---|---|
-| 끝나지 않은 Seal 이 남긴 객체(실패·중단·경합에서 진 Seal 의 잔여) | 지운다 | 지운다 |
-| Sealed 스냅샷 — `0.1.24`+ 가 Seal 한 Version(Version 전용 key) | 남긴다 | 샤드 본문까지 지운다 |
-| Sealed 스냅샷 — `0.1.23` 이하가 Seal 한 Version(이름 기반 key) | 남긴다 | 그 Version 의 Manifest 둘만 지운다. 샤드 본문은 내용 주소로 다른 Version 과 공유될 수 있어 남긴다 |
+| 객체 | Version 삭제 시(`delete_cas` 무관) |
+|---|---|
+| 끝나지 않은 Seal 이 남긴 객체(실패·중단·경합에서 진 Seal 의 잔여) | 지운다 |
+| Sealed 스냅샷 — `0.1.24`+ 가 Seal 한 Version(Version 전용 key) | 샤드·Shard Manifest·Main Manifest key 를 모두 지운다 |
+| Sealed 스냅샷 — `0.1.23` 이하가 Seal 한 Version(이름 기반 key) | 그 Version 의 Manifest 둘을 지운다(같은 key 를 쓰는 다른 살아 있는 옛 형식 Sealed Version 이 있으면 남긴다). 샤드는 내용 주소로 다른 Version 과 공유될 수 있어 남긴다. 단 2026-07-22 이전에 Seal 한 Version 의 Main Manifest 는 key 가 Dataset 이름 기반이라 지워지지 않는다 |
 
-끝나지 않은 Seal 의 잔여를 `delete_cas=false` 에서도 지우는 것은 「`delete_cas=false` 는 CAS 를 건드리지 않는다」의 예외다 — 그 객체는 어떤 Sealed Version 도 가리키지 않는 쓰레기이고, 샘플 Asset 과 Sealed 스냅샷에는 해당하지 않는다. Version 행을 지우는 다른 경로(Clone 롤백)도 같은 규칙을 지난다.  
+nexus 가 지우는 것은 CAS 의 **key** 다. 물리 blob 은 그 내용을 가리키는 살아 있는 key 가 없을 때 CAS GC 가 회수하므로, 다른 Version 이 같은 내용을 자기 key 로 올렸으면([6.2](#62-shard-기반-저장)) blob 은 남는다. 스냅샷을 `delete_cas` 와 무관하게 지우는 것은 스냅샷이 Seal 이 만든 파생물이기 때문이다 — 그것을 가리키는 기록(`dataset_version_objects`·`dataset_versions`)이 Version 과 함께 사라지므로, 남기면 nexus 로는 다시 읽을 길이 없고 누수와 구분되지 않는다. `delete_cas` 는 사용자가 올린 Sample Asset 만 정한다. **잃는 것:** Manifest 조회로 받은 CAS 위치를 따로 적어 두고 직접 읽던 외부 기록은 그 Version 을 지우면 더 이상 읽히지 않는다 — 재현이 필요한 Version 은 지우지 않는다. 그 전 서버에서 `delete_cas=false` 로 지운 Version 이 남긴 스냅샷과 어느 Version 도 가리키지 않는 옛 형식 샤드·Manifest 는 `nexus-server reconcile-snapshots --apply` 로 지운다(대상의 예외는 차트 README 「스냅샷 잔여 점검」). Version 행을 지우는 다른 경로(Clone 롤백)도 같은 규칙을 지난다.  
 원본을 지울 때 그 썸네일(`thumb/<key>`)도 함께 지우는데, 에셋 role 과 무관하게 **원본 삭제가 성공했을 때만** 지운다(서버 `0.1.23`+). 삭제는 요청 연결이 끊겨도 DB 삭제와 CAS 정리를 끝까지 하고(서버 `0.1.23`+, Seal 과 같은 구조), 지우지 못한 객체 수는 지표 `nexus_cas_delete_failures_total` 로 보인다.
 
 ### 4.7 Clone (비동기 복제)
@@ -455,7 +455,7 @@ Snapshot 객체의 CAS key 는 그 Version 의 id 와 내용의 BLAKE3 해시를
 | Main Manifest | `manifests/{dataset_id}/{version_id}/{blake3}.json` |
 
 Version id 가 들어가므로 같은 이름으로 다시 만든 Version 과도 스냅샷 위치가 겹치지 않고, 해시가 들어가므로 같은 Version 의 Seal 이 겹쳐 돌더라도 서로의 객체를 덮어쓰지 못한다. key 가 Version 마다 다르므로 Version 하나를 지울 때 그 스냅샷만 골라 지울 수 있다([4.6](#46-삭제와-저장소-정리)).  
-같은 Version 의 Seal 재시도는 이미 올린 Shard 를 업로드 전에 확인해 건너뛴다. 다른 Version 과 내용이 같은 Shard 는 자기 key 로 다시 올리되, 본문 해시를 함께 보내므로 CAS 가 같은 내용을 이미 가지고 있으면 본문을 다 받기 전에 응답한다 — 저장 공간은 CAS 의 Deduplication 으로 늘지 않고, Shard 당 전송량은 Shard 크기보다 작다(측정 조건은 차트 CHANGELOG `0.3.19`). `0.1.23` 이하가 Seal 한 Version 의 Shard 는 내용 해시만으로 된 key 에 그대로 남아 여러 Version 이 공유한다.
+같은 Version 의 Seal 재시도는 이미 올린 Shard 를 업로드 전에 확인해 건너뛴다. 다른 Version 과 내용이 같은 Shard 는 자기 key 로 다시 올리되, 본문 해시를 함께 보내므로 CAS 가 같은 내용을 이미 가지고 있으면 본문을 다 받기 전에 응답한다 — 저장 공간은 CAS 의 Deduplication 으로 늘지 않고, Shard 당 전송량은 Shard 크기와 무관하게 2 MB 이하다(측정 조건은 차트 CHANGELOG `0.3.19`, 측정값 정정은 `0.3.20`). `0.1.23` 이하가 Seal 한 Version 의 Shard 는 내용 해시만으로 된 key 에 그대로 남아 여러 Version 이 공유한다.
 
 ### 6.3 Manifest 구조
 Snapshot이 여러 개의 Shard로 나뉘면, 하나의 DatasetVersion이 어떤 Shard들로 구성되는지를 관리하는 정보가 필요하다.  
@@ -558,7 +558,7 @@ sequenceDiagram
 ### 7.1 등록 (Upload & Ingest)
 원본 Asset은 클라이언트가 CAS에 직접 업로드하며, Nexus에는 Asset 참조 정보와 메타데이터, Annotation만 등록된다.  
 Ingest가 완료되면 Sample은 DatasetVersion에 포함되고 이후 검색과 Version 관리의 대상이 된다.  
-적재는 Annotation 쓰기와 달리 형식이 어긋난 그룹·원소를 건너뛰고(응답에 스킵 수), 형식이 다른 공통 필드는 값 없음으로 저장한다 — 지울 기존 행이 없기 때문이다. 32 비트를 넘는 `track_id`·`confidence` 도 값 없음이다(서버 `0.1.30`+).
+적재는 Annotation 쓰기와 달리 형식이 어긋난 그룹·원소를 조용히 건너뛰고(응답에 스킵 수를 싣지 않는다), 형식이 다른 공통 필드는 값 없음으로 저장한다 — 지울 기존 행이 없기 때문이다. 32 비트를 넘는 `track_id`·`confidence` 도 값 없음이다(서버 `0.1.30`+).
 
 **재전송과 멱등 키**(서버 `0.1.20`+). 등록 요청은 선택적으로 멱등 키(`idempotency_key`)를 싣는다. 같은 Dataset 에서 같은 키·같은
 내용이 다시 오면 Nexus는 새 Sample 을 만들지 않고 처음 결과를 돌려준다(`replayed`). 응답을 받지 못한 클라이언트(서버·CAS
@@ -711,7 +711,7 @@ API는 다음과 같은 원칙을 따른다.
 - 일관된 오류 모델  
 HTTP 상태 코드와 함께 구체적인 오류 정보를 제공한다. 같은 상태 코드에 뜻이 여럿인 경우는 본문에 기계가 읽는 `code` 를 함께 싣는다(`{"error": ..., "code": ...}` — 예: Seal 의 `already_sealed`·`seal_key_collision`·`seal_busy`·`seal_in_progress`, 일괄 meta 쓰기의 `meta_write_rejected`·에셋 붙이기의 `asset_write_rejected`(둘 다 거절 목록 `rejected` 를 함께 싣는다), Draft 대량 읽기 거절의 `draft_bulk_read_disabled`, 세션 계획의 `plan_too_large`, 같은 세션 회수 겹침의 `import_in_progress`, 비밀번호 재설정 링크 실패의 `reset_link_invalid`). `code` 가 없는 오류는 필드를 싣지 않는다.
 - 서버 판 헤더  
-인증이 성공한 요청의 응답에는 서버 판 `X-Nexus-Version` 이 붙는다(서버 `0.1.29`+). 클라이언트가 응답한 서버의 판을 추정하지 않고 확정할 수 있게 하기 위해서이고, 인증 전 응답(401·인증 면제 경로)에는 판을 싣지 않는다.
+인증이 성공한 요청의 응답에는 서버 판 `X-Nexus-Version` 이 붙는다(서버 `0.1.29`+). 클라이언트가 응답한 서버의 판을 추정하지 않고 확정할 수 있게 하기 위해서이고, 인증 전에 끝난 응답(대부분의 401·인증 면제 경로)에는 판을 싣지 않는다.
 
 ## 10. 권한과 불변성 정책
 Nexus는 계정 역할로 무엇을 할 수 있는지를 정한다. 담당자는 담당자 이관을 빼면 인가에 관여하지 않는다.  
@@ -742,7 +742,7 @@ Token 자체는 발급 후 만료까지 무효화할 수 없다. 만료 시점�
 |필드|뜻|변경|인가에 관여|
 |---|---|---|---|
 |`datasets.created_by`|만든 사람|불변|아니오|
-|`datasets.owner_user_id`|담당자|이관 가능|아니오|
+|`datasets.owner_user_id`|담당자|이관 가능|담당자 이관만|
 |`users.role`|`admin` / `editor` / `viewer`|관리자 부여|예|
 
 여기에 **되돌릴 수 없는 삭제에만** 걸리는 조건이 하나 더 있다. 축이 넷이 된 것은 아니다 — 아래 `users.kind`는 "무엇을 할 수 있는가"를 정하지 않고 **삭제 하나만** 빼는 값이다.
@@ -847,7 +847,7 @@ Nexus는 단순한 기능 구현보다 일관된 데이터 모델과 운영 단�
 |Asset 정보는 기본적으로 신뢰	|모든 Asset을 즉시 검증	|대량 Ingest 처리량을 우선하고, 필요한 경우에만 검증을 수행하기 위해|
 |인가 축을 셋으로 나누고 판정은 역할만|	소유권 단일 축, 또는 Dataset별 ACL|	한 필드가 출처·담당·인가를 겸하면 협업하려면 담당자를 비워야 하고, 비우는 순간 아무나 쓸 수 있게 된다. 만든 사람(`created_by`)·담당자(`owner_user_id`)·역할(`users.role`)로 나누고 **판정은 역할 하나만** 본다 — 쓰기가 이미 담당자와 무관한 상태에서 삭제만 담당자로 막는 것은 가드가 되지 못하고 가드가 있다고 믿게 만들 뿐이다. 되돌릴 수 없는 데이터를 지키는 것은 소유권이 아니라 Seal이다|
 |CAS Garbage Collection은 트랜잭션 밖에서 병렬 처리	|트랜잭션 내 동기 처리, 또는 별도 큐|	DB 트랜잭션 범위를 최소화하고, 후보를 병렬로 처리해 응답 지연을 줄이기 위해(단, 응답은 GC 완료를 기다림)|
-|CAS 객체 삭제는 생략 시 보존|	생략 시 삭제|	실패 방향이 비대칭이기 때문 — 잘못된 보존은 되돌릴 수 있는 스토리지 비용이지만 잘못된 삭제는 바이트를 되돌릴 수 없이 파괴한다. 지우려면 `delete_cas=true`를 명시한다|
+|Sample Asset 의 CAS 삭제는 생략 시 보존(Seal 스냅샷은 Version 과 함께 늘 지운다)|	생략 시 삭제|	실패 방향이 비대칭이기 때문 — 잘못된 보존은 되돌릴 수 있는 스토리지 비용이지만 잘못된 삭제는 바이트를 되돌릴 수 없이 파괴한다. 지우려면 `delete_cas=true`를 명시한다. 스냅샷은 사용자 데이터가 아니라 Seal 의 파생물이고 Version 이 사라지면 읽을 길이 없어 이 비대칭에 해당하지 않는다|
 |적재 Batch 는 건별 독립 처리|	전체를 하나의 트랜잭션으로 처리	|일부 실패가 전체 작업에 영향을 주지 않도록 하기 위해|
 |재전송 중복은 클라이언트가 정한 멱등 키로 막음|	서버가 내용(이미지 key 등)으로 중복을 추정|	같은 이미지가 정당하게 여러 Sample 일 수 있어 내용만으로는 「같은 요청」을 가릴 수 없기 때문이다. 키는 Dataset 범위라 다른 Dataset 과 부딪치지 않고, Sample id 는 계속 서버가 만든다|
 |Seal 상한 초과는 대기 없이 429|	서버 안에서 줄 세워 대기|	대기 중에 프록시 응답 상한에 먼저 걸리고, 시작하지 않은 요청은 다시 보내도 중복되지 않는다. 대기는 클라이언트(SDK `seal(wait=)`)가 진다|

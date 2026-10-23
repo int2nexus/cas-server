@@ -6,16 +6,16 @@
 #
 # ── 문서 ─────────────────────────────────────────────────────────────────────
 #   아키텍처 (도메인 모델·버전 관리·스냅샷 구조)
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.24/charts/nexus-server/docs/architecture.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.25/charts/nexus-server/docs/architecture.md
 #   사용법 (설치·SDK 연결·Dataset 워크플로우)
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.24/charts/nexus-server/docs/usage.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.25/charts/nexus-server/docs/usage.md
 #   차트 README
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.24/charts/nexus-server/README.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.25/charts/nexus-server/README.md
 # ─────────────────────────────────────────────────────────────────────────────
 
 image:
   repository: int2jieun/nexus-server
-  tag: "0.1.30"
+  tag: "0.1.31"
   # digest 로 핀하려면 여기에 넣으십시오 (`sha256:...`). 값이 있으면 tag 대신 이것이
   # 쓰이고, 렌더 결과가 `repository@sha256:...` 가 됩니다.
   #
@@ -157,7 +157,7 @@ seal:
 explorer:
   # draft 버전의 대량 읽기 허용. false 면 SDK 가 표시 헤더 `X-Nexus-Bulk-Read: 1` 을 붙인
   # draft 버전의 explorer 대량 읽기(draft `to_df`·`iter_samples`·`samples()`(기본 include_annotations=True)·
-  # `shuffle`·`fingerprint`)를 403(code: draft_bulk_read_disabled)으로 거절한다.
+  # `shuffle`·`sort_by`·`fingerprint`·subset `to_df`)를 403(code: draft_bulk_read_disabled)으로 거절한다.
   # 웹 화면·표시를 붙이지 않는 클라이언트·sealed 버전 읽기는 영향이 없다. 협조하는 클라이언트용
   # 운영 장치이지 보안 경계가 아니다(표시 없이 보내면 막히지 않는다). 서버 전체에 하나이고,
   # 바꾸면 파드를 다시 띄워야 반영된다. 켜 둔 채로도 표시가 붙은 draft 읽기는 요청 로그에
@@ -338,7 +338,8 @@ auth:
 #                                        라벨 mode = direct·group·legacy_converted·unchanged(넷 다 0 부터)
 #   nexus_cas_delete_failures_total      삭제와 seal 잔여 정리에서 지우지 못한 객체 누적.
 #                                        라벨 kind = asset·thumbnail·snapshot, 셋 다 0 부터.
-#                                        버전·샘플 삭제에서 오른 것은 다시 정리되지 않는다
+#                                        asset·thumbnail 은 다시 정리되지 않는다. snapshot 은 버전 삭제에서 오른 것은
+#                                        reconcile-snapshots --apply 로, seal 잔여 정리에서 오른 것은 그 버전을 지울 때 다시 지운다
 #   nexus_jemalloc_allocated_bytes       할당자(jemalloc)가 애플리케이션에 내준 바이트.
 #   nexus_jemalloc_resident_bytes        할당자가 쥔 물리 페이지. resident - allocated 가
 #                                        대략 할당자가 붙든 몫이다
@@ -370,7 +371,7 @@ auth:
 
 # ── CVAT 연동 (선택) ─────────────────────────────────────────────────
 # annotation 편집 세션에 쓰는 외부 편집기. **설정하지 않으면 연동만 꺼지고 서버는 정상
-# 동작한다** — 세션 생성·결과 회수(import)만 503을 반환하고 나머지 API는 영향이 없다.
+# 동작한다** — 세션 생성·세션 계획(plan)·결과 회수(import)만 503을 반환하고 나머지 API는 영향이 없다.
 #
 # 켜려면 baseUrl과 user를 여기에, 비밀번호는 Secret에 NEXUS__CVAT__PASSWORD로 넣는다.
 # 셋 중 하나라도 비면 서버가 미구성으로 판단하고(기동 로그에 무엇이 빠졌는지 남는다)
@@ -477,7 +478,7 @@ terminationGracePeriodSeconds: 30
 # 아니다. 이 시간 동안 파드는 평소처럼 응답하고, 그 뒤에 SIGTERM 을 받는다. terminationGracePeriodSeconds 에
 # 포함되므로 그보다 충분히 작게 둔다 — 진행 중 요청을 마칠 시간은 terminationGracePeriodSeconds 에서 이 값을
 # 뺀 만큼이다(기본 30 - 5 = 25 초). 큰 버전의 seal 처럼 오래 걸리는 요청을 교체 중에도 돌리면 둘을 함께 올린다.
-# 정수 초만 받는다(2.5 같은 값은 preStop 을 렌더하지 않는다). 0 이면 끈다. values 에 이 키가 없으면 5 로 렌더한다.
+# 정수 초만 받는다(소수는 버려 2.5 는 2 초로 렌더하고, 1 미만이면 preStop 을 렌더하지 않는다). 0 이면 끈다. values 에 이 키가 없으면 5 로 렌더한다.
 preStopSleepSeconds: 5
 
 # ── 프로브 ───────────────────────────────────────────────────────────────────
