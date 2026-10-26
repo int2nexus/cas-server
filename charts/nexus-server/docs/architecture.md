@@ -208,7 +208,7 @@ Draft Version 은 `editor` 이상의 사람 계정이 `?confirm=<버전>` 을 �
 마지막 Draft Version 이 삭제되고, 해당 Dataset에 남은 Version 이 없다면 Dataset 도 함께 삭제된다(관리자가 마지막 Sealed Version 을 위 절차로 지우는 경우도 같다).
 Dataset 을 버전째 한 번에 지우는 `DELETE /datasets/{id}?confirm_dataset_name=<데이터셋명>`(서버 `0.1.26`+)은 Version 마다 위 규칙으로 지운다. 지우기 전에 이름 → 역할·로봇 → Sealed Version(관리자가 아니면 409) → Seal 이 진행 중인 Version(409) → 열린 CVAT 세션(409)을 모두 보고, 걸리면 아무것도 지우지 않는다. Version 하나씩 지우므로 Dataset 전체로는 원자적이지 않다 — 도중에 멈추면 다시 불러 남은 Version 부터 지운다.  
 이때 삭제 요청에 `delete_cas=true`를 명시적으로 지정한 경우에만, 더 이상 어디에서도 참조되지 않는 **Sample 원본 파일**(Asset)에 대해 CAS에 삭제 요청을 보내 CAS 내부 GC 로직에 의해 정리될 수 있도록 한다. `delete_cas`는 기본값이 `false`(보존)이므로, 별도로 지정하지 않으면 Asset 객체는 그대로 남는다. `delete_cas` 는 Asset 만 정하고 Seal 스냅샷에는 관여하지 않는다(아래).  
-**Seal 스냅샷 객체(샤드 NDJSON·Shard Manifest·Main Manifest)는 별도 표(`dataset_version_objects`)가 정한다**(서버 `0.1.24`+, [6.3](#63-manifest-구조)). Version 을 지우면 **`delete_cas` 와 무관하게** 그 표에 기록된 객체를 모두 지운다(서버 `0.1.31`+ — 그 전에는 Sealed 스냅샷을 `delete_cas=true` 일 때만 지웠다). 표에 Sealed 스냅샷 기록이 없는 Sealed Version 은 `0.1.23` 이하가 Seal 한 옛 형식으로 보고, 이름 기반 Manifest key 둘을 지운다. 단 같은 Dataset 의 다른 살아 있는 옛 형식 Sealed Version 이 같은 key 를 쓰면 그 key 는 남긴다.
+**Seal 스냅샷 객체(샤드 NDJSON·Shard Manifest·Main Manifest)는 별도 표(`dataset_version_objects`)가 정한다**(서버 `0.1.24`+, [6.3](#63-manifest-구조)). Version 을 지우면 **`delete_cas` 와 무관하게** 그 표에 기록된 객체를 모두 지운다(서버 `0.1.31`+). 표에 Sealed 스냅샷 기록이 없는 Sealed Version 은 `0.1.23` 이하가 Seal 한 옛 형식으로 보고, 이름 기반 Manifest key 둘을 지운다. 단 같은 Dataset 의 다른 살아 있는 옛 형식 Sealed Version 이 같은 key 를 쓰면 그 key 는 남긴다.
 
 | 객체 | Version 삭제 시(`delete_cas` 무관) |
 |---|---|
@@ -216,7 +216,7 @@ Dataset 을 버전째 한 번에 지우는 `DELETE /datasets/{id}?confirm_datase
 | Sealed 스냅샷 — `0.1.24`+ 가 Seal 한 Version(Version 전용 key) | 샤드·Shard Manifest·Main Manifest key 를 모두 지운다 |
 | Sealed 스냅샷 — `0.1.23` 이하가 Seal 한 Version(이름 기반 key) | 그 Version 의 Manifest 둘을 지운다(같은 key 를 쓰는 다른 살아 있는 옛 형식 Sealed Version 이 있으면 남긴다). 샤드는 내용 주소로 다른 Version 과 공유될 수 있어 남긴다. 단 2026-07-22 이전에 Seal 한 Version 의 Main Manifest 는 key 가 Dataset 이름 기반이라 지워지지 않는다 |
 
-nexus 가 지우는 것은 CAS 의 **key** 다. 물리 blob 은 그 내용을 가리키는 살아 있는 key 가 없을 때 CAS GC 가 회수하므로, 다른 Version 이 같은 내용을 자기 key 로 올렸으면([6.2](#62-shard-기반-저장)) blob 은 남는다. 스냅샷을 `delete_cas` 와 무관하게 지우는 것은 스냅샷이 Seal 이 만든 파생물이기 때문이다 — 그것을 가리키는 기록(`dataset_version_objects`·`dataset_versions`)이 Version 과 함께 사라지므로, 남기면 nexus 로는 다시 읽을 길이 없고 누수와 구분되지 않는다. `delete_cas` 는 사용자가 올린 Sample Asset 만 정한다. **잃는 것:** Manifest 조회로 받은 CAS 위치를 따로 적어 두고 직접 읽던 외부 기록은 그 Version 을 지우면 더 이상 읽히지 않는다 — 재현이 필요한 Version 은 지우지 않는다. 그 전 서버에서 `delete_cas=false` 로 지운 Version 이 남긴 스냅샷과 어느 Version 도 가리키지 않는 옛 형식 샤드·Manifest 는 `nexus-server reconcile-snapshots --apply` 로 지운다(대상의 예외는 차트 README 「스냅샷 잔여 점검」). Version 행을 지우는 다른 경로(Clone 롤백)도 같은 규칙을 지난다.  
+nexus 가 지우는 것은 CAS 의 **key** 다. 물리 blob 은 그 내용을 가리키는 살아 있는 key 가 없을 때 CAS GC 가 회수하므로, 다른 Version 이 같은 내용을 자기 key 로 올렸으면([6.2](#62-shard-기반-저장)) blob 은 남는다. 스냅샷을 `delete_cas` 와 무관하게 지우는 것은 스냅샷이 Seal 이 만든 파생물이기 때문이다 — 그것을 가리키는 기록(`dataset_version_objects`·`dataset_versions`)이 Version 과 함께 사라지므로, 남기면 nexus 로는 다시 읽을 길이 없고 누수와 구분되지 않는다. `delete_cas` 는 사용자가 올린 Sample Asset 만 정한다. **잃는 것:** Manifest 조회로 받은 CAS 위치를 따로 적어 두고 직접 읽던 외부 기록은 그 Version 을 지우면 더 이상 읽히지 않는다 — 재현이 필요한 Version 은 지우지 않는다. 스냅샷을 `delete_cas` 와 무관하게 지우기 전의 서버에서 지운 Version 이 남긴 스냅샷과 어느 Version 도 가리키지 않는 옛 형식 샤드·Manifest 는 `nexus-server reconcile-snapshots --apply` 로 지운다(대상의 예외는 차트 README 「스냅샷 잔여 점검(reconcile-snapshots)」). Version 행을 지우는 다른 경로(Clone 롤백)도 같은 규칙을 지난다.  
 원본을 지울 때 그 썸네일(`thumb/<key>`)도 함께 지우는데, 에셋 role 과 무관하게 **원본 삭제가 성공했을 때만** 지운다(서버 `0.1.23`+). 삭제는 요청 연결이 끊겨도 DB 삭제와 CAS 정리를 끝까지 하고(서버 `0.1.23`+, Seal 과 같은 구조), 지우지 못한 객체 수는 지표 `nexus_cas_delete_failures_total` 로 보인다.
 
 ### 4.7 Clone (비동기 복제)
@@ -244,7 +244,7 @@ Fork 시 부모 Version 의 버전 행과 표식이 새 Version 으로 함께 �
 
 표식 표가 생기기 전에 쓰인 Sample(표식 없이 버전 행만 있는 옛 형식)은 그 Version 에서 버전 행만 읽는다(옛 규칙). 그런 Sample 은 처음 쓸 때, 그 Version 을 Fork 할 때(자식 쪽), 또는 버전 행 정리 때 모든 그룹에 표식을 넣어 그룹 단위로 바뀐다(읽는 내용은 같다).
 
-운영자가 실행하는 서브커맨드 `nexus-server compact-instances`(서버 `0.1.30`+, 기본 dry-run, 차트 README 「annotation 버전 행 정리」)는 어느 Version 이 읽는 내용도 바꾸지 않는 범위에서 행을 줄인다 — 읽히지 않는 버전 행과 공유 행과 같은 버전 행은 지우고, 그 Sample 을 읽는 Version 이 링크된 하나뿐이면 버전 행을 공유 행으로 옮기며, 읽는 모든 Version 이 표식으로 덮은 공유 행은 지운다. 정리 뒤에는 Version 조회의 내부 `instance_id` 가 바뀔 수 있고(내용은 같다), Version 을 지정하지 않은 `GET /instances` 의 행이 바뀌며, 정리된 Sample 을 Fork 없이 다른 Version 에 링크하면 적재 때 값이 아니라 옮긴 Version 의 값을 본다. 되돌릴 수 없다(undo 기록으로만 손으로 복구한다).
+운영자가 실행하는 서브커맨드 `nexus-server compact-instances`(서버 `0.1.30`+, 기본 dry-run, 차트 README 「annotation 버전 행 정리(compact-instances)」)는 어느 Version 이 읽는 내용도 바꾸지 않는 범위에서 행을 줄인다 — 읽히지 않는 버전 행과 공유 행과 같은 버전 행은 지우고, 그 Sample 을 읽는 Version 이 링크된 하나뿐이면 버전 행을 공유 행으로 옮기며, 읽는 모든 Version 이 표식으로 덮은 공유 행은 지운다(공유 행을 지우는 이 두 단계는 끌 수 있다 — `--no-move` 는 옮기기만, `--keep-shared` 는 둘 다 끈다, 서버 `0.1.32`+). 정리 뒤에는 Version 조회의 내부 `instance_id` 가 바뀔 수 있고(내용은 같다), Version 을 지정하지 않은 `GET /instances` 의 행이 바뀌며, 정리된 Sample 을 Fork 없이 다른 Version 에 링크하면 적재 때 값이 아니라 옮긴 Version 의 값을 보고, 덮인 공유 행이 지워진 그룹은 비어 보인다(공유 행을 남기려면 `--keep-shared`). 되돌릴 수 없다(undo 기록으로만 손으로 복구한다).
 
 ```
 Version A

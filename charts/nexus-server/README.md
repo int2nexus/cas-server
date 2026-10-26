@@ -4,9 +4,9 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
 
 ## 문서
 
-- [아키텍처](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.25/charts/nexus-server/docs/architecture.md)
+- [아키텍처](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.26/charts/nexus-server/docs/architecture.md)
   — 도메인 모델, Version 생명주기, Annotation CoW, 스냅샷·Manifest 구조
-- [사용법](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.25/charts/nexus-server/docs/usage.md)
+- [사용법](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.26/charts/nexus-server/docs/usage.md)
   — 설치, Python SDK 연결, Dataset 적재·검색·seal 워크플로우, API 레퍼런스
 - [변경 이력](CHANGELOG.md)
   — 버전별 동작 변경·마이그레이션·설정 키. 각 항목은 해당 GitHub Release 본문과 동일하다
@@ -22,7 +22,7 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
   선택 키가 셋 더 있고, 쓰는 기능이 있을 때만 넣는다 — CVAT annotation 편집 세션의
   `NEXUS__CVAT__PASSWORD`, superuser의 `NEXUS__AUTH__SUPERUSER_PASSWORD`,
   지표의 `NEXUS__METRICS__TOKEN`(values 스위치가 없다 — 이 키가 곧 스위치다).
-  전체 목록은 [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.25/charts/nexus-server/examples/secret.example.yaml).
+  전체 목록은 [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.26/charts/nexus-server/examples/secret.example.yaml).
 - **CVAT은 선택** — 설정하지 않아도 서버는 정상 동작한다. 세션 생성·계획·결과 회수만 503이 되고 카탈로그·업로드·seal·조회는 영향이 없다.
 - **superuser도 선택** — 설정하지 않으면 관리자를 만들 부트스트랩 수단이 없다(`users.role = admin`은 백필하지 않는다). 다만 **CVAT과 달리 반쪽 설정은 조용히 꺼지지 않고 기동을 실패시킨다**(아래 참조).
 
@@ -56,7 +56,7 @@ kubectl create secret generic nexus-server -n <namespace> --dry-run=client -o ya
 kubectl apply -f sealed-nexus-server.yaml -n <namespace>
 ```
 
-평문 예시: [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.25/charts/nexus-server/examples/secret.example.yaml).
+평문 예시: [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.26/charts/nexus-server/examples/secret.example.yaml).
 Secret 이름은 `secret.existingSecret`(비우면 릴리즈 fullname, 기본 `nexus-server`)과 일치해야 한다.
 
 - `NEXUS__JWT__SECRET`은 직접 생성하는 임의의 비밀 키(로그인 JWT HS256 서명용)  
@@ -174,13 +174,13 @@ requests.post(f"{base}/api/v1/admin/datasets/transfer-owner",
 - **임시 비밀번호는 응답에 한 번만 실려 온다.** 서버 어디에도 저장되지 않으니 그 자리에서 전달하고, 받은 사람은 곧바로 `client.change_password(...)`로 바꾼다. 재설정해도 그 사람의 기존 토큰은 만료(`jwt.ttlHours`)까지 유효하다 — "잊어버림"을 푸는 도구지 "탈취 즉시 차단"이 아니다.
 - **재설정 링크는 임시 비밀번호 대신 쓰는 일회용 토큰이다.** 발급은 본문 `{"email", "expires_in_hours"}`(1~72, 필수)이고 `201` 응답에 `token` 평문이 한 번만 실린다. 사용자는 인증 없이 `POST /api/v1/auth/password-reset/inspect`(`{token}` → 이메일·만료 확인)와 `POST /api/v1/auth/password-reset/complete`(`{token, new_password}` → `204`, 로그인은 따로 한다)를 부른다. 판정 실패(없음·이미 씀·만료·대상 부적격)는 모두 `400` `reset_link_invalid` 하나이고 사유는 요청 로그의 `reset_error` 에만 남는다. 새 비밀번호가 규칙에 맞지 않으면 `code` 없는 `400` 이고 링크는 소모되지 않는다. 사용자당 살아 있는 링크는 하나이며, 다시 발급하거나 임시 비밀번호 재설정·본인 비밀번호 변경을 하면 이전 링크는 무효다. 링크를 사용자에게 전달하는 경로의 보안은 운영자 몫이다.
 - **계정 정지는 삭제가 아니다.** 이메일을 계속 점유하므로 그 주소로 재가입할 수 없고, `active: true`로 해제하면 그대로 돌아온다. 정지하면 로그인이 `403 forbidden`이 되고, **이미 발급된 토큰도 캐시 수명(`auth.revocationCacheTtlSecs`, 기본 5초) 안에 막힌다.**
-- **담당자 이전은 인가를 옮기지 않는다.** 이전 담당자도 계속 쓰고 지울 수 있다 — 역할이 `editor`이기 때문이다. 옮겨가는 것은 「다시 넘길 자격」 하나다. 담당자가 없는 dataset(`GET /datasets?unowned=true`)은 위험한 상태가 아니라 **인수 대기**이고, `editor` 이상이면 그대로 쓰고 지울 수 있다. 담당자가 있는 dataset을 넘기는 것은 담당자 본인이 한다([사용법 8.2](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.25/charts/nexus-server/docs/usage.md#82-담당자-이전)).
+- **담당자 이전은 인가를 옮기지 않는다.** 이전 담당자도 계속 쓰고 지울 수 있다 — 역할이 `editor`이기 때문이다. 옮겨가는 것은 「다시 넘길 자격」 하나다. 담당자가 없는 dataset(`GET /datasets?unowned=true`)은 위험한 상태가 아니라 **인수 대기**이고, `editor` 이상이면 그대로 쓰고 지울 수 있다. 담당자가 있는 dataset을 넘기는 것은 담당자 본인이 한다([사용법 8.2](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.26/charts/nexus-server/docs/usage.md#82-담당자-이전)).
 
 **로그인·가입·갱신·OIDC 교환의 `200` 응답은 모두 `{ token, user_id, email }`이다** — 로그인 화면이 실어 쓰는 토큰 필드는 `token`이다. 가입이 승인 대기(`auth.approvalRequired`)면 `202`이고 타입이 다르다.
 
 ### 로봇 계정 발급
 
-사람이 없는 워크로드(적재 잡·스케줄러·CI)용 계정이다. 쓰는 쪽은 [사용법 2.3](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.25/charts/nexus-server/docs/usage.md#23-로봇-토큰으로-연결)의 `nx.connect(robot_token=...)`로 붙는다.
+사람이 없는 워크로드(적재 잡·스케줄러·CI)용 계정이다. 쓰는 쪽은 [사용법 2.3](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.26/charts/nexus-server/docs/usage.md#23-로봇-토큰으로-연결)의 `nx.connect(robot_token=...)`로 붙는다.
 
 계정 생성(`POST /api/v1/admin/robots`, body `{"name": "...", "role": "editor", "display_name": "..."}`, `display_name`만 선택)의 이름은 소문자·숫자·하이픈 1~48자이고 하이픈으로 시작하거나 끝날 수 없다(`400`). **이름 검사가 `role` 검사보다 먼저 돈다** — 이름이 틀린 동안에는 `role` 오류를 볼 수 없다. 로봇의 `role`은 `editor`·`viewer`뿐이고 `admin`은 `400`이다 — `admin` 로봇의 장수명 토큰은 그대로 관리 평면 전권이 되기 때문이다. 경로의 `user_id`는 정수다(UUID를 넣으면 본문 검사 전에 `400`).
 
@@ -553,47 +553,67 @@ SELECT NOT EXISTS (SELECT 1 FROM instance_overrides);
 2. 읽는 버전이 하나뿐이고 그 버전에 링크된 샘플의 버전 행을 공유 행으로 옮긴다. sealed 버전도 포함한다.
 3. 그 샘플을 읽는 버전 모두가 따로 쓴 그룹의 공유 행(아무 버전도 읽지 않는 행)을 지운다.
 
+공유 행(적재 때 쓴 annotation — 버전이 하나뿐일 때의 annotation 쓰기로 고쳐졌을 수 있다)을 지우는 것은 2 와 3 이고 대상 샘플이 갈린다. 둘은 끌 수 있다 — 끈 단계는 하지 않을 뿐이라, 나중에 기본값으로 다시 돌리면 남겨 둔 상태를 그대로 처리한다.
+
+| 단계 | 대상 샘플 | 지우는 공유 행 | 끄는 옵션 |
+|---|---|---|---|
+| 2 옮기기 | 읽는 버전이 하나이고 링크된 샘플 | 그 버전이 따로 쓴 그룹의 공유 행 | `--no-move` 또는 `--keep-shared` |
+| 3 읽히지 않는 공유 행 | 읽는 버전이 둘 이상이고 링크된 샘플 | 그 버전들이 모두 따로 쓴 그룹의 공유 행 | `--keep-shared` |
+
+`--keep-shared` 로 돌리면 공유 행을 하나도 지우지 않고, 1 의 복사본과 읽기 규칙이 읽지 않는 버전 행만 지운다.
+
 **되돌릴 수 없다.** 기본은 쓰지 않는 dry-run 이다. `--apply` 는 `--dataset <id>` 하나 또는 `--all` 과 `--undo-log <dir>` 를 함께 요구한다.
 
 **결과.**
 
 - 각 버전이 읽는 annotation 내용과 seal 스냅샷은 바뀌지 않는다. 다만 1 로 지운 복사본 대신 공유 행이 보이므로 `GET /instances?dataset_version_id=` 의 `instance_id` 가 바뀐다(sealed 포함). 이 경로는 `instance_id` 순 페이지 넘김이라 정리와 겹친 순회는 행을 놓치거나 두 번 받을 수 있다.
 - 버전을 주지 않은 `GET /instances`(저장된 행 그대로)는 행 수와 내용이 바뀐다.
-- 2 를 거친 샘플을 fork 없이 다른 버전에 링크하면 적재 때 값이 아니라 옮긴 버전의 값을 보고, 3 을 거친 샘플은 그 그룹이 비어 보인다. 2 가 지우는 적재 원본은 undo 기록에만 남는다.
+- 2 를 거친 샘플을 fork 없이 다른 버전에 링크하면 적재 때 값이 아니라 옮긴 버전의 값을 보고, 3 을 거친 샘플은 그 그룹이 비어 보인다. 2·3 이 지우는 공유 행은 undo 기록에만 남는다. 공유 행을 남겨야 하는 dataset 은 `--exclude-dataset` 으로 빼거나 `--keep-shared` 로 돌린다.
 - **디스크는 줄지 않는다.** 지운 행 자리는 `VACUUM` 뒤 표 안에서 다시 쓰이는 공간이 될 뿐이고, 실행하는 동안에는 WAL·`VACUUM` 전의 지운 행·2 가 쓰는 새 행과 인덱스 항목만큼 늘어난다. 파일을 줄이려면 `pg_repack`(표 크기만큼의 여유 공간), 인덱스 단위 `REINDEX INDEX CONCURRENTLY`(인덱스 하나 크기의 여유), 또는 그 표를 쓸 수 없는 `VACUUM FULL` 이 필요하고 이 명령은 하지 않는다.
 
 **조건.**
 
-- 백업(`pg_dump` 또는 PITR 기준점)을 확보한 뒤, 서버를 이 이미지로 올린 뒤에, 교체·되돌리기 중이 아닐 때 실행한다. dry-run 도 DB 의 마이그레이션이 이 바이너리와 같은지 먼저 대조하므로 이전 이미지의 DB 에서는 시작하지 않는다. 이전 이미지의 fork 는 정리 대상 형식을 새로 만든다.
+- 백업(`pg_dump` 또는 PITR 기준점)을 확보한 뒤, 서버를 이 이미지로 올린 뒤에, 교체·되돌리기 중이 아닐 때 실행한다. dry-run 도 DB 의 마이그레이션이 이 바이너리와 같은지 먼저 대조해, 다르면 시작하지 않는다(마이그레이션이 같은 판끼리는 이 대조가 서버의 판을 가리지 않으므로 서버를 올리는 것은 운영자가 지킨다). 이전 이미지의 fork 는 정리 대상 형식을 새로 만든다.
 - DB 에 직접 접속한다. `--apply` 는 동시 실행을 세션 advisory lock 으로 막으므로 pgbouncer transaction 모드를 거치면 그 잠금이 성립하지 않는다.
 - `--apply` 는 복제본이면 시작하지 않고, 비활성 복제 슬롯이 있으면 `--allow-inactive-slots` 없이는 시작하지 않는다. dry-run 은 환경 변수 `NEXUS_COMPACT_DATABASE_URL` 로 복제본을 가리킬 수 있다. 복제본에서는 `--all` 의 행 수 어림(`instance_rows_before`)을 통계 대신 `pg_class.reltuples` 로 내고, `ANALYZE` 전이면 `null` 이다.
 
 **순서.**
 
 1. 백업.
-2. dry-run — 지울 행·옮길 행·영구히 사라지는 행 수를 센다. 출력의 `samples_scanned`·`samples_changed`·`equal_version_rows_deleted`·`invisible_version_rows_deleted`·`rows_moved_to_shared`·`shared_rows_deleted`·`undo_rows_full` 에 아래 단위 비용을 곱해 소요·WAL·undo 를 어림한다.
-3. 작은 dataset 하나 `--apply --dataset <id> --undo-log <dir>` → 결과 확인.
+2. dry-run — 지울 행·옮길 행·영구히 사라지는 행 수를 센다. 출력의 `samples_scanned`·`samples_changed`·`equal_version_rows_deleted`·`invisible_version_rows_deleted`·`rows_moved_to_shared`·`shared_rows_deleted`(2 몫 `shared_rows_deleted_by_move`, 3 몫 `shared_rows_deleted_unread`)·`undo_rows_full` 에 아래 단위 비용을 곱해 소요·WAL·undo 를 어림한다. 소요 단가는 후보(버전 행이나 표식이 있는) 샘플 기준이라, 후보 없는 샘플도 세는 `samples_scanned` 를 곱하면 위쪽 어림, `samples_changed` 를 곱하면 아래쪽 어림이다. 단계를 끌 실행이면 같은 옵션으로 dry-run 한다(끈 단계는 세지 않는다).
+3. 작은 dataset 하나를 primary 에서 dry-run 한 뒤 `--apply --dataset <id> --undo-log <dir>` → 결과 확인. 두 실행의 소요 비율(결과 JSON 의 시각은 초 단위라 몇 분 걸리는 dataset 을 고르거나 진행 줄 `tx_ms` 의 합으로 비교한다), 진행 줄의 WAL, undo 디렉터리 크기가 이 환경의 단가다(apply 뒤에 dry-run 하면 정리된 상태를 세어 비율이 틀린다).
 4. `--apply --all --undo-log <dir>`.
 5. 끝난 뒤 `ANALYZE instances`.
 
-**옵션.** `--help` 가 사용법과 종료 코드 표를 낸다. `--resume <dataset_id>:<sample_id>`, `--batch <n>`(시작 배치, 기본 100 샘플. 배치 하나가 1 초를 넘으면 다음 배치를 절반으로 줄이고(최소 10, 시작 값이 그보다 작으면 시작 값), 꽉 찬 배치가 0.25 초 안에 끝나기를 세 번 이어 하면 두 배로 늘려 시작 값까지 돌아간다. 후보를 찾는 훑기는 배치 크기와 따로 한 번에 1,000 샘플(`--batch` 가 더 크면 그 값)이다), `--undo-timeout-ms <n>`(기본 5000 — 배치마다 undo 기록의 쓰기·fsync 를 기다리는 상한. 넘으면 그 배치를 롤백해 잠금을 놓고 `aborted.reason = undo_write_timeout` 으로 멈춘다. 느린 저장소면 올려 `--resume` 한다), `--sleep-ms <n>`(기본 0, 배치 사이 쉬는 시간 — 시간당 WAL 은 낮추지만 총량은 같다), `--verify-sealed <k>`(기본 3, 0 이면 끔 — `--apply` 에서 sealed 버전 k 개의 annotation 내용을 시작과 끝에 해시해 대조. 고른 버전을 통째로 두 번 읽어 소요가 버전 크기에 비례하므로, 큰 sealed 버전이 든 범위는 작은 dataset 에서 확인한 뒤 0 으로 돌릴 수 있다), `--allow-inactive-slots`.
+**옵션.** `--help` 가 사용법과 종료 코드 표를 낸다. `--resume <dataset_id>:<sample_id>`, `--batch <n>`(시작 배치, 기본 100 샘플. 배치 하나가 1 초를 넘으면 다음 배치를 절반으로 줄이고(최소 10, 시작 값이 그보다 작으면 시작 값), 꽉 찬 배치가 0.25 초 안에 끝나기를 세 번 이어 하면 두 배로 늘려 시작 값까지 돌아간다. 후보를 찾는 훑기는 배치 크기와 따로 한 번에 1,000 샘플(`--batch` 가 더 크면 그 값)이다), `--undo-timeout-ms <n>`(기본 5000 — 배치마다 undo 기록의 쓰기·fsync 를 기다리는 상한. 넘으면 그 배치를 롤백해 잠금을 놓고 `aborted.reason = undo_write_timeout` 으로 멈춘다. 느린 저장소면 올려 `--resume` 한다), `--sleep-ms <n>`(기본 0, 배치 사이 쉬는 시간 — 시간당 WAL 은 낮추지만 총량은 같다), `--verify-sealed <k>`(기본 3, 0 이면 끔 — `--apply` 에서 sealed 버전 k 개의 annotation 내용을 시작과 끝에 해시해 대조. 고른 버전을 통째로 두 번 읽어 소요가 버전 크기에 비례하므로, 큰 sealed 버전이 든 범위는 작은 dataset 에서 확인한 뒤 0 으로 돌릴 수 있다), `--allow-inactive-slots`, `--no-move`·`--keep-shared`(위 표), `--exclude-dataset <id>`(`--all` 에서 그 dataset 을 뺀다, 여러 번 줄 수 있다. 없는 id 이거나 `--resume` 의 dataset 이 들어 있거나 `--dataset` 과 함께 주면 시작하지 않는다), `--undo-segment-mb <n>`(기본 256, undo 기록 파일 하나의 크기 기준).
 
-**출력과 종료 코드.** 결과 JSON 은 stdout, 진행 줄(배치마다 소요·WAL 바이트·undo 기록 소요 `undo_ms`·배치 크기)은 stderr 다. 결과 JSON 에는 종료 코드(`exit_code`)와 undo 기록 소요(`undo_write_ms_max`·`undo_write_ms_total`)가 함께 실린다. 종료 코드는 0 정상, 1 시작 전 오류(인자·접속·관문, 결과 JSON 없음), 2 중단(`aborted`), 3 sealed 해시 불일치, 5 계획 자기 검증 실패(`skipped.self_check` 가 0 이 아님 — 판정 결함의 신호라 **dry-run 도 5 로 끝나며, 5 면 다음 단계로 넘어가지 않는다**), 4 신호로 중단, 130 두 번째 신호로 즉시 종료(결과 JSON 없음)다. 여럿 해당하면 2 → 3 → 5 → 4 순으로 앞의 것이다. `--verify-sealed` 가 고른 sealed 버전이 실행 중에 지워지면 그 버전은 `deleted: true` 로 싣고 불일치로 세지 않는다. 해시는 annotation 원문(소수 표기까지)을 대상으로 한다. SIGTERM 을 받으면 진행 중 배치를 마치고 멈춰 `resume_at` 을 내고, 그 값으로 `--resume` 한다. 끝낸 배치가 없이 멈추면 `resume_at` 은 이번 실행에 준 `--resume` 값(주지 않았으면 `null`)이다. `null` 이면 처음부터 다시 돌린다(`--resume` 에 그대로 넘기지 않는다). 훑은 수(`samples_scanned`)는 커밋된 배치까지만 센다.
+**출력과 종료 코드.** 결과 JSON 은 stdout, 진행 줄(배치마다 소요·WAL 바이트·undo 기록 소요 `undo_ms`·배치 크기·그 배치에서 읽은 annotation 원문 바이트 `components_bytes`)은 stderr 다. 메모리 최고점은 배치 하나의 `components_bytes` 에 비례하므로, 큰 배치가 있는 dataset 은 `--batch` 를 줄여 따로 돌린다. 결과 JSON 에는 종료 코드(`exit_code`)·undo 기록 소요(`undo_write_ms_max`·`undo_write_ms_total`)·끈 단계(`steps_disabled`)·뺀 dataset(`excluded_datasets`)이 함께 실린다. 종료 코드는 0 정상, 1 시작 전 오류(인자·접속·관문, 결과 JSON 없음), 2 중단(`aborted`), 3 sealed 해시 불일치, 5 계획 자기 검증 실패(`skipped.self_check` 가 0 이 아님 — 판정 결함의 신호라 **dry-run 도 5 로 끝나며, 5 면 다음 단계로 넘어가지 않는다**), 4 신호로 중단, 130 두 번째 신호로 즉시 종료(결과 JSON 없음)다. 여럿 해당하면 2 → 3 → 5 → 4 순으로 앞의 것이다. `--verify-sealed` 가 고른 sealed 버전이 실행 중에 지워지면 그 버전은 `deleted: true` 로 싣고 불일치로 세지 않는다. 해시는 annotation 원문(소수 표기까지)을 대상으로 한다. SIGTERM 을 받으면 진행 중 배치를 마치고 멈춰 `resume_at` 을 내고, 그 값으로 `--resume` 한다. 끝낸 배치가 없이 멈추면 `resume_at` 은 이번 실행에 준 `--resume` 값(주지 않았으면 `null`)이다. `null` 이면 처음부터 다시 돌린다(`--resume` 에 그대로 넘기지 않는다). 훑은 수(`samples_scanned`)는 끝낸 배치와 후보 없이 넘긴 샘플을 센다(멈춘 배치는 세지 않고 다음 실행이 다시 훑는다). **dry-run 은 복제 충돌(SQLSTATE 40001)과 연결 끊김을 만나면 다시 접속해 같은 배치를 시도마다 절반씩 줄인 묶음(1/2·1/4·1/8)으로 나눠 세 번까지 다시 읽고**, 그래도 실패하면 `aborted.reason` 을 `replica_conflict`·`connection_lost` 로 내고 멈춘다. 후보 목록 훑기와 실행 중의 마이그레이션 대조도 같은 횟수로 다시 읽는다(묶음은 나누지 않는다). 다시 읽기 전에, 복제본이면 받은 WAL 을 모두 재생할 때까지(받은 위치와 재생 위치가 같아질 때까지) 최대 5 분 기다린다 — `max_standby_streaming_delay` 는 질의 하나의 시간이 아니라 받은 WAL 을 재생하는 데 허용하는 시간이고 복제본이 따라잡았을 때만 다시 시작되어, 밀린 채로 다시 읽으면 바로 다시 취소되기 때문이다. 5 분 안에 따라잡지 못하거나 재생 위치를 가릴 수 없으면 그대로 다시 읽는다. 쉬거나 기다리는 동안 SIGTERM 을 받으면 종료 코드 4 로 멈추고 `resume_at` 을 낸다. 다시 시도한 배치의 진행 줄 소요(`tx_ms`)에는 쉼·재접속·기다린 시간이 들어가, 그 값이 1 초를 넘으면 그다음 배치 크기가 절반으로 줄고 빠른 배치가 이어지면 다시 늘어난다. 복제본이 idle 세션을 끊은 경우는 클라이언트에 SQLSTATE 가 오지 않아 `connection_lost` 로 나온다. `--apply` 는 다시 시도하지 않는다. 교착·`lock_timeout`·`statement_timeout` 등으로 세 번 다시 시도해도 실패한 배치는 멈추지 않고 `skipped.conflict` 로 세고 넘어가므로(종료 코드는 그대로), 그 값이 0 이 아니면 그만큼 처리하지 않은 것이라 stderr 경고 줄에 남은 그 범위를 다시 돌린다. 결과 JSON 의 `server_version` 은 이 도구 바이너리의 판이다.
 
-**undo 기록.** 영구히 사라지는 행(아무 버전도 읽지 않는 버전 행, 3 의 공유 행, 2 로 옮기기 전에 지우는 적재 원본)은 내용 전체를, 같은 내용이 DB 에 남는 행(1 의 복사본, 2 로 옮긴 행, 그룹 표식)은 키만 배치마다 커밋 전에 기록한다. 바꾸는 배치마다 `<run_id>-<배치 번호 8 자리>.ndjson.gz` 와 커밋 표시 `<run_id>-<배치 번호 8 자리>.committed` 두 파일이다(후보 샘플 100 만 개를 배치 100 으로 돌리면 배치 약 1 만 개·파일 약 2 만 개, 배치가 줄면 더 많다). 자동 되돌리기는 없고 수작업 복구·조사용이다. `.committed` 가 없는 배치는 `.gz` 첫 줄의 xid 를 `SELECT pg_xact_status('<xid>'::xid8)` 로 가린다 — 이 함수는 DB 가 트랜잭션 상태 기록을 지우기 전까지만 답하므로 **실행이 끝나거나 멈춘 직후에** 가린다.
+**undo 기록.** 영구히 사라지는 행(아무 버전도 읽지 않는 버전 행, 3 의 공유 행, 2 로 옮기기 전에 지우는 적재 원본)은 내용 전체를, 같은 내용이 DB 에 남는 행(1 의 복사본, 2 로 옮긴 행, 그룹 표식)은 키만 배치마다 커밋 전에 기록한다. 자동 되돌리기는 없고 수작업 복구·조사용이다. 실행마다 파일은 두 종류다.
+
+- 기록 파일 `<run_id>-<세그먼트 6 자리>.ndjson.gz` — 바꾸는 배치마다 gzip 멤버 하나를 이어 쓰고, 파일이 `--undo-segment-mb`(기본 256 MiB)를 넘으면 다음 배치부터 새 파일이다. 멤버의 첫 줄(`run`·`batch`·`xid`)이 그 배치 트랜잭션의 xid 를 담는다.
+- 색인 `<run_id>.index.ndjson`(압축하지 않음) — 배치마다 두 줄이다. 멤버를 디스크에 내린 뒤·DB 를 바꾸기 전에 위치 줄(`batch`·`file`·`offset`·`len`·`xid`), 커밋 뒤에 `{"batch":…,"committed":true}`.
+
+**복구에 쓰는 기록은 색인으로 고른다.** 기록 파일에는 롤백된 시도의 멤버도 남는다(같은 배치의 재시도, 시간 초과로 늦게 끝난 기록) — `zcat <파일>` 로 전부 읽는 것은 조사용이고, 그대로 되살리면 실제로 지우지 않은 행까지 되살린다. 복구는 다음 순서다.
+
+1. 배치마다 색인의 **마지막** 위치 줄만 쓴다(앞의 위치 줄은 롤백된 시도다).
+2. 그 배치에 committed 줄이 있으면 커밋됐다. 없으면 롤백됐다고 단정하지 않는다 — 커밋 직후 죽었을 수 있다. 위치 줄의 xid 를 `SELECT pg_xact_status('<xid>'::xid8)` 로 가려 `committed` 일 때만 쓴다. 이 함수는 DB 가 트랜잭션 상태 기록을 지우기 전까지만 답하므로 **실행이 끝나거나 멈춘 직후에** 가린다.
+3. 멤버는 `tail -c +$((offset+1)) <file> | head -c <len> | zcat` 으로 읽는다. 기록 도중 죽어 파일 끝이 잘려도 잘리는 것은 마지막 멤버뿐이다.
+
+위치 줄이 없는 배치는 DB 를 바꾸지 않았다. 색인의 마지막 줄이 줄바꿈 없이 깨져 있으면(쓰는 도중 끝남) 그 줄은 무시한다 — 위치 줄이면 위치 줄이 없는 배치와 같고, committed 줄이면 2 의 xid 로 가린다. undo 볼륨 크기는 작은 dataset apply 의 실측으로 정한다.
 
 **단위 비용**(PostgreSQL 18.6 합성 데이터, 샘플당 53.5 행).
 
 | 항목 | 값 |
 |---|---|
-| apply 소요 | 훑은 샘플당 3.7 ms(읽는 버전 하나) ~ 5.0 ms(둘) |
-| dry-run 소요 | 훑은 샘플당 0.62 ms |
+| apply 소요 | 후보 샘플당 3.7 ms(읽는 버전 하나) ~ 5.0 ms(둘) — 측정 데이터는 모든 샘플이 후보였다 |
+| dry-run 소요 | 후보 샘플당 0.62 ms |
 | WAL(정리 몫) | 지운 행당 약 745 B, 옮긴 행당 약 2.6 KB. autovacuum 이 겹치면 서버 전체는 약 2 배 |
 | undo(gzip) | 바뀐 샘플당 약 750 B. 풀면 내용 전체 기록 행당 약 557 B |
 
 **실행 중.** 진행 줄의 WAL 바이트·`pg_stat_replication` 의 복제 지연·남은 디스크를 보고, 크면 멈춘 뒤 `--sleep-ms` 를 올려 `--resume` 한다. `VACUUM` 은 autovacuum 에 맡기는 것이 기본이다. 손으로 돌리면 `n_dead_tup` 이 커졌을 때 한 번에 하나만, 쓰기가 적은 시간에 돌린다. 정리가 잡고 있는 샘플을 겨냥한 annotation 쓰기는 그 배치가 끝날 때까지 기다린다(배치 100 에서 p99 약 340 ms).
 
-**Job 예시.** 파드 exec 가 아니라 Job 으로 돌린다. 같은 이미지·같은 Secret 을 쓰고, undo 기록은 서버 데이터와 다른 PVC 에 둔다.
+**Job 예시.** 파드 exec 가 아니라 Job 으로 돌린다. 같은 이미지(서버와 마이그레이션이 같은 판의 도구 이미지를 따로 지정할 수 있는지는 CHANGELOG 의 **호환성**)·같은 Secret 을 쓰고, undo 기록은 서버 데이터와 다른 PVC 에 둔다.
 
 ```yaml
 apiVersion: batch/v1
@@ -630,7 +650,7 @@ spec:
 
 **설정은 DB 주소(`NEXUS__DATABASE__URL`, Secret)만 읽는다** — 서버 포트·cas 좌표 같은 다른 설정이 없어도 시작한다. dry-run 은 `args: ["compact-instances"]` 이고 undo 볼륨이 필요 없다(`NEXUS_COMPACT_DATABASE_URL` 로 복제본을 가리킬 수 있다). fsGroup 을 지원하지 않는 볼륨(NFS 등)이면 디렉터리 소유자를 10001 로 맞춰 둔다 — 쓸 수 없으면 시작할 때 종료 코드 1 로 아무것도 쓰지 않고 멈춘다.
 
-**멈추기와 이어 돌리기.** 멈출 때는 `kubectl -n <ns> exec <pod> -- sh -c 'kill -TERM 1'` 로 신호를 보낸다(이미지에 `kill` 실행 파일이 없어 셸의 내장 명령을 쓴다) — pod 가 남아 `kubectl logs` 로 결과 JSON 의 `resume_at` 을 읽을 수 있다. Job 이나 pod 를 지우면 로그도 함께 사라진다(로그 수집기가 없을 때). 신호는 배치 사이에서만 보므로 `--sleep-ms` 휴식 중이면 휴식이 끝난 뒤, 시작 때 sealed 해시를 계산하는 중이면 그 계산이 끝난 뒤 멈춘다. 유예가 끝나 강제 종료돼 결과 JSON 이 없으면 마지막 `정리 진행` 줄의 `dataset_id` 와 `last_sample` 로 `--resume <dataset_id>:<last_sample>` 을 만든다. 작은 dataset 으로 먼저 확인할 때는 sealed 버전이 있는 것을 고른다 — 없으면 `verify_sealed.versions` 가 비고 대조가 일어나지 않는다. 배포 도구가 자동 sync 로 Job 을 다시 만들지 않게 하고, 로그(stdout 결과 JSON·stderr 진행 줄)를 Job 이 끝난 뒤에도 남게 한다. NetworkPolicy 가 라벨로 DB 접근을 가르면 그 라벨도 맞춘다.
+**멈추기와 이어 돌리기.** 멈출 때는 `kubectl -n <ns> exec <pod> -- sh -c 'kill -TERM 1'` 로 신호를 보낸다(이미지에 `kill` 실행 파일이 없어 셸의 내장 명령을 쓴다) — pod 가 남아 `kubectl logs` 로 결과 JSON 의 `resume_at` 을 읽을 수 있다. Job 이나 pod 를 지우면 로그도 함께 사라진다(로그 수집기가 없을 때). 신호는 배치 사이(와 dry-run 재시도의 쉼·대기 중)에서만 보므로 `--sleep-ms` 휴식 중이면 휴식이 끝난 뒤, 시작 때 sealed 해시를 계산하는 중이면 그 계산이 끝난 뒤 멈춘다. 유예가 끝나 강제 종료돼 결과 JSON 이 없으면 마지막 `정리 진행` 줄의 `dataset_id` 와 `last_sample` 로 `--resume <dataset_id>:<last_sample>` 을 만든다. 작은 dataset 으로 먼저 확인할 때는 sealed 버전이 있는 것을 고른다 — 없으면 `verify_sealed.versions` 가 비고 대조가 일어나지 않는다. 배포 도구가 자동 sync 로 Job 을 다시 만들지 않게 하고, 로그(stdout 결과 JSON·stderr 진행 줄)를 Job 이 끝난 뒤에도 남게 한다. NetworkPolicy 가 라벨로 DB 접근을 가르면 그 라벨도 맞춘다.
 
 ## 헬스 체크와 지표
 

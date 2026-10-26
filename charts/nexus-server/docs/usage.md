@@ -38,7 +38,7 @@ pip install --upgrade --extra-index-url https://int2nexus.github.io/cas-server/s
 python -c "import importlib.metadata as m; print(m.version('int2nexus-sdk'))" 
 ```
 
-이 문서는 서버 `0.1.31`(차트 `0.3.25`)와 SDK `0.1.25` 기준이다. SDK는 서버와 따로 발행되므로 위 명령으로 최신을 유지한다 — 문서의 기능이 없다는 에러가 나면 대개 SDK가 낮은 것이다. 버전별 변경은 [차트 CHANGELOG](../CHANGELOG.md)와 [SDK 변경 이력](https://int2nexus.github.io/cas-server/sdk/changelog.html)에 있다.
+이 문서는 서버 `0.1.32`(차트 `0.3.26`)와 SDK `0.1.25` 기준이다. SDK는 서버와 따로 발행되므로 위 명령으로 최신을 유지한다 — 문서의 기능이 없다는 에러가 나면 대개 SDK가 낮은 것이다. 버전별 변경은 [차트 CHANGELOG](../CHANGELOG.md)와 [SDK 변경 이력](https://int2nexus.github.io/cas-server/sdk/changelog.html)에 있다.
 
 ### 2.2 연결 설정
 
@@ -308,7 +308,7 @@ ref = (CasRef(bucket="my-bucket", key=key, width=info.width, height=info.height)
        if info else CasRef(bucket="my-bucket", key=key))   # 모르면 키를 넣지 않는다
 ```
 
-> 크기를 못 구하면 `meta`에 `width`/`height` 키를 **넣지 않는다**. `0`을 적으면 크기 facet의 range가 `min:0`으로 오염되고, CVAT이 그 값으로 정규화 좌표를 계산해 좌표가 망가진다. 키가 없으면 집계에서 조용히 빠지고, **CVAT 편집 세션 생성은 명확한 에러로 거부된다**([6.1](#61-시작-전-확인)).
+> 크기를 못 구하면 `meta`에 `width`/`height` 키를 **넣지 않는다**. `0`을 적으면 크기 facet의 range가 `min:0`으로 오염되고, CVAT이 그 값으로 정규화 좌표를 계산해 좌표가 망가진다. 키가 없으면 집계에서 조용히 빠지고, **그 샘플이 든 CVAT 편집 세션은 준비 단계에서 `failed` 가 되며 그 샘플 id 가 사유에 실린다**([6.1](#61-시작-전-확인)).
 
 #### 이미 등록된 샘플의 크기 백필 — `ds.backfill_dims`
 
@@ -450,8 +450,8 @@ for r in (r for r in results if not r.ok):
 주의할 점 둘:
 
 - **`meta`는 통째로 신뢰된다.** `filename`만 있고 `width`/`height`가 없는 부분 meta를 주면
-  SDK가 나머지를 채워주지 않는다. 그 샘플은 크기 facet·히스토그램 집계에서 빠지고 CVAT
-  편집 세션 생성이 거부된다. 크기가 없는 GT라면 [`nx.probe`](#nxprobe--업로드-없이-이미지-크기만-채우기)로
+  SDK가 나머지를 채워주지 않는다. 그 샘플은 크기 facet·히스토그램 집계에서 빠지고 그 샘플이 든 CVAT
+  편집 세션은 `failed` 가 된다. 크기가 없는 GT라면 [`nx.probe`](#nxprobe--업로드-없이-이미지-크기만-채우기)로
   ref를 채워 `image=`에 넘기거나, 등록 후 `ds.backfill_dims()`로 보정한다.
 - **업로드를 건너뛰었으므로 썸네일이 없다.** UI는 원본으로 폴백하므로 동작은 정상이고
   로딩만 무겁다(§3.3 참조).
@@ -951,6 +951,7 @@ Draft 버전의 샘플을 **CVAT으로 보내 사람이 편집**하고, 그 결�
 | 내 역할이 **`editor` 이상** | `NexusError(403)` - 세션 생성은 쓰기다 |
 | 서버에 CVAT 연동 구성 | `NexusError(503)` |
 | CVAT이 CAS 이미지를 받을 수 있는 네트워크 | 세션이 `failed`가 되고 사유가 예외에 실린다 |
+| 샘플마다 image asset 과 숫자 `meta.width`/`meta.height` | 세션이 `failed`가 되고 해당 샘플 id 가 사유에 실린다 |
 | 샘플 key 의 파일 이름(마지막 경로 조각)이 세션 안에서 겹치지 않고, 서명한 이미지 URL 이 1024 자 이하 | 세션이 `failed`가 되고 해당 샘플 id 가 사유에 실린다. CVAT project 를 만들기 전에 거절한다(서버 이미지 `0.1.25`+). 파일 이름이 겹치면 세션을 나눠 만든다 |
 | `sample_ids`가 모두 그 버전에 링크된 삭제되지 않은 샘플 | `NexusError(400)` - 해당 id를 최대 10개 나열한다. CVAT 호출 전에 거절하므로 project·task가 생기지 않는다(서버 이미지 `0.1.21`+). 중복 id는 하나로 합친다 |
 | 그 샘플을 잡고 있는 다른 세션 없음 | `NexusError(409)` - 어느 세션이 잡고 있는지 메시지에 담긴다 |
@@ -1383,7 +1384,7 @@ DataFrame에는 annotation과 이미지 경로(`meta.filename` — 적재 때 me
   흘린다. `chunksize` 가 양수가 아니거나 `path` 와 함께 주면 서버를 부르기 전에 `ValueError` 다.
 - 샘플 300,000 개(인스턴스 1,200,000 개) draft 버전의 `to_df()` 는 약 0.6 분(34~40 초) 걸렸다(서버·PostgreSQL 18·SDK 를 한 대 — 14 코어, 메모리
   32 GB — 에서 돌린 측정, explorer 응답 약 1.36 MB / 1,000 행, SDK 프로세스 메모리 증가 약 2 GB). 같은 버전을 seal 한 뒤의 `to_df()` 는 22 초였다.
-- **운영자가 draft 대량 읽기를 껐으면**(서버 설정 `explorer.draft_bulk_read_enabled=false`, 서버 이미지 `0.1.29`+) draft 의 `to_df()`·
+- **운영자가 draft 대량 읽기를 껐으면**(차트 값 `explorer.draftBulkReadEnabled: false`, 서버 이미지 `0.1.29`+) draft 의 `to_df()`·
   `iter_samples()`·`samples()`(기본 `include_annotations=True`)·`shuffle()`·`sort_by()`·`fingerprint()` 가 `NexusError`(`status_code=403`,
   `code == "draft_bulk_read_disabled"`, 「운영자가 draft 대량 읽기를 껐습니다 — sealed 버전을 쓰십시오」)다. 다시 보내지 않는다 —
   sealed 버전을 읽는다. 서버는 표시 헤더만 보므로, SDK 가 표시를 붙이지 않는 id·projection 읽기(`include_annotations=False`·
@@ -1505,13 +1506,13 @@ Dataset 은 버전 단위(`ds.delete()`)로 지우거나, `nx.delete_dataset` �
 
 **남아 있는** sealed 버전이 참조하는 샘플 Asset은 `delete_cas` 값과 무관하게 **항상 보존**된다. 관리자가 sealed 버전을 지우면 그 버전만 붙잡던 샘플 Asset은 `delete_cas=true`일 때 GC 대상이 된다(그 버전의 seal 스냅샷은 아래 규칙대로 늘 지운다).
 
-- **seal 스냅샷**(샤드 NDJSON·manifest)은 `delete_cas`와 무관하게 버전과 함께 지운다(서버 이미지 `0.1.31`+ — `0.1.30` 이하는 sealed 스냅샷을 `delete_cas=true`일 때만 지웠다, [architecture.md 4.6](architecture.md#46-삭제와-저장소-정리)). 스냅샷은 seal이 만든 파생물이고 `delete_cas`는 샘플 Asset만 정한다. `0.1.24`+가 seal한 버전은 샤드 본문까지, 끝나지 않은 seal의 잔여(실패·중단된 seal이 남긴 객체)도 함께 지운다. `0.1.23` 이하가 seal한 버전은 이름 기반 manifest만 지운다 — 같은 dataset의 다른 살아 있는 옛 형식 sealed 버전이 같은 위치를 쓰면 그 manifest는 남기고, 여러 버전이 공유할 수 있는 샤드 본문도 남긴다. 2026-07-22 이전에 seal 한 버전의 메인 manifest 는 위치가 dataset 이름 기반이라 이 규칙으로 지워지지 않는다. nexus가 지우는 것은 CAS key이고 물리 바이트는 그 내용을 가리키는 key가 없을 때 CAS GC가 회수한다. **잃는 것:** `GET .../manifest`의 CAS 위치를 따로 적어 두고 직접 읽던 외부 기록은 그 버전을 지우면 더 이상 읽히지 않는다 — 재현이 필요한 버전은 지우지 않는다.
+- **seal 스냅샷**(샤드 NDJSON·manifest)은 `delete_cas`와 무관하게 버전과 함께 지운다(서버 이미지 `0.1.31`+, [architecture.md 4.6](architecture.md#46-삭제와-저장소-정리)). 스냅샷은 seal이 만든 파생물이고 `delete_cas`는 샘플 Asset만 정한다. `0.1.24`+가 seal한 버전은 샤드 본문까지, 끝나지 않은 seal의 잔여(실패·중단된 seal이 남긴 객체)도 함께 지운다. `0.1.23` 이하가 seal한 버전은 이름 기반 manifest만 지운다 — 같은 dataset의 다른 살아 있는 옛 형식 sealed 버전이 같은 위치를 쓰면 그 manifest는 남기고, 여러 버전이 공유할 수 있는 샤드 본문도 남긴다. 2026-07-22 이전에 seal 한 버전의 메인 manifest 는 위치가 dataset 이름 기반이라 이 규칙으로 지워지지 않는다. nexus가 지우는 것은 CAS key이고 물리 바이트는 그 내용을 가리키는 key가 없을 때 CAS GC가 회수한다. **잃는 것:** `GET .../manifest`의 CAS 위치를 따로 적어 두고 직접 읽던 외부 기록은 그 버전을 지우면 더 이상 읽히지 않는다 — 재현이 필요한 버전은 지우지 않는다.
 
 - **썸네일**(`thumb/<key>`, §3.3)은 원본 객체를 지울 때 에셋 role과 무관하게(depth 같은 이미지 에셋 포함), **원본 삭제가 성공했을 때만** 함께 지운다(서버 이미지 `0.1.23`+).
 
 - **버전 삭제 응답의 `cas_objects_deleted`는 지운 샘플 Asset 원본 수다.** 함께 지운 썸네일과 seal 스냅샷 객체는 세지 않는다. 응답은 `{dataset_id, version, samples_deleted, cas_objects_deleted, dataset_deleted}`이고 `ds.delete()`가 그대로 돌려준다.
 - **삭제는 연결이 끊겨도 서버에서 끝까지 돈다**(서버 이미지 `0.1.23`+, seal과 같다). 큰 버전을 지우다 프록시가 연결을 끊어 `502`/`504`를 받았어도 DB 삭제와 CAS 정리는 계속되므로, 다시 지우지 말고 버전을 조회해 `404`(이미 지워짐)인지 확인한다.
-- CAS 삭제는 best-effort다. 지우지 못한 샘플 Asset 은 남고 다시 정리되지 않는다. 지우지 못한 seal 스냅샷 객체는 운영자가 `nexus-server reconcile-snapshots --apply` 로 지울 수 있다(차트 README 「스냅샷 잔여 점검」). 운영 쪽에서는 지표 `nexus_cas_delete_failures_total`로 보인다.
+- CAS 삭제는 best-effort다. 지우지 못한 샘플 Asset 은 남고 다시 정리되지 않는다. 지우지 못한 seal 스냅샷 객체는 운영자가 `nexus-server reconcile-snapshots --apply` 로 지울 수 있다(차트 README 「스냅샷 잔여 점검(reconcile-snapshots)」). 운영 쪽에서는 지표 `nexus_cas_delete_failures_total`로 보인다.
 
 `confirm`에는 **삭제할 버전 문자열**을 준다(`True`면 현재 버전). 서버가 경로의 버전과 정확히 비교해 어긋나면 400이다 — dataset 이름이 아니다.
 
