@@ -44,6 +44,23 @@ nexus-server 버전을 함께 씁니다.
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.1.20
+
+image: `jiwonkim97/nexus-client:0.1.22`
+digest: `sha256:b2afe0659a6a037032e76ceb645a66b5a13a3fd8dc21b04cd90da0acc1412ffb`
+
+이번 릴리스: 확대뷰에서 depthmap·segmap 보기, editor 의 draft 버전 삭제·「버전에서 제거」 담당자 조건 제거. 프록시 계약(`/api`·`/cas`, backendUrl·casUrl 해석)은 변경 없음.
+
+**동작 변경** - `/api`·`/cas` 프록시 경로와 backendUrl·casUrl 해석은 변경 없음. 아래는 전부 이미지 동작이다.
+- 확대뷰 depthmap: 샘플 meta 의 `external_files.depth_map`(filename, scale_factor, unit)이 있으면 헤더에 「depthmap」 메뉴가 생긴다. 끄기 / depthmap / 오버레이(불투명도 조절) / 좌우 비교 중에 고르고, D 키로 켜고 끈다. 커서 자리의 값을 단위와 함께(픽셀 값 ÷ scale_factor) 보이고, 색 범위는 장마다 유효값의 2~98% 로 잡는다. 0 은 값 없음으로 어둡게 칠한다. 좌우 비교로 바꿔도 확대·위치는 그대로다.
+- 확대뷰 segmap: `external_files.semantic_segmentation`(filename, class_map)이 있으면 「segmap」 메뉴가 생긴다. 원본 위에 클래스별 색으로 겹치고(불투명도 조절), 그 장에 나오는 클래스를 하나씩 켜고 끌 수 있다. S 키로 켜고 끈다. 커서 자리의 클래스를 「이름 · 픽셀값」으로 보인다. 이름은 샘플마다 오는 class_map 을 따르고, class_map 에 없는 0 은 「class 없음」, 없는 그 밖의 값은 「이름 없음」으로 보인다.
+- depthmap·segmap 파일은 이미지와 같은 `/cas/image` 경로로 받는다. 메뉴를 켰을 때만 받고(이웃 장은 미리 받음), 끄면 받지 않는다. external_files 가 없는 데이터셋은 메뉴가 보이지 않고 이전과 같다.
+- 버전 삭제 권한: editor 는 담당자가 아닌 데이터셋에서도 draft 버전 삭제 버튼과 그리드의 「버전에서 제거」 버튼이 보인다. 이전에는 admin 이거나 담당자 본인일 때만 보였다. sealed 버전 삭제는 지금처럼 admin 만 보인다(sealed 버전이 남아 있으면 editor 는 데이터셋을 끝까지 지울 수 없다). viewer 는 지금처럼 보이지 않는다.
+
+**마이그레이션** - 없음
+**설정 키** - 없음
+**호환성** - depthmap·segmap 의 filename 은 `/cas/image` 경로가 받을 수 있는 http(s) 주소여야 하고, 파일은 단일 채널 8·16비트 PNG(인터레이스 없음)여야 한다. 다른 형식이면 그 장의 값 칸에 「불러오지 못했습니다」가 뜨고 나머지 화면은 그대로다. 버전 삭제 권한은 nexus-server 0.1.32 API 명세(버전 삭제 403 = viewer·로봇, 샘플 삭제 403 = viewer)에서 확인했다. 그보다 옛 서버가 담당자 아닌 editor 의 삭제를 거절하면 삭제 다이얼로그에 서버 오류 문구가 뜬다(옛 판의 규칙은 확인하지 않음).
+
 ## 0.1.19
 
 image: `jiwonkim97/nexus-client:0.1.21`
