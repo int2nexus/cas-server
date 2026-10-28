@@ -81,6 +81,142 @@ nexus-server 는 마이그레이션이 바이너리에 임베드되어 **기동 
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.3.27
+
+image: `int2jieun/nexus-server:0.1.32` → `int2jieun/nexus-server:0.1.33`
+digest: `sha256:eaee25ac1328eb5b836395803be1bd5f83138bafb87412abee0cfb7b1a3d5c33`
+
+**동작 변경** — 열하나입니다. 1 은 새 서브커맨드이고, 2 는 서버 기동 로그, 3 은 `compact-instances`, 4·5 는 요청 처리, 6~11 은 seal·새 버전
+만들기의 작업 줄입니다.
+1. **`nexus-server deleted-sample-index` 를 더합니다.** 포함 인덱스 `idx_samples_id_deleted ON samples (sample_id) INCLUDE (is_deleted)` 를
+   점검하고(기본) `--apply` 로 `CREATE INDEX CONCURRENTLY` 해 만듭니다. 개수·목록 경로(facet 개수, explorer 개수와 일괄 쓰기의 `confirm` 비교,
+   subset 해소, 버전 샘플 수, seal 의 샘플 수 기록, dataset·버전 통계)가 샘플마다 `is_deleted` 를 보려고 `samples` 힙을 읽던 몫을, 인덱스가
+   있으면 플래너가 인덱스만 읽어 판정합니다. **서버의 질의는 바뀌지 않습니다** — 인덱스가 생긴 순간부터 쓰이고 파드를 다시 띄우지 않아도
+   되며, 인덱스가 없으면 이전과 같습니다(결과는 어느 쪽이든 같습니다). 효과는 `samples` 의 all-visible 비율에 따라 달라집니다. 샘플
+   200 만 행 합성 데이터(PostgreSQL 18.6, 대상 sealed 버전 샘플 20 만을 다른 dataset 의 샘플 사이에 섞은 배치)에서 서버 요청 시간이
+   facet 개수(`exact=true`) 약 1.1 → 0.6 초, explorer 개수(`exact=true`) 약 1.1 → 0.4 초였고, 행 5 % 를 고친 뒤 vacuum 전에는 0.75 초 ·
+   0.6 초였습니다. 쓰는 법·조건·종료 코드·Job 예시는 README 「샘플 삭제 확인 인덱스(deleted-sample-index)」입니다.
+2. **서버가 기동 때 `삭제 확인 인덱스 상태 state="absent" index="idx_samples_id_deleted"` 모양의 한 줄을 남깁니다**(`state` 는
+   `absent`·`valid`·`invalid`·`building`·`mismatched`, 값에 따옴표가 붙습니다). 상태를 읽지 못하면 경고 한 줄을 남기고 그대로 뜹니다.
+3. **`compact-instances` dry-run 이 다시 읽은 배치의 진행 줄 `tx_ms` 가 성공한 시도의 읽기·판정만 잽니다.** 이전에는 쉼·재접속·복제본
+   재생 대기까지 들어가 몇 분이 찍힐 수 있었습니다. 대신 진행 줄에 `retried`(그 배치를 다시 읽었는지)가 더해지고, 다시 읽은 배치 다음의
+   배치 크기는 이전처럼 절반으로 줄어듭니다. `--help` 의 사용법 줄에 `--undo-segment-mb` 가 빠져 있던 것을 넣었습니다.
+4. **새 버전 만들기(`POST /datasets/{id}/versions` 의 `fork_from`, 전량·`sample_ids`)·버전 비교(`GET …/diff`)·샘플 가져오기
+   (`POST …/samples/import`)가 annotation 을 샘플 묶음마다 읽습니다.** 이전에는 원본 버전의 버전 전용 annotation(비교는 두 버전어치,
+   가져오기는 요청한 샘플 전부)을 구성요소까지 한 번에 서버 메모리로 읽어, 메모리가 버전 크기를 따라갔습니다. 새 버전 만들기의 묶음은
+   버전 전용 행 4,000 개(샘플은 자르지 않음)이고 묶음 하나의 크기는 행당 구성요소의 JSON 값 수를 따릅니다. 원본이 바뀌지 않으면 결과와
+   응답은 같습니다(복제하는 동안 원본에 쓴 것은 묶음마다 다른 문장으로 읽어 샘플마다 들거나 빠질 수 있습니다).
+   합성 데이터(PostgreSQL 18.6, 버전 전용 행 103,680 개)에서 새 버전 만들기 한 번의 `nexus_jemalloc_allocated_bytes` 최고점이 584 MiB
+   (점 17 개 구성요소) · 2,788 MiB(점 133 개)에서 31.6 MiB · 132 MiB 가 됐고, 원본을 열 배(103.7 만 행)로 해도 38.2 MiB 였습니다.
+   고치기 전 값은 이미지 `0.1.31`(복제 코드는 `0.1.32` 와 같음)로 쟀고, 고친 판의 `_resident_bytes` 최고점은 214 · 540 · 252 MiB 입니다.
+5. **샘플 가져오기의 `sample_ids` 는 중복을 뺀 뒤 10,000 개까지입니다.** 넘으면 `400` 입니다. 더 많이 옮기려면 clone job 을 씁니다(clone
+   job 은 256 개씩 나눠 가져오므로 해당하지 않습니다).
+
+6. **seal 과 새 버전 만들기(`fork_from`)가 버전 작업 줄을 지납니다.** 대상은 `POST /datasets/{id}/versions/{v}/seal`,
+   `fork_from` 이 있는 `POST /datasets/{id}/versions`, 저장된 필터의 `POST /subsets/{id}/version` 입니다(빈 버전 만들기와 clone job 은
+   그대로입니다).
+   - 줄이 비었고 그 파드에 자리(`seal.maxConcurrent`)가 있으면 이전과 같습니다 — 끝까지 돌고 seal 은 `200` + sealed 버전, 새 버전
+     만들기는 `201` + draft 버전입니다.
+   - 아니면 **`202`** + 본문 `{"job": {...}, "version": {...}}` + `Location: /api/v1/version-jobs/{job_id}` 입니다(`job.queue_position` 은
+     1 부터). 같은 버전에 대기·실행 중인 작업이 이미 있으면 새로 넣지 않고 그 작업을 `202` 로 돌려줍니다. 이미 sealed 인 버전의 seal 은
+     이전처럼 `409` `already_sealed` 입니다.
+   - 줄은 DB 하나에 하나이고(요청 순서) 각 파드가 자리가 날 때와 5 초마다 맨 앞을 집어 돌립니다. 도는 작업은 120 초 임대를 30 초마다
+     늘리고, 파드가 죽어 임대가 끝나면 다른 파드가 처음부터 다시 돌립니다(시작이 세 번을 넘으면 `failed`).
+   - 같은 버전의 앞선 실행이 아직 잠금을 쥐고 있어 시작하지 못한 작업은 줄로 돌아가고 그 파드는 15 초 동안 그 작업을 건너뜁니다.
+     15 초 뒤 다시 집었을 때도 앞선 실행이 잠금을 쥐고 있으면 또 줄로 돌아가며, 앞선 실행이 끝나 그 작업을 끝냄으로 바꿀 때까지
+     되풀이합니다. **그동안은 줄이 비지 않으므로 새 요청은 자리가 있어도 `202` 입니다**(앞선 실행이 끝날 때까지).
+   - 대기 중인 seal 의 대상은 draft 그대로라 그 사이의 적재·수정도 seal 에 들어갑니다. 대기 중인 새 버전 만들기도 원본을 실행할 때
+     읽습니다.
+   - 서버가 종료 신호를 받으면 더 집지 않고, 신호를 받은 즉시와 요청을 다 비운 뒤 그 파드가 돌리던 작업을 시작 횟수에 세지 않고
+     줄로 돌립니다 — 다른 파드나 다음 기동이 이어 돌립니다.
+7. **버전 상태 `preparing`·`failed` 를 더합니다.** `preparing` 은 새 버전 만들기가 대기·실행 중인 버전, `failed` 는 그것이 실패했거나
+   취소된 버전입니다(링크·annotation 은 남지 않습니다). 둘 다 목록·조회에 보이고, 적재·링크·링크 해제·annotation·meta·에셋 붙이기·
+   seal·fork 원본·clone job 원본·CVAT 세션·샘플 가져오기 대상과 원본은 **`409`(`code: version_preparing`)** 입니다. 실패 사유는
+   버전 응답의 `job.error` 이고 응답 본문과 같은 문구입니다(DB·내부 오류는 `database error`·`internal error` — 원문은 서버 로그에만). CAS 오류는 응답 본문과 달리 `cas error` 만 적습니다.
+   `failed` 버전은 지울 수 있습니다. 대기·실행 중인 작업이 있는 `preparing` 버전과 그런 버전이 든 dataset 은 지우지 않습니다(`409`
+   `version_preparing` — 작업을 먼저 취소합니다). 복제가 도는 중이어도 끝나기를 기다리지 않고 바로 `409` 이고, `preparing` 버전의
+   설명 수정(`PATCH /datasets/{id}/versions/{v}`)도 같은 `409` 입니다. 새 버전 만들기의 요청 검증(이름·키 충돌 `409`, 원본 `404`, 빈·원본에 없는 `sample_ids`
+   `400`)은 버전을 만들기 전에 끝나 거절이면 아무것도 남지 않습니다.
+8. **경로 셋을 더합니다.** `GET /api/v1/version-jobs`(목록 — `state`·`since`(끝난 작업에만, 기본 24 시간)·`cursor`·`limit`(1~1000,
+   기본 100), 최근 요청 먼저)와 `GET /api/v1/version-jobs/{job_id}`(로그인한 사용자면 viewer 도 봅니다), `POST
+   /api/v1/version-jobs/{job_id}/cancel`(`editor` 이상, 로봇은 `403`)입니다. 항목은 데이터셋·버전 이름과 id, 종류(`seal`·`fork`), 상태
+   (`queued`·`running`·`done`·`failed`·`cancelled`), 대기 순번, 요청한 사람의 이메일(요청한 본인과 관리자에게만), 요청·시작·끝 시각,
+   파드, 단계와 `progress_done`/`progress_total`, 오류, 취소 요청 여부입니다. 끝난 작업은 7 일 뒤 지워집니다. 단계는 README 「버전 작업
+   줄」의 표에 있습니다 — seal 의 `shards` 는 올린 샤드 수 / 샤드 수, 새 버전 만들기의 `copy` 는 annotation 을 복제한 샘플 수 / 복제할
+   샘플 수(원본 버전에 버전 전용 annotation 이 있는 샘플)입니다.
+   - 취소: 대기 작업은 요청한 사람 또는 관리자가 취소하고 그 자리에서 `cancelled` 입니다(새 버전 만들기면 버전이 `failed`). 실행 중
+     작업은 관리자만 취소하고, 같은 파드면 곧바로, 다른 파드면 30 초 안에 멈춥니다. 다만 그때 DB 문장 하나를 실행 중이면 그 문장이
+     끝난 뒤에 멈춥니다 — 새 버전 만들기의 `link` 단계는 원본의 링크 전체를 문장 하나로 옮겨, 큰 버전이면 그 시간만큼 늦습니다.
+     멈춘 seal 은 버전이 draft 로 남고 이미 올린 스냅샷 객체를 지웁니다. 멈추기 직전에 끝났으면 작업은 `done` 입니다. 응답은 `202` + 작업이고, 끝난 작업은 `409`(`code:
+     job_not_cancellable`)입니다.
+   - 버전 응답(조회·목록·설명 수정·`202` 본문)에 그 버전의 작업 `job`(`job_id`·`kind`·`state`·`queue_position`·`requested_at`·`error`)이 붙습니다 —
+     draft·`preparing` 버전은 대기·실행 중인 작업이 있을 때만, `failed` 버전은 마지막 작업입니다. 없으면 키가 빠집니다.
+     `requested_at` 은 진행 목록의 같은 필드와 같은 값입니다.
+9. **seal 의 `429` 가 없어집니다.** `seal_busy` 는 더 나가지 않고(자리가 없으면 `202` 대기), 같은 버전 seal 진행 중도 `202` + 그
+   작업입니다. `seal_in_progress` 는 잠금을 못 잡은 뒤 작업을 다시 찾지 못한 드문 경합에서만 남습니다. 새 오류 code 는
+   `version_preparing`(409)·`job_not_cancellable`(409)·`job_cancelled`(409) 셋입니다. 바로 돌던 작업이 관리자 취소로 멈추면 그 요청은
+   `409`(`code: job_cancelled`, `작업이 취소되었습니다`)입니다. seal 의 본문 검증이 버전 조회·sealed 판정 뒤로 옮겨, 없는 버전이나
+   sealed 버전에 틀린 본문을 보내면 이전의 `400` 대신 `404`·`409`(`already_sealed`)입니다.
+10. **버전 응답의 `seal_in_progress`·`seal_started_at` 의 판정이 DB 잠금(`pg_locks`)에서 작업 행으로 바뀝니다.** 실행 중인 seal 작업이
+    있으면 진행 중이고 시각은 그 작업의 시작입니다. 그래서 seal 을 돌리던 파드가 죽으면 임대가 끝날 때까지 **최대 약 2 분** 진행 중으로
+    보이다가 줄로 돌아갑니다. 섞여 도는 동안 이전 이미지 파드가 돌리는 seal 은 진행 중으로 보이지 않습니다. 대기 중인 seal 은
+    `seal_in_progress` 없이 `job`(`state: queued`)으로 보입니다.
+11. **`seal.maxConcurrent` 는 seal 과 새 버전 만들기가 함께 쓰는 파드당 자리입니다.** 넘친 요청은 `429` 가 아니라 `202` 로 줄에 섭니다.
+    seal 하나는 끝까지 커넥션 둘(잠금 1 + 작업 1), 새 버전 만들기 하나는 하나를 쥐고(임대 갱신·진행 기록으로 잠깐 둘을 더 꺼내고 파드
+    일꾼이 하나를 씁니다) 그 몫은 고정 예약 4 에서 나옵니다. 기동 경고는 작업마다 둘로 세어 이제 `2` 부터 납니다(이전 `3` 부터). 지표 여섯을 더합니다 — `nexus_version_jobs_queued`(줄에 선 작업 수, DB 전체
+    값이라 파드마다 같고 조회가 실패하면 직전 값), `nexus_version_jobs_total{kind,result}`(`result` = `done`·`failed`·`cancelled`, 여섯 다 0
+    부터), `nexus_version_job_wait_seconds{kind}`(요청부터 시작까지), `nexus_version_job_duration_seconds{kind,result}`(시작부터 끝까지, 구간은
+    seal 소요와 같습니다), 그 파드에서 도는 작업마다 `nexus_version_job_stage{kind,dataset_version_id,stage}`(값 `1`)와
+    `nexus_version_job_progress_ratio{kind,dataset_version_id}`(끝낸 수 ÷ 전체 수, 0~1 — 전체 수가 없거나 0 이면 없습니다)입니다. 뒤의
+    둘은 끝난 작업과 지난 단계의 시리즈가 다음 스크레이프에 남지 않고, 시리즈 수는 파드마다 대략 `seal.maxConcurrent` × 2 입니다(seal 이 자리를
+    놓은 뒤 잔여 정리를 마칠 때까지는 그 seal 의 시리즈가 남아, 그동안 다음 작업이 돌면 잠깐 하나 더 나옵니다).
+    `nexus_seal_permits_total − _available` 은 그 파드에서 도는 seal·새 버전 만들기 수입니다. 대기했다 일꾼이
+    돌린 seal 도 `nexus_seal_total`·`nexus_seal_duration_seconds` 에 셉니다.
+
+**문서 정정** — 둘입니다.
+1. values 의 리소스 주석 「메모리 한도를 정하는 것은 seal 이다 — 적재·조회·CVAT 은 전부 요청 단위」는 `0.1.32` 까지 틀렸습니다. 동작 변경
+   4 의 세 경로가 버전(가져오기는 요청)의 annotation 을 한 번에 읽었습니다. 그 판에서 새 버전 만들기 한 번의 최고점은 원본 버전의 버전
+   전용 행 수와 구성요소의 JSON 값 수를 따랐고, 합성 데이터 세 모양에서 `70 B × JSON 값 수 + 2 KB × 행 수` 가 실측의 1.07 ~ 1.41 배였습니다
+   (구성요소 텍스트 길이 대비 배수는 정수 좌표 데이터까지 넣으면 4.3 ~ 15 배로 벌어져 어림에 쓰지 않습니다). 이 판에서는 주석이 맞습니다.
+2. README 「annotation 버전 행 정리」의 WAL 단가 「지운 행당 약 745 B」는 그 측정의 데이터에서만 맞는 값이었습니다. WAL 의 대부분은
+   지운 행이 있던 힙 페이지의 전체 페이지 기록이라 지운 행 수가 아니라 지울 행이 든 페이지 수를 따릅니다. PostgreSQL 18.6 에서 지운 행
+   30 만 ~ 62.5 만으로 재면 지울 행끼리 페이지를 채웠을 때 행 크기의 1.08 ~ 1.29 배, 남는 행과 반씩 섞였을 때 2.22 배였습니다. 단가를 행
+   크기와 배치 기준으로 바꾸고 평균 행 크기와 섞인 정도를 보는 질의를 더했습니다. 샘플당 지운 행이 12 에서 25 로 늘면 WAL 도 두 배였습니다.
+   실행 중 체크포인트가 끼면 data checksums 나 `wal_log_hints` 가 켜진 DB 에서 약 33 % 늘었고, 둘 다 꺼진 DB 에서는 늘지 않았습니다.
+
+**마이그레이션** — `038`(새 표 `version_jobs`·`version_job_samples`). 기존 표에 열을 더하지 않고 백필도 없으며,
+`dataset_versions.status` 는 제약 없는 글이라 `preparing`·`failed` 는 값만 더합니다. 1 의 인덱스는 마이그레이션이 아니라
+운영자가 고른 시각에 서브커맨드로 만듭니다(표 전체를 두 번 읽어 기동 확인 예산 안에 끝난다는 보장이 없습니다).
+- **영향받는 테이블** — 새로 만드는 둘. 외래 키 때문에 `datasets`·`dataset_versions`·`users` 에 `ShareRowExclusiveLock` 을 잠깐 잡고
+  `lock_timeout` 3 초로 끊습니다 — 그 표에 3 초 넘게 쓰는 트랜잭션이 있으면 마이그레이션이 실패하고 파드가 다시 뜨며 다음 기동이 다시
+  시도합니다.
+- **예상 소요시간** — 빈 표를 만드는 것이라 행 수와 무관하게 짧습니다.
+- **롤백** — 이 버전은 마이그레이션 038 을 추가하며, 이미지 `0.1.32` 이하로 롤백할 수 없습니다(롤백 가능한 하한은 `0.1.33`). 되돌리려면
+  README 「되돌리기 · 038 이 적용된 DB」대로 대기·실행 중인 작업과 `preparing`·`failed` 버전이 없을 때 두 표를 지우고
+  `_sqlx_migrations` 의 038 행을 지웁니다. 작업 행(진행 목록·실패 사유)은 함께 사라집니다.
+
+**설정 키** — 없음. `seal.maxConcurrent` 는 그대로이고 뜻이 넓어졌습니다(동작 변경 11).
+
+**운영 조치** — 인덱스를 만들지 않아도 됩니다(만들지 않으면 이전과 같습니다). 만들 때는 README 의 순서대로 점검 → `--apply` 입니다.
+**만드는 동안 그 DB 전체에서 vacuum 이 dead tuple 을 치우지 못하므로 `compact-instances --apply` 와 겹쳐 돌리지 않습니다.** 큰 표는
+`samples` 의 표 단위 autovacuum 문턱을 낮춰 all-visible 비율을 높게 두는 것을 함께 검토합니다.
+
+**운영 조치** — **SDK 를 `0.1.26` 으로 함께 올립니다.** `0.1.25` 이하는 `202` 를 끝난 결과로 받습니다 — `seal()` 은 `202` 본문(`{"job",
+"version"}`)을 sealed 결과처럼 돌려주고, `fork_from` 으로 새 버전을 만드는 호출은 준비 중인 버전의 핸들을 돌려줘 그 핸들의 쓰기가 `409`
+`version_preparing` 이 됩니다. 이 결함은 서버가 `202` 를 줄 때(자리가 찼거나, 줄에 앞선 작업이 있거나, 같은 버전의 작업이 이미 있을 때)
+드러납니다 — 앞선 작업이 다른 파드의 것이어도, 그 파드에 자리가 비어 있어도 그렇습니다. `0.1.26` 은 `202` 면 작업이 끝날 때까지 기다립니다. 웹 화면이 seal·
+새 버전 만들기를 부르면 `202` 본문과 `preparing` 상태를 처리하는지 확인합니다.
+
+**운영 조치** — **이 판의 교체는 `strategy.type=Recreate` 입니다**(`0.3.23` 때와 같은 절차, 차트 기본 `RollingUpdate` 는 그대로입니다).
+이전 이미지 파드는 `preparing` 을 몰라 준비 중인 버전에 적재·annotation 쓰기·seal 을 받습니다. 되돌릴 때도 Recreate 로 하고, 대기·실행
+중인 작업을 취소하고 `preparing`·`failed` 버전을 지운 뒤 038 을 걷습니다. 커넥션 경고가 `seal.maxConcurrent: 2` 에서도 납니다(동작
+변경 11) — 값을 바꾸지 않아도 되지만 경고의 뜻은 그 항목입니다.
+
+**호환성** — 롤백 불가(위 **마이그레이션** 의 038). 038 을 걷고 이미지 `0.1.32` 로 되돌리면 1 에서 만든 인덱스는 남고 이전 판의
+플래너도 그대로 씁니다(지우려면 `DROP INDEX CONCURRENTLY idx_samples_id_deleted`). 되돌리면 2·3 이 이전으로 돌아가고, 4 를 되돌리면
+메모리가 다시 버전 크기를 따라가며, 6~11 이 없어져 seal 이 다시 `429` 를 냅니다. SDK `0.1.26` 은 `0.1.32` 이하 서버에서 이전 동작
+(`429` 를 `wait` 까지 다시 보냄)입니다.
+
 ## 0.3.26
 
 image: `int2jieun/nexus-server:0.1.31` → `int2jieun/nexus-server:0.1.32`

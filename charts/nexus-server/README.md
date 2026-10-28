@@ -87,7 +87,7 @@ helm upgrade nexus-server int2nexus/nexus-server -n <namespace> \
 | `cas.baseUrl` | `http://cas-server:80` | CAS(cas-server) 주소 |
 | `cas.region` / `cas.defaultBucket` | `cas-default` / `data` | CAS region·기본 버킷 이름. 서버는 이 이름 뒤에 `-manifests`를 붙인 버킷에 seal 스냅샷을 저장한다(이 이름 자체에는 저장하지 않는다). 붙인 이름이 **S3 규칙**(소문자·숫자·`-`·`.`, 3~63자)을 따라야 하므로 이 값은 53자 이하 |
 | `database.maxConnections` | `16` | 워크로드 풀 상한. 적재가 쓸 수 있는 자리는 **이 값 - 4**(조회·관리·seal 몫)이고, readiness 전용 커넥션이 이 풀 **밖에** 하나 더 붙는다(Postgres 쪽 계산은 replica당 이 값 + 1). `ingest.batchItemConcurrency`와의 불변식은 [`values.yaml`](values.yaml) 주석 |
-| `seal.maxConcurrent` | `""` | 이 파드에서 동시에 도는 seal 의 상한(비우면 이미지 기본 `1`). 넘친 seal 은 시작하지 않고 **`429`**(`code: seal_busy`, `Retry-After: 10`). `0` 이면 기동이 실패한다. 메모리 지침(`resources`)은 seal 하나 기준이라 올리면 `limits.memory` 도 그 배수만큼 올린다. seal 하나는 풀에서 최대 둘을 예약 4(고정)에서 쓰므로 2 면 적재 포화 때 조회·관리 몫이 0 이 될 수 있다 — `database.maxConnections` 를 올려도 예약은 늘지 않는다 |
+| `seal.maxConcurrent` | `""` | 이 파드에서 동시에 도는 버전 작업(seal 과 `fork_from` 새 버전 만들기가 함께 쓰는 자리)의 상한(비우면 이미지 기본 `1`). 자리가 없으면 요청은 **`202`** 로 [버전 작업 줄](#버전-작업-줄seal새-버전-만들기)에 서고 자리가 나는 대로 어느 파드든 돌린다. `0` 이면 기동이 실패한다. 메모리 지침(`resources`)은 작업 하나 기준이라 올리면 `limits.memory` 도 그 배수만큼 올린다. seal 하나는 풀에서 끝까지 둘(잠금 1 + 작업 1), 새 버전 만들기 하나는 하나를 쥐고(임대 갱신·진행 기록으로 잠깐 둘을 더 꺼내고 파드 일꾼이 하나를 쓴다) 그 몫이 예약 4(고정)에서 나오므로 seal 둘이면 적재 포화 때 조회·관리 몫이 0 이 된다(작업마다 둘로 세어 2 이상이면 기동 로그에 경고) — `database.maxConnections` 를 올려도 예약은 늘지 않는다 |
 | `ingest.admissionWaitMs` | `""` | 적재가 자리를 기다리는 상한(ms). 넘기면 대기가 아니라 **`429` + `Retry-After: 1`**. 비우면 서버 기본 3000. `0`이면 기다리지 않는다(자리가 비어 있으면 통과, 없으면 그 자리에서 `429`) |
 | `explorer.draftBulkReadEnabled` | `true` | `false` 면 SDK 가 표시 헤더 `X-Nexus-Bulk-Read: 1` 을 붙인 draft 버전의 explorer 대량 읽기(draft `to_df`·`iter_samples`·`samples()`(기본 `include_annotations=True`)·`shuffle`·`sort_by`·`fingerprint`·subset `to_df`)를 **`403`**(`code: draft_bulk_read_disabled`)으로 거절한다. 웹 화면·표시 없는 클라이언트·sealed 읽기는 영향이 없다 — 협조하는 클라이언트용 운영 장치이지 보안 경계가 아니다. 서버 전체에 하나이고 파드를 다시 띄워야 반영된다. 켜 둔 채로도 표시가 붙은 draft 읽기는 요청 로그에 `bulk_read=draft`·`dataset_id`·`version`·`rows` 로 남는다. 적용 값은 `GET /api/v1/admin/config-effective` 의 `explorer.draft_bulk_read_enabled` |
 | `strategy` | `{}` | Deployment 교체 방식. 비우면 쿠버네티스 기본 RollingUpdate. 옛 파드와 함께 돌 수 없는 판은 `--set strategy.type=Recreate` 로 교체한다(그 판의 CHANGELOG 에 적는다) — 옛 파드를 모두 내린 뒤 새 파드를 띄우므로 그동안 서비스가 끊긴다. Recreate 로 바꿀 때는 업그레이드 **전에** `kubectl -n <ns> patch deploy <fullname> --type=json -p '[{"op":"replace","path":"/spec/strategy/type","value":"Recreate"},{"op":"remove","path":"/spec/strategy/rollingUpdate"}]'` 로 Deployment 를 먼저 바꾸고(strategy 만 바뀌어 파드는 다시 뜨지 않는다, `remove` 만 보내면 API 서버가 기본값을 다시 채워 효과가 없다) `kubectl -n <ns> get deploy <fullname> -o jsonpath='{.spec.strategy}'` 로 확인한 뒤 같은 값으로 올린다. 차트도 Recreate 면 `rollingUpdate: null` 을 함께 렌더해 helm 3 은 patch 없이도 통과하지만, **helm 4(server-side apply)는 `spec.strategy.rollingUpdate: Forbidden` 으로 거부하므로 patch 가 필수다**(kind 에서 helm 3·4 로 확인). **`--reuse-values` 로 올리면 직전 릴리스 values 가 렌더되어 이미지가 옛 태그로 남고 파드가 다시 뜨지도 않는데 `helm history` 는 새 차트로 업그레이드 완료로 보인다**(helm 3·4 확인) — 쓰지 않거나 `--set image.tag=<새 태그>` 를 함께 주고, `--reset-then-reuse-values` 는 새 차트 기본값을 쓴다. RollingUpdate 로 되돌릴 때 helm 4 는 patch 가 `strategy.type` 을 소유해 values 에서 지우기만 하면 Recreate 가 남고 `--set strategy.type=RollingUpdate` 는 field manager 충돌로 거부된다 — `--force-conflicts --set strategy.type=RollingUpdate` 로 올리거나 `kubectl -n <ns> patch deploy <fullname> --type=merge -p '{"spec":{"strategy":{"type":"RollingUpdate"}}}'` 로 먼저 되돌린다 |
@@ -434,6 +434,28 @@ END $$;
 
 `helm rollback` 은 차트와 이미지만 되돌리고 적용된 스키마는 그대로 둔다. nexus-server 는 기동 때 DB 의 `_sqlx_migrations` 와 이미지에 든 마이그레이션 집합을 대조해, **DB 에만 있는 마이그레이션이 있으면 기동하지 않는다**(`was previously applied but is missing in the resolved migrations`). 그래서 마이그레이션이 추가된 판에서 이전 이미지로 되돌리려면 그 마이그레이션을 손으로 걷어야 하고, 걷어도 되는지는 마이그레이션마다 다르다. 걷을 수 없으면 업그레이드 전에 떠 둔 `pg_dump` 스냅샷 복원이 유일한 수단이다. 복원은 DB 를 통째로 다시 만든다 — `pg_restore --clean --create -d postgres <덤프>`(그 DB 에 다른 접속이 없어야 하고 DB 를 지우고 만들 권한이 필요하다) 또는 `dropdb`·`createdb` 뒤 `pg_restore -d <DB>`. **`--clean` 만으로는 안 된다** — 새 마이그레이션이 만든 표는 덤프에 없어 지워지지 않고, 그 FK 때문에 그 표가 가리키는 표가 복원되지 않은 채 `_sqlx_migrations` 만 옛 상태로 돌아가 이전 이미지가 섞인 DB 위에서 오류 없이 기동한다(kind 에서 확인). 복원은 스냅샷 뒤의 모든 쓰기를 잃는다. 순서는 파드를 0 개로 내리고(아래 1) → 복원 → 이전 판 리비전으로 rollback(아래 4) → replicas 를 올리는 것이다. 새 이미지 파드가 떠 있는 채 복원하면 그 파드가 마이그레이션을 다시 적용한다.
 
+### 038 이 적용된 DB
+
+038(`version_jobs`·`version_job_samples`, seal·새 버전 만들기의 작업 줄)이 적용된 DB 에서 038 이전 이미지는 기동하지 않는다. 걷으면 작업 행(진행 목록·실패 사유)이 사라진다. **대기·실행 중인 작업이 있거나 `preparing`·`failed` 버전이 있으면 걷지 않는다** — 이전 이미지는 그 상태를 몰라 draft 처럼 쓰기를 받는다. 실행 중 작업은 끝나기를 기다리고, 대기 작업은 취소하고(`POST /api/v1/version-jobs/{job_id}/cancel`), `preparing`·`failed` 버전은 지운 뒤에 한다. 판정은 이 질의다(파드를 내린 뒤 참이어야 한다).
+
+```sql
+SELECT NOT EXISTS (SELECT 1 FROM version_jobs WHERE state IN ('queued', 'running'))
+   AND NOT EXISTS (SELECT 1 FROM dataset_versions WHERE status IN ('preparing', 'failed'));
+```
+
+순서는 아래 035·036 절차와 같다(1 → 2 에 위 판정 → 3 → 4). 3 의 블록은 이것이다. DROP 은 외래 키가 가리키는 `datasets`·`dataset_versions`·`users` 에 AccessExclusiveLock 을 잡으므로 `lock_timeout` 을 건다.
+
+```sql
+BEGIN;
+SET LOCAL lock_timeout = '3s';
+DROP TABLE IF EXISTS version_job_samples;
+DROP TABLE IF EXISTS version_jobs;
+DELETE FROM _sqlx_migrations WHERE version = 38;
+COMMIT;
+```
+
+038 과 그 앞(037·035·036)을 함께 걷을 때는 이 DROP 을 앞에 두고 `DELETE FROM _sqlx_migrations WHERE version IN (…, 38)` 로 한 트랜잭션에서 돌린다.
+
 ### 037 이 적용된 DB
 
 037(`annotation_session_tag_baselines`, CVAT 세션의 글 칸 기준값과 `annotation_sessions` 의 가져오기 임대 칸 둘)이 적용된 DB 에서 037 이전 이미지는 기동하지 않는다. 걷으면 진행 중 세션의 글 칸 기준이 사라지므로, 태그 항목이 든 세션이 열려 있으면(`creating`·`open`) 「가져오기」하고 close 한 뒤에 한다. 순서는 아래 035·036 절차와 같다(1 → 3 → 4, 판정 2 는 없다). 3 의 블록은 이것이다.
@@ -587,7 +609,7 @@ SELECT NOT EXISTS (SELECT 1 FROM instance_overrides);
 
 **옵션.** `--help` 가 사용법과 종료 코드 표를 낸다. `--resume <dataset_id>:<sample_id>`, `--batch <n>`(시작 배치, 기본 100 샘플. 배치 하나가 1 초를 넘으면 다음 배치를 절반으로 줄이고(최소 10, 시작 값이 그보다 작으면 시작 값), 꽉 찬 배치가 0.25 초 안에 끝나기를 세 번 이어 하면 두 배로 늘려 시작 값까지 돌아간다. 후보를 찾는 훑기는 배치 크기와 따로 한 번에 1,000 샘플(`--batch` 가 더 크면 그 값)이다), `--undo-timeout-ms <n>`(기본 5000 — 배치마다 undo 기록의 쓰기·fsync 를 기다리는 상한. 넘으면 그 배치를 롤백해 잠금을 놓고 `aborted.reason = undo_write_timeout` 으로 멈춘다. 느린 저장소면 올려 `--resume` 한다), `--sleep-ms <n>`(기본 0, 배치 사이 쉬는 시간 — 시간당 WAL 은 낮추지만 총량은 같다), `--verify-sealed <k>`(기본 3, 0 이면 끔 — `--apply` 에서 sealed 버전 k 개의 annotation 내용을 시작과 끝에 해시해 대조. 고른 버전을 통째로 두 번 읽어 소요가 버전 크기에 비례하므로, 큰 sealed 버전이 든 범위는 작은 dataset 에서 확인한 뒤 0 으로 돌릴 수 있다), `--allow-inactive-slots`, `--no-move`·`--keep-shared`(위 표), `--exclude-dataset <id>`(`--all` 에서 그 dataset 을 뺀다, 여러 번 줄 수 있다. 없는 id 이거나 `--resume` 의 dataset 이 들어 있거나 `--dataset` 과 함께 주면 시작하지 않는다), `--undo-segment-mb <n>`(기본 256, undo 기록 파일 하나의 크기 기준).
 
-**출력과 종료 코드.** 결과 JSON 은 stdout, 진행 줄(배치마다 소요·WAL 바이트·undo 기록 소요 `undo_ms`·배치 크기·그 배치에서 읽은 annotation 원문 바이트 `components_bytes`)은 stderr 다. 메모리 최고점은 배치 하나의 `components_bytes` 에 비례하므로, 큰 배치가 있는 dataset 은 `--batch` 를 줄여 따로 돌린다. 결과 JSON 에는 종료 코드(`exit_code`)·undo 기록 소요(`undo_write_ms_max`·`undo_write_ms_total`)·끈 단계(`steps_disabled`)·뺀 dataset(`excluded_datasets`)이 함께 실린다. 종료 코드는 0 정상, 1 시작 전 오류(인자·접속·관문, 결과 JSON 없음), 2 중단(`aborted`), 3 sealed 해시 불일치, 5 계획 자기 검증 실패(`skipped.self_check` 가 0 이 아님 — 판정 결함의 신호라 **dry-run 도 5 로 끝나며, 5 면 다음 단계로 넘어가지 않는다**), 4 신호로 중단, 130 두 번째 신호로 즉시 종료(결과 JSON 없음)다. 여럿 해당하면 2 → 3 → 5 → 4 순으로 앞의 것이다. `--verify-sealed` 가 고른 sealed 버전이 실행 중에 지워지면 그 버전은 `deleted: true` 로 싣고 불일치로 세지 않는다. 해시는 annotation 원문(소수 표기까지)을 대상으로 한다. SIGTERM 을 받으면 진행 중 배치를 마치고 멈춰 `resume_at` 을 내고, 그 값으로 `--resume` 한다. 끝낸 배치가 없이 멈추면 `resume_at` 은 이번 실행에 준 `--resume` 값(주지 않았으면 `null`)이다. `null` 이면 처음부터 다시 돌린다(`--resume` 에 그대로 넘기지 않는다). 훑은 수(`samples_scanned`)는 끝낸 배치와 후보 없이 넘긴 샘플을 센다(멈춘 배치는 세지 않고 다음 실행이 다시 훑는다). **dry-run 은 복제 충돌(SQLSTATE 40001)과 연결 끊김을 만나면 다시 접속해 같은 배치를 시도마다 절반씩 줄인 묶음(1/2·1/4·1/8)으로 나눠 세 번까지 다시 읽고**, 그래도 실패하면 `aborted.reason` 을 `replica_conflict`·`connection_lost` 로 내고 멈춘다. 후보 목록 훑기와 실행 중의 마이그레이션 대조도 같은 횟수로 다시 읽는다(묶음은 나누지 않는다). 다시 읽기 전에, 복제본이면 받은 WAL 을 모두 재생할 때까지(받은 위치와 재생 위치가 같아질 때까지) 최대 5 분 기다린다 — `max_standby_streaming_delay` 는 질의 하나의 시간이 아니라 받은 WAL 을 재생하는 데 허용하는 시간이고 복제본이 따라잡았을 때만 다시 시작되어, 밀린 채로 다시 읽으면 바로 다시 취소되기 때문이다. 5 분 안에 따라잡지 못하거나 재생 위치를 가릴 수 없으면 그대로 다시 읽는다. 쉬거나 기다리는 동안 SIGTERM 을 받으면 종료 코드 4 로 멈추고 `resume_at` 을 낸다. 다시 시도한 배치의 진행 줄 소요(`tx_ms`)에는 쉼·재접속·기다린 시간이 들어가, 그 값이 1 초를 넘으면 그다음 배치 크기가 절반으로 줄고 빠른 배치가 이어지면 다시 늘어난다. 복제본이 idle 세션을 끊은 경우는 클라이언트에 SQLSTATE 가 오지 않아 `connection_lost` 로 나온다. `--apply` 는 다시 시도하지 않는다. 교착·`lock_timeout`·`statement_timeout` 등으로 세 번 다시 시도해도 실패한 배치는 멈추지 않고 `skipped.conflict` 로 세고 넘어가므로(종료 코드는 그대로), 그 값이 0 이 아니면 그만큼 처리하지 않은 것이라 stderr 경고 줄에 남은 그 범위를 다시 돌린다. 결과 JSON 의 `server_version` 은 이 도구 바이너리의 판이다.
+**출력과 종료 코드.** 결과 JSON 은 stdout, 진행 줄(배치마다 소요·WAL 바이트·undo 기록 소요 `undo_ms`·배치 크기·그 배치에서 읽은 annotation 원문 바이트 `components_bytes`·dry-run 이 그 배치를 다시 읽었는지 `retried`)은 stderr 다. 메모리 최고점은 배치 하나의 `components_bytes` 에 비례하므로, 큰 배치가 있는 dataset 은 `--batch` 를 줄여 따로 돌린다. 결과 JSON 에는 종료 코드(`exit_code`)·undo 기록 소요(`undo_write_ms_max`·`undo_write_ms_total`)·끈 단계(`steps_disabled`)·뺀 dataset(`excluded_datasets`)이 함께 실린다. 종료 코드는 0 정상, 1 시작 전 오류(인자·접속·관문, 결과 JSON 없음), 2 중단(`aborted`), 3 sealed 해시 불일치, 5 계획 자기 검증 실패(`skipped.self_check` 가 0 이 아님 — 판정 결함의 신호라 **dry-run 도 5 로 끝나며, 5 면 다음 단계로 넘어가지 않는다**), 4 신호로 중단, 130 두 번째 신호로 즉시 종료(결과 JSON 없음)다. 여럿 해당하면 2 → 3 → 5 → 4 순으로 앞의 것이다. `--verify-sealed` 가 고른 sealed 버전이 실행 중에 지워지면 그 버전은 `deleted: true` 로 싣고 불일치로 세지 않는다. 해시는 annotation 원문(소수 표기까지)을 대상으로 한다. SIGTERM 을 받으면 진행 중 배치를 마치고 멈춰 `resume_at` 을 내고, 그 값으로 `--resume` 한다. 끝낸 배치가 없이 멈추면 `resume_at` 은 이번 실행에 준 `--resume` 값(주지 않았으면 `null`)이다. `null` 이면 처음부터 다시 돌린다(`--resume` 에 그대로 넘기지 않는다). 훑은 수(`samples_scanned`)는 끝낸 배치와 후보 없이 넘긴 샘플을 센다(멈춘 배치는 세지 않고 다음 실행이 다시 훑는다). **dry-run 은 복제 충돌(SQLSTATE 40001)과 연결 끊김을 만나면 다시 접속해 같은 배치를 시도마다 절반씩 줄인 묶음(1/2·1/4·1/8)으로 나눠 세 번까지 다시 읽고**, 그래도 실패하면 `aborted.reason` 을 `replica_conflict`·`connection_lost` 로 내고 멈춘다. 후보 목록 훑기와 실행 중의 마이그레이션 대조도 같은 횟수로 다시 읽는다(묶음은 나누지 않는다). 다시 읽기 전에, 복제본이면 받은 WAL 을 모두 재생할 때까지(받은 위치와 재생 위치가 같아질 때까지) 최대 5 분 기다린다 — `max_standby_streaming_delay` 는 질의 하나의 시간이 아니라 받은 WAL 을 재생하는 데 허용하는 시간이고 복제본이 따라잡았을 때만 다시 시작되어, 밀린 채로 다시 읽으면 바로 다시 취소되기 때문이다. 5 분 안에 따라잡지 못하거나 재생 위치를 가릴 수 없으면 그대로 다시 읽는다. 쉬거나 기다리는 동안 SIGTERM 을 받으면 종료 코드 4 로 멈추고 `resume_at` 을 낸다. 다시 시도한 배치의 진행 줄 소요(`tx_ms`)는 성공한 시도의 읽기·판정만 재고(쉼·재접속·기다린 시간은 빠진다) `retried: true` 가 붙으며, 그 배치 다음은 소요와 무관하게 배치 크기가 절반으로 줄고 빠른 배치가 이어지면 다시 늘어난다. 복제본이 idle 세션을 끊은 경우는 클라이언트에 SQLSTATE 가 오지 않아 `connection_lost` 로 나온다. `--apply` 는 다시 시도하지 않는다. 교착·`lock_timeout`·`statement_timeout` 등으로 세 번 다시 시도해도 실패한 배치는 멈추지 않고 `skipped.conflict` 로 세고 넘어가므로(종료 코드는 그대로), 그 값이 0 이 아니면 그만큼 처리하지 않은 것이라 stderr 경고 줄에 남은 그 범위를 다시 돌린다. 결과 JSON 의 `server_version` 은 이 도구 바이너리의 판이다.
 
 **undo 기록.** 영구히 사라지는 행(아무 버전도 읽지 않는 버전 행, 3 의 공유 행, 2 로 옮기기 전에 지우는 적재 원본)은 내용 전체를, 같은 내용이 DB 에 남는 행(1 의 복사본, 2 로 옮긴 행, 그룹 표식)은 키만 배치마다 커밋 전에 기록한다. 자동 되돌리기는 없고 수작업 복구·조사용이다. 실행마다 파일은 두 종류다.
 
@@ -608,8 +630,19 @@ SELECT NOT EXISTS (SELECT 1 FROM instance_overrides);
 |---|---|
 | apply 소요 | 후보 샘플당 3.7 ms(읽는 버전 하나) ~ 5.0 ms(둘) — 측정 데이터는 모든 샘플이 후보였다 |
 | dry-run 소요 | 후보 샘플당 0.62 ms |
-| WAL(정리 몫) | 지운 행당 약 745 B, 옮긴 행당 약 2.6 KB. autovacuum 이 겹치면 서버 전체는 약 2 배 |
+| WAL(정리 몫) | 대부분(행 약 400 B 에서 약 85 %, 1 KB 넘는 행에서 95 % 이상)이 지운 행이 있던 힙 페이지의 전체 페이지 기록(FPI, 페이지마다 약 8 KB 하나)이라, 바뀐 샘플 수나 지운 행 수가 아니라 **지울 행이 든 페이지 수**를 따른다(옮기기 없음). 지울 행끼리 페이지를 채웠으면 지운 행 하나에 그 행의 저장 크기(`pg_column_size(i.*)`)의 약 1.1 ~ 1.3 배(행 391 B 에서 1.2 ~ 1.3 배, 1,415 B 에서 1.08 배)이고, 지울 행과 남는 행이 한 페이지에 반씩 섞였으면 약 2.2 배다 — 한 페이지에 지울 행이 적을수록 커져 하나뿐이면 행당 약 8 KB 다. 샘플당 지운 행이 12 에서 25 로 늘면 WAL 도 두 배였고, 길게 돌려도 행당 값은 줄지 않는다. data checksums 나 `wal_log_hints` 가 켜진 DB 에서는 실행 중 체크포인트가 끼면 늘어난다 — 이미 지운 페이지를 체크포인트 뒤에 다시 읽으며 힌트 비트를 세울 때 페이지 기록(`FPI_FOR_HINT`)이 한 번 더 남기 때문이다(실행 중간에 한 번 끼었을 때 약 33 %, 둘 다 꺼진 DB 에서는 0.5 %). 옮긴 행은 하나에 약 2.6 KB 를 더한다. autovacuum 이 겹치면 서버 전체는 약 2 배. 진행 줄의 `wal_bytes` 는 서버 전체 WAL 위치의 차라 같은 시간의 다른 쓰기도 들어간다 |
 | undo(gzip) | 바뀐 샘플당 약 750 B. 풀면 내용 전체 기록 행당 약 557 B |
+
+WAL 은 `equal_version_rows_deleted`(와 그 밖에 지우는 행 수) × 지울 행의 평균 크기 × 1.1 ~ 1.3 을 하한으로 어림하고, 버전 행이 든 페이지에 다른 행이 섞여 있으면 그만큼 올린다(버전 행이 반이면 약 2 배). 평균 크기(첫 질의)와 섞인 정도(둘째 질의의 `version_share` — 버전 행이 든 페이지에서 버전 행의 비율, 1 에 가까우면 하한)는 표본으로 본다(복제본에서 돌려도 된다). 버전 행이 모두 지워지는 것은 아니므로 `version_share` 는 지울 행 비율의 상한이다. 체크포인트 몫이 붙는지는 `SHOW data_checksums`·`SHOW wal_log_hints` 로 본다.
+
+```sql
+SELECT avg(pg_column_size(i.*)) FROM instances i TABLESAMPLE SYSTEM (0.1) WHERE i.dataset_version_id IS NOT NULL;
+
+SELECT round(avg(v::numeric / n), 2) AS version_share, sum(v) AS sampled_version_rows
+  FROM (SELECT count(*) AS n, count(*) FILTER (WHERE dataset_version_id IS NOT NULL) AS v
+          FROM instances TABLESAMPLE SYSTEM (0.1) GROUP BY (ctid::text::point)[0]) p
+ WHERE v > 0;
+```
 
 **실행 중.** 진행 줄의 WAL 바이트·`pg_stat_replication` 의 복제 지연·남은 디스크를 보고, 크면 멈춘 뒤 `--sleep-ms` 를 올려 `--resume` 한다. `VACUUM` 은 autovacuum 에 맡기는 것이 기본이다. 손으로 돌리면 `n_dead_tup` 이 커졌을 때 한 번에 하나만, 쓰기가 적은 시간에 돌린다. 정리가 잡고 있는 샘플을 겨냥한 annotation 쓰기는 그 배치가 끝날 때까지 기다린다(배치 100 에서 p99 약 340 ms).
 
@@ -652,6 +685,88 @@ spec:
 
 **멈추기와 이어 돌리기.** 멈출 때는 `kubectl -n <ns> exec <pod> -- sh -c 'kill -TERM 1'` 로 신호를 보낸다(이미지에 `kill` 실행 파일이 없어 셸의 내장 명령을 쓴다) — pod 가 남아 `kubectl logs` 로 결과 JSON 의 `resume_at` 을 읽을 수 있다. Job 이나 pod 를 지우면 로그도 함께 사라진다(로그 수집기가 없을 때). 신호는 배치 사이(와 dry-run 재시도의 쉼·대기 중)에서만 보므로 `--sleep-ms` 휴식 중이면 휴식이 끝난 뒤, 시작 때 sealed 해시를 계산하는 중이면 그 계산이 끝난 뒤 멈춘다. 유예가 끝나 강제 종료돼 결과 JSON 이 없으면 마지막 `정리 진행` 줄의 `dataset_id` 와 `last_sample` 로 `--resume <dataset_id>:<last_sample>` 을 만든다. 작은 dataset 으로 먼저 확인할 때는 sealed 버전이 있는 것을 고른다 — 없으면 `verify_sealed.versions` 가 비고 대조가 일어나지 않는다. 배포 도구가 자동 sync 로 Job 을 다시 만들지 않게 하고, 로그(stdout 결과 JSON·stderr 진행 줄)를 Job 이 끝난 뒤에도 남게 한다. NetworkPolicy 가 라벨로 DB 접근을 가르면 그 라벨도 맞춘다.
 
+## 샘플 삭제 확인 인덱스(deleted-sample-index)
+
+`nexus-server deleted-sample-index` 는 포함 인덱스 `idx_samples_id_deleted ON samples (sample_id) INCLUDE (is_deleted)` 를 점검하고 만든다. 개수·목록 경로(facet 개수, explorer 개수와 일괄 쓰기의 `confirm` 비교, subset 해소, 버전 샘플 수, seal 의 샘플 수 기록, dataset·버전 통계)는 샘플마다 지워졌는지(`is_deleted`)를 보려고 `samples` 힙을 읽는데, 이 인덱스가 있으면 플래너가 인덱스만 읽어 판정한다. **서버의 문장은 바뀌지 않는다** — 인덱스가 생기면 그때부터 쓰이고 파드를 다시 띄울 필요가 없으며, 인덱스가 없어도 결과는 같다(느릴 뿐이다). HTTP 서버로 뜨지 않고 마이그레이션도 돌리지 않으며 DB(`database.url`)에만 접속한다. 서버는 기동 때 `삭제 확인 인덱스 상태 state="absent" index="idx_samples_id_deleted"` 모양의 한 줄을 남긴다(`state` 는 `absent`·`invalid`·`valid`·`building`·`mismatched`, 값에 따옴표가 붙는다).
+
+**효과는 `samples` 의 all-visible 비율에 따라 달라진다.** visibility map 비트가 꺼진 페이지(적재 뒤 아직 vacuum 되지 않은 페이지, `meta`·`tags`·삭제 UPDATE 를 받은 페이지)는 인덱스만 읽는 스캔도 힙을 다시 읽는다. 점검 출력의 `table.relallvisible / table.relpages` 가 그 비율의 어림이다. 큰 표는 기본 autovacuum 문턱이 높아 비율이 낮게 머물 수 있으므로 `samples` 에 표 단위 문턱(`autovacuum_vacuum_insert_scale_factor`·`autovacuum_vacuum_scale_factor`·`autovacuum_analyze_scale_factor`)을 낮춰 두는 것을 함께 검토한다.
+
+**만들기의 비용.** 표 전체를 두 번 읽는다(`CREATE INDEX CONCURRENTLY`). 그동안 적재·조회는 막히지 않는다. 인덱스 크기는 행 수에 비례한다(샘플 200 만 행에 약 80 MB). 적재 한 행마다 인덱스 삽입이 하나 늘고, `is_deleted` 가 인덱스 열이 되므로 샘플 삭제 UPDATE 는 HOT 이 될 수 없다(삭제 한 건마다 모든 인덱스에 항목이 들어간다).
+
+**조건.**
+
+- **만드는 동안 그 DB 전체에서 vacuum 이 dead tuple 을 치우지 못한다** — 만들기가 스냅샷을 쥐어 xmin 지평선을 묶는다. `compact-instances --apply` 와 겹쳐 돌리지 않는다(그쪽이 지운 행이 그동안 남는다).
+- 앞선 트랜잭션이 끝나기를 기다리는 단계가 있다 — 주 서버의 긴 문장·REPEATABLE READ 트랜잭션(`pg_dump` 등)이 있으면 그 단계에서 선다. 복제본의 질의와 `hot_standby_feedback` 은 기다리게 하지 않는다. 점검 출력의 `oldest_xmin` 을 보고 시작한다.
+- `--apply` 는 복제본이면 시작하지 않는다. 동시 실행을 세션 advisory lock 으로 막으므로 pgbouncer transaction 모드를 거치면 그 잠금이 성립하지 않는다. `samples` 에 vacuum·ANALYZE 같은 표 잠금(`ShareUpdateExclusiveLock`)을 쥔 다른 세션이 있으면 시작하지 않는다 — anti-wraparound vacuum 은 기다리는 쪽이 있어도 물러나지 않아 만들기가 그 뒤에 몇 시간 설 수 있다. 이 판정은 권한에 따라 가려지는 진행 뷰가 아니라 잠금으로 한다.
+- 여러 nexus 가 함께 쓰는 DB 에는 `--apply` 하지 않는다(그 DB 를 쓰는 다른 서버의 계획도 바뀐다).
+
+**순서.**
+
+1. 점검(`args: ["deleted-sample-index"]`) — 상태·`relallvisible / relpages`·진행 중 vacuum·`oldest_xmin`.
+2. 쓰기가 적은 시간, vacuum 직후에(체크섬이나 `wal_log_hints` 가 켜져 있으면 두 번 읽으며 hint bit 를 세운 페이지가 WAL 을 늘린다) `--apply`.
+3. 기동 로그의 상태 줄 또는 다시 점검해 `valid` 를 확인한다.
+
+**옵션과 종료 코드.** 인자는 `--apply` 하나이고 `--help` 가 사용법·운영 안내·종료 코드 표를 낸다. 결과 JSON(`state_before`·`state_after`·`reason`·`index_bytes`·`table`·`leftover_invalid`·`vacuum`·`oldest_xmin`·`indcheckxmin`·`elapsed_ms`)은 stdout, 진행 줄(5 초마다 `phase`·블록 진행)은 stderr 다. 종료 코드는 0 정상(점검을 마침·만듦·이미 유효함), 1 결과 JSON 없이 끝남(인자·접속·복제본 거부 또는 도중 DB 오류), 2 아무것도 하지 않았거나 만들지 못함, 4 신호로 만들기를 취소함이다. 2 의 사유(`reason`)는 다음과 같다.
+
+| `reason` | 뜻 | 할 일 |
+|---|---|---|
+| `lock_held` | 다른 실행이 진행 중 | 그 실행이 끝난 뒤 점검 |
+| `mismatched` | 같은 이름의 다른 정의(다른 표·열·정렬 방향·opclass 등) | 손대지 않는다 — 그 인덱스를 확인해 지운 뒤 다시 |
+| `building` | INVALID 인덱스가 있고 다른 세션이 `samples` 에 표 잠금을 쥠(누가 만드는 중이거나 vacuum·ANALYZE 중) | 끝난 뒤 다시 |
+| `vacuum_in_progress` | 다른 세션이 `samples` 에 표 잠금을 쥠(vacuum·ANALYZE 등) | 끝난 뒤 다시 |
+| `table_lock_busy` | 실패해 남은 INVALID 인덱스를 3 초 안에 지우지 못함 — `samples` 를 쓰는 3 초 넘는 문장·트랜잭션이 있다 | 한가한 때 다시(인덱스는 INVALID 그대로 남아 다시 해도 안전하다) |
+| `create_failed` | 만들기 실패 | stderr 의 오류를 보고 다시 — 남은 INVALID 는 다음 `--apply` 가 정리 |
+| `not_valid_after_create` | 만든 뒤에도 유효하지 않음 | 점검 출력 확인 |
+
+SIGTERM 을 받으면 진행 중인 만들기를 취소하고 4 로 끝난다. 남은 INVALID 인덱스는 다음 `--apply` 가 정리한다. 실패해 남은 INVALID 인덱스도 쓰기 비용은 들므로 오래 두지 않는다. 비동시 `DROP INDEX` 로 손으로 지우지 않는다(`samples` 에 AccessExclusiveLock) — 지워야 하면 `DROP INDEX CONCURRENTLY idx_samples_id_deleted`.
+
+**Job 예시.** 설정은 DB 주소(`NEXUS__DATABASE__URL`, Secret)만 읽는다. 볼륨은 필요 없다.
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nexus-deleted-sample-index
+spec:
+  backoffLimit: 0            # 실패하면 사유(reason)를 보고 손으로 다시 돌린다
+  template:
+    spec:
+      restartPolicy: Never
+      terminationGracePeriodSeconds: 60   # 신호를 받으면 만들기를 취소하고 끝낸다
+      containers:
+        - name: index
+          image: <Deployment 와 같은 이미지(digest)>
+          args: ["deleted-sample-index", "--apply"]
+          env:
+            - name: NO_COLOR
+              value: "1"
+          envFrom:
+            - secretRef:
+                name: <nexus-server Secret>   # NEXUS__DATABASE__URL 을 담은 Secret
+```
+
+만들기는 표 크기에 따라 몇 시간 걸릴 수 있다. Job 에 `activeDeadlineSeconds` 를 걸면 그 시간에 신호를 받아 취소된다. 로그(stdout 결과 JSON·stderr 진행 줄)를 Job 이 끝난 뒤에도 남게 한다.
+
+## 버전 작업 줄(seal·새 버전 만들기)
+
+seal(`POST /datasets/{id}/versions/{v}/seal`)과 `fork_from` 이 있는 새 버전 만들기(`POST /datasets/{id}/versions`, 저장된 필터의 `POST /subsets/{id}/version` 포함)는 DB 에 하나인 작업 줄(`version_jobs`)을 지난다. 빈 버전 만들기와 clone job 은 줄 밖이다.
+
+- **응답.** 줄이 비었고 그 파드에 자리(`seal.maxConcurrent`)가 있으면 끝까지 돌고 seal 은 `200` + sealed 버전, 새 버전 만들기는 `201` + draft 버전이다. 아니면 **`202`** + `{"job": {...}, "version": {...}}` + `Location: /api/v1/version-jobs/{job_id}` 이다(`job.queue_position` 은 1 부터). 같은 버전에 대기·실행 중인 작업이 있으면 그 작업을 `202` 로 돌려준다. 이미 sealed 인 버전의 seal 은 `409` `already_sealed`.
+- **돌리는 쪽.** 각 파드가 자리가 날 때와 5 초마다 줄 맨 앞(요청 순서)을 집는다. 도는 작업은 120 초 임대를 30 초마다 늘리고, 파드가 죽어 임대가 끝나면 다른 파드가 처음부터 다시 돌린다 — 시작이 세 번을 넘으면 `failed`. 같은 버전의 앞선 실행이 잠금을 쥐고 있어 시작하지 못한 작업은 시도로 세지 않고 줄로 돌리고 그 파드가 15 초 건너뛴다(그동안은 줄이 비지 않아 새 요청이 자리가 있어도 `202`). 종료 신호를 받은 파드는 더 집지 않고, 신호를 받은 즉시와 요청을 다 비운 뒤 돌리던 작업을 시도로 세지 않고 줄로 돌린다. 작업 행은 파드 이름(`HOSTNAME`)으로 주인을 가린다.
+- **버전 상태.** 새 버전 만들기가 대기·실행 중인 버전은 `preparing`, 실패·취소된 버전은 `failed` 다. 둘 다 목록에 보이고 적재·링크·링크 해제·annotation·meta·에셋 붙이기·seal·fork 원본·clone job 원본·CVAT 세션·샘플 가져오기 대상과 원본이 `409`(`code: version_preparing`)다. 실패 사유는 버전 응답의 `job.error` 이고 응답 본문과 같은 문구다(DB·내부 오류는 `database error`·`internal error`, 원문은 서버 로그에만. CAS 오류는 응답 본문과 달리 `cas error` 만 적는다). `failed` 는 지울 수 있고, 대기·실행 중인 작업이 있는 `preparing` 버전(과 그것이 든 dataset)은 작업을 취소한 뒤 지운다. 대기 중인 seal 의 대상은 draft 그대로라 그 사이의 적재·수정도 seal 에 들어간다.
+- **진행 목록.** `GET /api/v1/version-jobs`(`state`·`since`(끝난 작업에만, 기본 24 시간 전)·`cursor`·`limit`(1~1000, 기본 100), 최근 요청 먼저)와 `GET /api/v1/version-jobs/{job_id}` 이고 viewer 도 본다. 항목은 데이터셋·버전 이름과 id, 종류(`seal`·`fork`), 상태(`queued`·`running`·`done`·`failed`·`cancelled`), 대기 순번, 요청한 사람의 이메일(요청한 본인과 관리자에게만), 요청·시작·끝 시각, 파드, 단계·`progress_done`/`progress_total`, 오류, 취소 요청 여부다. 끝난 작업은 7 일 뒤 지워진다. 버전 응답에도 그 버전의 작업 요약 `job`(`job_id`·`kind`·`state`·`queue_position`·`requested_at`·`error`)이 붙는다(draft·`preparing` 은 대기·실행 중일 때만, `failed` 는 마지막 작업). `job.requested_at` 은 진행 목록의 같은 필드와 같은 값이다. draft 버전의 `seal_in_progress`·`seal_started_at` 은 실행 중인 seal 작업에서 온다 — seal 을 돌리던 파드가 죽으면 임대가 끝날 때까지(최대 약 2 분) 진행 중으로 보인다.
+- **단계.** 같은 단계 안의 진행은 2 초 간격으로 묶어 기록한다(단계가 바뀌면 바로). 로그 `버전 작업 진행` 줄에도 같은 값이 남는다.
+
+  | 종류 | 단계(순서대로) | `progress_done` / `progress_total` |
+  |---|---|---|
+  | seal | `shards` | 올린 샤드 수 / 시작 때 센 버전 샘플 수 ÷ 샤드 크기 올림(도중 적재로 늘 수 있다) |
+  | seal | `shard_manifest` → `main_manifest` → `finalize` | 앞 단계 값을 이어받는다 |
+  | fork | `link` | 없음 |
+  | fork | `copy` → `finalize` | annotation 을 복제한 샘플 수 / 복제할 샘플 수(원본 버전에 버전 전용 annotation 이 있는 샘플 — `sample_ids` 를 주면 그중 고른 샘플). `finalize` 는 이어받아 두 값이 같다 |
+
+- **취소.** `POST /api/v1/version-jobs/{job_id}/cancel`(`editor` 이상, 로봇은 `403`). 대기 작업은 요청한 사람 또는 관리자(설정 superuser·`role=admin`)가 취소하고 그 자리에서 `cancelled` 다(새 버전 만들기면 버전이 `failed`). 실행 중 작업은 관리자만 취소하고, 같은 파드면 곧바로, 다른 파드면 30 초 안에 멈춘다 — 다만 그때 DB 문장 하나를 실행 중이면 그 문장이 끝난 뒤에 멈춘다(서버가 기다리기를 그만둬도 PostgreSQL 은 받은 문장을 끝까지 돌린다). 새 버전 만들기의 `link` 단계는 원본의 링크 전체를 문장 하나로 옮기므로 큰 버전이면 그 시간만큼 늦다. 멈춘 seal 은 버전이 draft 로 남고 이미 올린 스냅샷 객체를 지운다. 멈추기 직전에 끝났으면 작업은 `done` 이다. 응답은 `202` + 작업이고, 끝난 작업은 `409`(`code: job_not_cancellable`)다. 바로 돌던 작업이 취소되면 그 요청은 `409`(`code: job_cancelled`, `작업이 취소되었습니다`)로 끝난다.
+- **SDK.** `202` 를 기다리는 SDK 를 함께 쓴다 — 기다리지 않는 SDK 는 `202` 본문을 끝난 결과로 받는다(변경 이력의 해당 판 **운영 조치**).
+
 ## 헬스 체크와 지표
 
 프로브는 셋으로 갈린다. `GET /_internal/live`(의존성을 조회하지 않는 프로세스 응답성 확인)를 startup·liveness에, `GET /_internal/health`(DB ping)를 readiness에 쓴다. liveness를 `/_internal/health`로 두면 DB failover(보통 30~120초) 중에 파드가 kill되는데, 재시작으로는 외부 의존성이 복구되지 않아 중단이 원래 장애보다 길어진다.
@@ -677,17 +792,19 @@ curl -H "Authorization: Bearer $METRICS_TOKEN" localhost:8090/_internal/metrics
 |---|---|---|
 | DB 풀 | `nexus_db_pool_connections` · `_idle_connections` · `_acquire_timeouts_total` | **`_acquire_timeouts_total`이 오르기 시작하는 순간이 풀 포화의 시작점이다** — readiness는 전용 커넥션을 쓰므로 그 상황에서도 계속 200이고, 이 카운터가 유일한 신호다 |
 | 적재 유입 제어 | `nexus_ingest_permits_total` · `_available` · `nexus_ingest_rejected_total` | |
-| 로봇 토큰 | `nexus_robot_tokens_active` · `_expiring_soon` · `nexus_robot_token_min_expires_in_seconds` · `nexus_robot_accounts_without_active_token` | 이 넷만 DB를 조회한다(250ms 제한). 조회가 실패하거나 제한을 넘겨도 **사라지지 않고 직전 값으로 남으므로**(기동 후 한 번도 못 읽었으면 처음부터 없다), 알림에는 `and nexus_metrics_db_stats_ok == 1`을 함께 건다. `min_expires_in_seconds`는 활성 토큰이 없을 때 `+Inf`라 `< 임계값` 경보가 저절로 풀린다 |
-| seal | `nexus_seal_permits_total` · `_available` | 파드당 동시 seal 자리와 빈 자리. **total − available 이 지금 도는 seal 수다** — 연결이 끊긴 seal 은 `axum_http_requests_pending` 에 잡히지 않으므로 진행 중인 seal 은 이 둘로만 보인다 |
+| 로봇 토큰 | `nexus_robot_tokens_active` · `_expiring_soon` · `nexus_robot_token_min_expires_in_seconds` · `nexus_robot_accounts_without_active_token` | 이 넷과 `nexus_version_jobs_queued` 만 DB를 조회한다(각각 한 왕복, 250ms 제한 — 줄 길이는 `nexus_metrics_db_stats_ok` 에 들지 않는다). 조회가 실패하거나 제한을 넘겨도 **사라지지 않고 직전 값으로 남으므로**(기동 후 한 번도 못 읽었으면 처음부터 없다), 알림에는 `and nexus_metrics_db_stats_ok == 1`을 함께 건다. `min_expires_in_seconds`는 활성 토큰이 없을 때 `+Inf`라 `< 임계값` 경보가 저절로 풀린다 |
+| seal·버전 작업 자리 | `nexus_seal_permits_total` · `_available` | 파드당 동시 버전 작업(seal·새 버전 만들기) 자리와 빈 자리. **total − available 이 그 파드에서 지금 도는 작업 수다** — 요청과 떨어져 도는 작업은 `axum_http_requests_pending` 에 잡히지 않으므로 이 둘로만 보인다 |
+| 버전 작업 줄 | `nexus_version_jobs_queued` · `nexus_version_jobs_total`(라벨 `kind` = `seal`·`fork`, `result` = `done`·`failed`·`cancelled`) · `nexus_version_job_wait_seconds`(히스토그램, `kind`) · `nexus_version_job_duration_seconds`(히스토그램, `kind`·`result`) | 줄에 선 작업 수(DB 전체 값이라 파드마다 같고, 조회가 실패하면 직전 값이 남는다)·끝난 작업 수(여섯 다 `0` 부터)·요청부터 시작까지·시작부터 끝까지. 히스토그램 구간은 seal 소요와 같고 첫 작업이 끝나야 나온다. 대기 중에 취소된 작업은 수만 센다 |
+| 도는 버전 작업 | `nexus_version_job_stage`(라벨 `kind`·`dataset_version_id`·`stage`, 값 `1`) · `nexus_version_job_progress_ratio`(라벨 `kind`·`dataset_version_id`) | 그 파드에서 지금 도는 작업마다 지금 단계와 끝낸 비율(위 「단계」 표의 `progress_done ÷ progress_total`, 0~1 — 전체 수가 없거나 0 이면 비율 시리즈가 없다). 이름은 진행 목록에서 버전 id 로 찾는다. **끝난 작업과 지난 단계의 시리즈는 다음 스크레이프에 나오지 않는다**(스크레이프마다 도는 작업에서 읽어 쓴다). 시리즈 수는 파드마다 대략 `seal.maxConcurrent` × 2 이고(seal 은 자리를 놓은 뒤 잔여 정리를 마칠 때까지 시리즈가 남아, 그동안 다음 작업이 돌면 잠깐 하나 더 나온다), 도는 작업이 없으면 둘 다 없다 |
 | 삭제 정리 | `nexus_cas_delete_failures_total`(라벨 `kind` = `asset`·`thumbnail`·`snapshot`) | 삭제와 seal 잔여 정리에서 지우지 못하고 남긴 객체 누적. 셋 다 `0` 부터 나온다. **`asset`·`thumbnail` 은 다시 정리되지 않는다.** 버전 삭제에서 오른 `snapshot` 은 [스냅샷 잔여 점검](#스냅샷-잔여-점검reconcile-snapshots)의 `--apply` 로 지우고, seal 잔여 정리에서 오른 `snapshot` 은 그 버전을 지울 때 다시 지운다 — bucket·key 는 대개 같은 시각의 로그 `CAS object 삭제 실패`·`CAS 썸네일 삭제 실패`·`스냅샷 객체 CAS 삭제 실패` 줄에 있다(버전 삭제 뒤 정리 판정 자체가 DB 오류로 실패한 경우는 `삭제 뒤 CAS 정리 판정 실패` 줄에 dataset_id·version 만 남는다) |
-| seal 결과 | `nexus_seal_total`(라벨 `result` = `completed`·`failed`) · `nexus_seal_duration_seconds`(히스토그램, 같은 라벨) | 끝난 seal 의 수와 소요. 요청이 끊긴 seal 도 끝날 때 기록하므로 앞단 프록시의 읽기 타임아웃을 소요 분포에 맞춰 정한다. `seal_busy`·`seal_in_progress`·`already_sealed` 거절은 세지 않는다. 히스토그램은 첫 seal 이 끝나야 나온다 |
+| seal 결과 | `nexus_seal_total`(라벨 `result` = `completed`·`failed`) · `nexus_seal_duration_seconds`(히스토그램, 같은 라벨) | 끝난 seal 의 수와 소요. 요청이 끊긴 seal·대기했다 일꾼이 돌린 seal 도 끝날 때 기록하므로 앞단 프록시의 읽기 타임아웃을 소요 분포에 맞춰 정한다. `already_sealed` 거절과 잠금을 못 잡아 줄로 돌린 작업은 세지 않는다. 히스토그램은 첫 seal 이 끝나야 나온다 |
 | 끊긴 요청 | `nexus_http_requests_cancelled_total`(라벨 `method`·`endpoint`) | 응답 전에 클라이언트나 프록시가 연결을 끊은 요청 누적. `endpoint` 는 아래 HTTP 요청 지표와 같은 규칙이다. 첫 끊김이 생겨야 나온다 |
 | annotation 쓰기 | `nexus_annotation_instance_writes_total`(라벨 `mode` = `direct`·`group`·`legacy_converted`·`unchanged`) | 그룹을 보낸 annotation 쓰기(PUT·PATCH·CVAT 가져오기)를 커밋 뒤 샘플마다 한 번 센다. 넷 다 `0` 부터 나온다. `direct` 는 샘플을 읽는 버전이 그 draft 하나라 공유 행을 고친 쓰기, `group` 은 바뀐 그룹만 버전 전용으로 쓴 쓰기, `legacy_converted` 는 옛 형식 샘플을 첫 쓰기에서 그룹 단위로 바꾼 쓰기, `unchanged` 는 바뀐 그룹이 없어 인스턴스를 쓰지 않은 것이다 |
 | 할당자 | `nexus_jemalloc_allocated_bytes` · `_resident_bytes` | `resident − allocated` 가 대략 할당자가 붙든 몫이라, 메모리가 오를 때 할당자가 쥔 것인지 애플리케이션이 쥔 것인지를 가른다 |
 | 집계 성공 | `nexus_metrics_db_stats_ok` | 이번 스크레이프에서 위 넷을 실제로 읽었으면 `1`, 못 읽었으면 `0` |
 | HTTP 요청 | `axum_http_requests_total`(라벨 `method`·`status`·`endpoint`) · `axum_http_requests_duration_seconds`(히스토그램, 같은 라벨) · `axum_http_requests_pending`(`method`·`endpoint`) | 이름·라벨 키·지연 구간이 cas-server와 같다 |
 
-**HTTP 요청 지표의 `endpoint`는 요청 경로가 아니라 라우트 템플릿이다**(`/datasets/{dataset_id}`) — dataset id마다 시리즈가 생기지 않는다. 어느 라우트에도 매칭되지 않은 요청은 `unmatched` 하나로 모이고(cas-server는 이 경우 요청 경로를 적는다), 프로브·스크레이프 경로도 함께 세어진다. 응답 전에 끊긴 요청은 요청 수·지연에 잡히지 않는다(위 `nexus_http_requests_cancelled_total` 과 로그의 `요청이 취소됐다` 줄로 본다. seal 은 끊겨도 계속 돌며, 위 seal 지표로 본다). 엔드포인트 하나만 5xx인 결함은 이렇게 본다.
+**HTTP 요청 지표의 `endpoint`는 요청 경로가 아니라 라우트 템플릿이다**(`/datasets/{dataset_id}`) — dataset id마다 시리즈가 생기지 않는다. 어느 라우트에도 매칭되지 않은 요청은 `unmatched` 하나로 모이고(cas-server는 이 경우 요청 경로를 적는다), 프로브·스크레이프 경로도 함께 세어진다. 응답 전에 끊긴 요청은 요청 수·지연에 잡히지 않는다(위 `nexus_http_requests_cancelled_total` 과 로그의 `요청이 취소됐다` 줄로 본다. seal·새 버전 만들기는 끊겨도 계속 돌며, 위 seal·버전 작업 지표로 본다). 엔드포인트 하나만 5xx인 결함은 이렇게 본다.
 
 ```promql
 sum by (endpoint) (rate(axum_http_requests_total{status=~"5.."}[5m]))

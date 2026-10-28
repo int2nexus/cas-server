@@ -178,9 +178,9 @@ Seal이 완료되면
 - Snapshot(Manifest)이 생성된다.
 - 이후 학습과 평가의 기준이 된다.  
 
-Seal 은 Version 하나를 통째로 읽어 직렬화하므로 메모리를 가장 많이 쓰는 작업이다. 그래서 서버는 파드마다 동시에 도는 Seal 수에 상한(`seal.maxConcurrent`, 기본 1)을 두고, 같은 Version 의 Seal 은 DB 잠금으로 파드와 무관하게 하나만 돌린다(서버 `0.1.21`+). 판정 순서는 이미 Sealed 인가(409 `already_sealed`) → 같은 Version 의 Seal 이 도는가(429 `seal_in_progress`) → 파드 상한이 찼는가(429 `seal_busy`)이다. 넘친 요청은 기다리게 하지 않고 시작하지 않은 채 `429`(`Retry-After: 10`)로 돌려보낸다 — 기다리게 하면 프록시의 응답 대기 상한에 먼저 걸리고, 시작하지 않았으므로 다시 보내도 중복되지 않는다. 진행 중 거절을 `409` 가 아니라 `429` 로 내는 것은 `409` 가 「이미 Sealed」의 뜻으로 쓰이고 있기 때문이다.
+Seal 은 Version 하나를 통째로 읽어 직렬화하므로 메모리를 가장 많이 쓰는 작업이다. 그래서 서버는 파드마다 동시에 도는 Seal 과 Fork(새 Version 만들기) 수에 함께 상한(`seal.maxConcurrent`, 기본 1)을 두고, 같은 Version 의 Seal 은 DB 잠금으로 파드와 무관하게 하나만 돌린다(서버 `0.1.21`+). 서버 `0.1.33`+ 에서 넘친 요청은 DB 에 하나인 **작업 줄**에 서고 `202`(본문 `{"job", "version"}`, `Location: /api/v1/version-jobs/{job_id}`)로 답한다 — 요청을 붙잡아 두지 않으므로 프록시의 응답 대기 상한에 걸리지 않고, 자리가 난 파드가 줄 맨 앞부터 집어 돌린다. 판정 순서는 이미 Sealed 인가(409 `already_sealed`) → 같은 Version 의 작업이 이미 있는가(그 작업 `202`) → 줄이 비었고 이 파드에 자리가 있는가(바로 돌아 `200`/`201`) → 아니면 줄(`202`)이다. 도는 작업은 임대를 늘리며 돌고, 파드가 죽어 임대가 끝나면 다른 파드가 이어 돌린다. Fork 가 대기·실행 중인 새 Version 은 `preparing`, 실패·취소된 것은 `failed` 이고 둘 다 쓰기가 409(`version_preparing`)다. 진행은 `GET /api/v1/version-jobs`, 취소는 `POST /api/v1/version-jobs/{job_id}/cancel` 이다(차트 README 「버전 작업 줄」). `0.1.32` 까지는 넘친 요청을 시작하지 않은 채 `429`(`seal_busy`·`seal_in_progress`, `Retry-After: 10`)로 돌려보냈다.
 
-Seal 은 요청과 분리된 태스크로 돈다. 클라이언트나 프록시가 연결을 끊어도 Seal 은 끝까지 진행되고, 끊긴 쪽은 Version 상태를 조회해 결과를 확인한다. 도는 중인 Seal 은 Version 조회에 `seal_in_progress`(와 시작 시각 `seal_started_at`)로 보인다(서버 `0.1.25`+) — 같은 Version 잠금을 DB 에서 보므로 어느 파드가 돌리든 보이고, Seal 이 실패하거나 파드가 죽으면 잠금과 함께 사라진다. 같은 Version 잠금은 Seal 이 끝날 때까지 커넥션 하나를 쥔다(Postgres 에서는 `idle in transaction` 으로 보인다). 서버 종료(SIGTERM)는 연결이 끊긴 채 도는 Seal 을 기다리지 않으므로 그 Seal 은 Draft 로 남는다 — Version 을 Sealed 로 바꾸는 쓰기가 맨 마지막이라 반쯤 Sealed 인 상태는 없다.
+Seal 은 요청과 분리된 태스크로 돈다. 클라이언트나 프록시가 연결을 끊어도 Seal 은 끝까지 진행되고, 끊긴 쪽은 Version 상태를 조회해 결과를 확인한다. 도는 중인 Seal 은 Version 조회에 `seal_in_progress`(와 시작 시각 `seal_started_at`)로 보인다(서버 `0.1.25`+) — `0.1.33`+ 에서는 작업 행으로 판정하므로 어느 파드가 돌리든 보이고, 파드가 죽으면 임대가 끝날 때까지(최대 약 2 분) 보이다가 줄로 돌아간다(`0.1.32` 까지는 DB 잠금으로 판정해 잠금과 함께 사라졌다). 같은 Version 잠금은 Seal 이 끝날 때까지 커넥션 하나를 쥔다(Postgres 에서는 `idle in transaction` 으로 보인다). 서버 종료(SIGTERM)는 연결이 끊긴 채 도는 Seal 을 기다리지 않으므로 그 Seal 은 Draft 로 남는다 — Version 을 Sealed 로 바꾸는 쓰기가 맨 마지막이라 반쯤 Sealed 인 상태는 없다. `0.1.33`+ 에서는 종료하는 파드가 돌리던 작업을 줄로 돌려 다른 파드가 처음부터 다시 돌린다.
 
 Seal 은 마지막 트랜잭션에서 그 Version 의 샘플 수(삭제되지 않은 Sample)를 세어 저장하고, Version 을 돌려주는 응답(Version 조회·목록·설명 수정·Seal)은 Sealed Version 에 그 값을 `sample_count` 로 싣는다(서버 `0.1.24`+). Draft Version 의 수는 저장하지 않는다 — 적재·링크·삭제마다 증감이 필요하고 병렬 적재가 Version 행 하나에서 줄을 서게 되기 때문이다. 이 값은 API 조회(Explorer 개수, Manifest 조회의 `sample_count`)와 같은 수이고, 스냅샷의 수(Shard Manifest 의 `total_samples`)와는 다를 수 있다 — 샤드를 만든 뒤 Seal 이 끝나기 전에 지워진 Sample 은 스냅샷에만 있고, 그 사이 더해진 Sample 은 저장된 수에만 있을 수 있다.
 
@@ -245,6 +245,8 @@ Fork 시 부모 Version 의 버전 행과 표식이 새 Version 으로 함께 �
 표식 표가 생기기 전에 쓰인 Sample(표식 없이 버전 행만 있는 옛 형식)은 그 Version 에서 버전 행만 읽는다(옛 규칙). 그런 Sample 은 처음 쓸 때, 그 Version 을 Fork 할 때(자식 쪽), 또는 버전 행 정리 때 모든 그룹에 표식을 넣어 그룹 단위로 바뀐다(읽는 내용은 같다).
 
 운영자가 실행하는 서브커맨드 `nexus-server compact-instances`(서버 `0.1.30`+, 기본 dry-run, 차트 README 「annotation 버전 행 정리(compact-instances)」)는 어느 Version 이 읽는 내용도 바꾸지 않는 범위에서 행을 줄인다 — 읽히지 않는 버전 행과 공유 행과 같은 버전 행은 지우고, 그 Sample 을 읽는 Version 이 링크된 하나뿐이면 버전 행을 공유 행으로 옮기며, 읽는 모든 Version 이 표식으로 덮은 공유 행은 지운다(공유 행을 지우는 이 두 단계는 끌 수 있다 — `--no-move` 는 옮기기만, `--keep-shared` 는 둘 다 끈다, 서버 `0.1.32`+). 정리 뒤에는 Version 조회의 내부 `instance_id` 가 바뀔 수 있고(내용은 같다), Version 을 지정하지 않은 `GET /instances` 의 행이 바뀌며, 정리된 Sample 을 Fork 없이 다른 Version 에 링크하면 적재 때 값이 아니라 옮긴 Version 의 값을 보고, 덮인 공유 행이 지워진 그룹은 비어 보인다(공유 행을 남기려면 `--keep-shared`). 되돌릴 수 없다(undo 기록으로만 손으로 복구한다).
+
+운영자가 실행하는 서브커맨드 `nexus-server deleted-sample-index`(서버 `0.1.33`+, 기본 점검, 차트 README 「샘플 삭제 확인 인덱스(deleted-sample-index)」)는 포함 인덱스 `samples (sample_id) INCLUDE (is_deleted)` 를 `CREATE INDEX CONCURRENTLY` 로 만든다. 개수·목록 경로가 Sample 이 지워졌는지 보려고 `samples` 힙을 읽던 몫을 인덱스만 읽는 판정으로 바꾸는 것이고, 서버의 질의는 그대로라 인덱스가 있든 없든 결과는 같다.
 
 ```
 Version A
@@ -709,7 +711,7 @@ API는 다음과 같은 원칙을 따른다.
 - 전면 인증  
 조회를 포함한 모든 엔드포인트가 인증을 요구한다. 예외는 회원 가입·로그인·비밀번호 재설정 링크의 확인·사용·프로브 두 경로·OpenAPI 문서와 Swagger UI 셸뿐이다(문서 경로는 설정으로 끌 수 있다). 데이터 변경 권한은 인증 위에 계정 역할(`admin`/`editor`/`viewer`)로 결정한다. 담당자(`owner_user_id`)는 담당자 이관을 빼면 인가에 관여하지 않는다 — 목록 필터와 인수 대기 관리에 쓰이는 값이다.
 - 일관된 오류 모델  
-HTTP 상태 코드와 함께 구체적인 오류 정보를 제공한다. 같은 상태 코드에 뜻이 여럿인 경우는 본문에 기계가 읽는 `code` 를 함께 싣는다(`{"error": ..., "code": ...}` — 예: Seal 의 `already_sealed`·`seal_key_collision`·`seal_busy`·`seal_in_progress`, 일괄 meta 쓰기의 `meta_write_rejected`·에셋 붙이기의 `asset_write_rejected`(둘 다 거절 목록 `rejected` 를 함께 싣는다), Draft 대량 읽기 거절의 `draft_bulk_read_disabled`, 세션 계획의 `plan_too_large`, 같은 세션 회수 겹침의 `import_in_progress`, 비밀번호 재설정 링크 실패의 `reset_link_invalid`). `code` 가 없는 오류는 필드를 싣지 않는다.
+HTTP 상태 코드와 함께 구체적인 오류 정보를 제공한다. 같은 상태 코드에 뜻이 여럿인 경우는 본문에 기계가 읽는 `code` 를 함께 싣는다(`{"error": ..., "code": ...}` — 예: Seal 의 `already_sealed`·`seal_key_collision`·`seal_busy`·`seal_in_progress`(뒤의 둘은 `0.1.32` 까지), 버전 작업의 `version_preparing`·`job_not_cancellable`, 일괄 meta 쓰기의 `meta_write_rejected`·에셋 붙이기의 `asset_write_rejected`(둘 다 거절 목록 `rejected` 를 함께 싣는다), Draft 대량 읽기 거절의 `draft_bulk_read_disabled`, 세션 계획의 `plan_too_large`, 같은 세션 회수 겹침의 `import_in_progress`, 비밀번호 재설정 링크 실패의 `reset_link_invalid`). `code` 가 없는 오류는 필드를 싣지 않는다.
 - 서버 판 헤더  
 인증이 성공한 요청의 응답에는 서버 판 `X-Nexus-Version` 이 붙는다(서버 `0.1.29`+). 클라이언트가 응답한 서버의 판을 추정하지 않고 확정할 수 있게 하기 위해서이고, 인증 전에 끝난 응답(대부분의 401·인증 면제 경로)에는 판을 싣지 않는다.
 
@@ -850,7 +852,7 @@ Nexus는 단순한 기능 구현보다 일관된 데이터 모델과 운영 단�
 |Sample Asset 의 CAS 삭제는 생략 시 보존(Seal 스냅샷은 Version 과 함께 늘 지운다)|	생략 시 삭제|	실패 방향이 비대칭이기 때문 — 잘못된 보존은 되돌릴 수 있는 스토리지 비용이지만 잘못된 삭제는 바이트를 되돌릴 수 없이 파괴한다. 지우려면 `delete_cas=true`를 명시한다. 스냅샷은 사용자 데이터가 아니라 Seal 의 파생물이고 Version 이 사라지면 읽을 길이 없어 이 비대칭에 해당하지 않는다|
 |적재 Batch 는 건별 독립 처리|	전체를 하나의 트랜잭션으로 처리	|일부 실패가 전체 작업에 영향을 주지 않도록 하기 위해|
 |재전송 중복은 클라이언트가 정한 멱등 키로 막음|	서버가 내용(이미지 key 등)으로 중복을 추정|	같은 이미지가 정당하게 여러 Sample 일 수 있어 내용만으로는 「같은 요청」을 가릴 수 없기 때문이다. 키는 Dataset 범위라 다른 Dataset 과 부딪치지 않고, Sample id 는 계속 서버가 만든다|
-|Seal 상한 초과는 대기 없이 429|	서버 안에서 줄 세워 대기|	대기 중에 프록시 응답 상한에 먼저 걸리고, 시작하지 않은 요청은 다시 보내도 중복되지 않는다. 대기는 클라이언트(SDK `seal(wait=)`)가 진다|
+|Seal·Fork 상한 초과는 DB 작업 줄에 세우고 202 로 답함(`0.1.33`+)|	대기 없이 429 로 돌려보내 클라이언트가 다시 보냄(`0.1.32` 까지)|	클라이언트 재시도는 순서가 없어 오래 기다린 요청이 계속 밀리고 진행을 볼 곳이 없었다. 요청을 붙잡지 않고 202 로 답하므로 프록시 응답 상한에 걸리지 않으며, 대기는 SDK(`seal(wait=)`)가 작업을 조회하며 진다|
 |Seal 을 요청과 분리된 태스크로 실행|	요청 수명에 묶음|	프록시가 연결을 끊는 순간 Seal 이 중간에 멈추고, 큰 Version 일수록 끝까지 갈 수 없게 된다|
 |Version 설명은 Manifest 밖|	설명을 Manifest 에 포함|	설명을 고치려고 Fork·재Seal 할 이유가 없고, 설명이 해시를 흔들면 같은 데이터가 다른 Version 처럼 보인다|
 |Snapshot key 에 Version id 와 내용 해시를 넣음|	Version 이름 기반 key, 또는 내용 해시만으로 된 공유 key|	이름은 바뀌고 다시 쓰여 다른 Version 의 스냅샷과 겹치고, 공유 key 는 Version 하나를 지울 때 무엇을 지워도 되는지 정할 수 없다. 같은 내용의 재업로드 비용은 CAS 의 해시 대조와 Deduplication 이 흡수한다|

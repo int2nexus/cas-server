@@ -6,16 +6,16 @@
 #
 # ── 문서 ─────────────────────────────────────────────────────────────────────
 #   아키텍처 (도메인 모델·버전 관리·스냅샷 구조)
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.26/charts/nexus-server/docs/architecture.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.27/charts/nexus-server/docs/architecture.md
 #   사용법 (설치·SDK 연결·Dataset 워크플로우)
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.26/charts/nexus-server/docs/usage.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.27/charts/nexus-server/docs/usage.md
 #   차트 README
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.26/charts/nexus-server/README.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.27/charts/nexus-server/README.md
 # ─────────────────────────────────────────────────────────────────────────────
 
 image:
   repository: int2jieun/nexus-server
-  tag: "0.1.32"
+  tag: "0.1.33"
   # digest 로 핀하려면 여기에 넣으십시오 (`sha256:...`). 값이 있으면 tag 대신 이것이
   # 쓰이고, 렌더 결과가 `repository@sha256:...` 가 됩니다.
   #
@@ -51,8 +51,9 @@ imagePullSecrets: []
 #   그 기록이 cvat.staleCreatingSecs 넘게 멈춘 세션만 failed 로 바꾼다. 다른 레플리카가 준비 중인 살아 있는
 #   세션은 건드리지 않는다.
 #
-#   seal: 파드마다 seal.maxConcurrent 개까지 돈다(2 대면 전체 2 배). 같은 버전 중복은 DB 잠금으로
-#   파드와 무관하게 막힌다. 메모리 한도는 파드마다 resources 지침대로 잡는다.
+#   seal·새 버전 만들기(fork): 파드마다 seal.maxConcurrent 개까지 돈다(2 대면 전체 2 배). 넘친 요청은 DB 에
+#   하나인 작업 줄에서 기다리고 자리가 난 파드가 집는다. 같은 버전 중복은 DB 잠금으로 파드와 무관하게 막힌다.
+#   메모리 한도는 파드마다 resources 지침대로 잡는다.
 replicaCount: 1
 
 # Deployment 교체 방식(spec.strategy). 비우면 렌더하지 않아 Kubernetes 기본값(RollingUpdate,
@@ -140,15 +141,19 @@ ingest:
 
 # ── seal ─────────────────────────────────────────────────────────────
 seal:
-  # 이 파드에서 동시에 도는 seal 의 상한. 비우면 이미지 기본값 1.
-  # 넘친 seal 은 시작하지 않고 429(code: seal_busy, Retry-After: 10). 같은 버전의 seal 이 이미 돌고
-  # 있으면 어느 파드든 429(code: seal_in_progress).
+  # 이 파드에서 동시에 도는 버전 작업의 상한. seal 과 fork_from 이 있는 새 버전 만들기가 이 자리를 함께 쓴다.
+  # 비우면 이미지 기본값 1.
+  # 자리가 없거나 작업 줄에 앞선 대기가 있으면 요청은 202(본문 {"job", "version"}, Location:
+  # /api/v1/version-jobs/{job_id})로 줄에 서고, 자리가 난 파드가 집어 돌린다. 같은 버전의 작업이 이미 있으면
+  # 그 작업을 202 로 돌려준다. 진행은 GET /api/v1/version-jobs 로 본다(README 「버전 작업 줄」).
   # 이미 sealed 인 버전은 상한과 무관하게 409(code: already_sealed).
-  # 아래 resources 의 메모리 지침은 seal 하나를 전제로 한다 — 올리면 limits.memory 도 그 배수만큼 올린다.
-  # seal 하나는 풀(database.maxConnections)에서 최대 둘(잠금 1 + 작업 1)을 적재 몫 밖의 예약 4 에서 쓴다.
+  # 아래 resources 의 메모리 지침은 작업 하나를 전제로 한다 — 올리면 limits.memory 도 그 배수만큼 올린다.
+  # seal 하나는 풀(database.maxConnections)에서 끝까지 둘(잠금 1 + 작업 1), 새 버전 만들기 하나는 하나를
+  # 쥐고, 임대 갱신·진행 기록으로 잠깐 둘을 더 꺼내며, 파드 일꾼이 하나를 쓴다 — 모두 적재 몫 밖의 예약 4 에서
+  # 나온다. 기동 경고는 작업마다 둘(seal 기준)로 센다.
   # **예약 4 는 고정이다** — maxConnections 를 올려도 늘어나는 것은 적재 자리뿐이다. 그래서 상한 1 이면
-  # 적재가 포화일 때 조회·관리 몫이 둘 남고, 2 면 0 이 될 수 있다(조회·관리 요청이 풀 대기로 실패).
-  # 상한은 1~2 로 두고, 2 로 올린다면 그 대가를 알고 올린다. 3 이상이면 기동 로그에 경고가 남는다.
+  # 적재가 포화일 때 조회·관리 몫이 둘 남고, 2 면 0 이 된다(조회·관리 요청이 풀 대기로 실패할 수 있다).
+  # 상한은 1 로 두고, 2 이상이면 기동 로그에 경고가 남는다.
   # seal 하나가 도는 동안 잠금 커넥션 하나가 Postgres 에서 idle in transaction 으로 보인다(정상).
   # 정수로 적는다(따옴표 없이 적어도 큰 수가 지수 표기로 바뀌지 않는다). 0 이면 기동이 실패한다.
   maxConcurrent: ""
@@ -318,7 +323,7 @@ auth:
 # 나머지 엔드포인트와 달리 JWT가 아니라 별도 bearer를 받는다 — 스크레이퍼는 로그인할 수
 # 없고, JWT를 쓰게 하면 모니터링 스택이 카탈로그 전체를 읽는 계정을 들고 있어야 한다.
 #
-# 내는 지표 이름 스물셋:
+# 내는 지표 이름 스물아홉:
 #   nexus_db_pool_connections            워크로드 풀의 현재 커넥션 수(상한이 아니다)
 #   nexus_db_pool_idle_connections       그중 유휴. 현재 - 유휴 = 사용 중
 #   nexus_db_pool_acquire_timeouts_total 풀 획득 타임아웃 누적 — 이 값이 오르기
@@ -326,13 +331,22 @@ auth:
 #   nexus_ingest_permits_total           적재 자리 수(maxConnections - 4)
 #   nexus_ingest_permits_available       그중 비어 있는 자리
 #   nexus_ingest_rejected_total          유입 제어가 429로 돌려보낸 누적 건수
-#   nexus_seal_permits_total             파드당 동시 seal 자리 수(seal.maxConcurrent)
-#   nexus_seal_permits_available         그중 비어 있는 자리. total - available = 지금 도는 seal 수
-#                                        (요청이 끊긴 seal 은 axum_http_requests_pending 에 안 잡힌다 —
-#                                        진행 중인 seal 은 이 둘로만 보인다)
+#   nexus_seal_permits_total             파드당 동시 버전 작업 자리 수(seal.maxConcurrent, seal·fork 공용)
+#   nexus_seal_permits_available         그중 비어 있는 자리. total - available = 그 파드에서 지금 도는 seal·fork 수
+#                                        (요청과 떨어져 도는 작업은 axum_http_requests_pending 에 안 잡힌다 —
+#                                        이 둘로만 보인다)
 #   nexus_seal_total                     끝난 seal 누적. 라벨 result = completed·failed(둘 다 0 부터).
-#                                        입장 거절(seal_busy·seal_in_progress)은 세지 않는다
+#                                        already_sealed 거절과 잠금을 못 잡아 줄로 돌린 작업은 세지 않는다
 #   nexus_seal_duration_seconds          끝난 seal 의 소요 히스토그램. 라벨 result
+#   nexus_version_jobs_queued            작업 줄에 선 seal·fork 수. DB 전체 값이라 파드마다 같다
+#   nexus_version_jobs_total             끝난 버전 작업 누적. 라벨 kind = seal·fork, result = done·failed·cancelled
+#                                        (여섯 다 0 부터)
+#   nexus_version_job_wait_seconds       요청부터 시작까지 기다린 시간 히스토그램. 라벨 kind
+#   nexus_version_job_duration_seconds   시작부터 끝까지 걸린 시간 히스토그램. 라벨 kind·result
+#   nexus_version_job_stage              그 파드에서 도는 작업의 지금 단계(값 1). 라벨 kind·dataset_version_id·stage.
+#                                        끝난 작업·지난 단계의 시리즈는 다음 스크레이프에 없다
+#   nexus_version_job_progress_ratio     그 작업의 끝낸 비율(0~1). 라벨 kind·dataset_version_id.
+#                                        전체 수가 없거나 0 이면 시리즈가 없다
 #   nexus_http_requests_cancelled_total  응답 전에 클라이언트가 끊은 요청 누적. 라벨 method·endpoint
 #   nexus_annotation_instance_writes_total  그룹을 보낸 annotation 쓰기를 커밋 뒤 샘플마다 센 누적.
 #                                        라벨 mode = direct·group·legacy_converted·unchanged(넷 다 0 부터)
@@ -360,7 +374,7 @@ auth:
 #                                        cas-server는 그 자리에 요청 경로를 적는다)
 # readiness 전용 커넥션은 세지 않는다(크기 1 고정).
 #
-# **DB를 조회하는 것은 로봇 넷뿐이다**(한 왕복, 250ms 제한). **조회가 실패하거나 250ms를
+# **DB를 조회하는 것은 로봇 넷(한 왕복)과 nexus_version_jobs_queued(한 왕복, stats_ok 에 들지 않는다)뿐이다**(250ms 제한). **조회가 실패하거나 250ms를
 # 넘겨도 그 넷은 사라지지 않고 직전 값으로 남는다**(기동 후 한 번도 못 읽었으면 처음부터
 # 없다) — 그래서 넷을 읽는 알림은
 # nexus_metrics_db_stats_ok == 1 을 함께 건다. 풀·유입 제어 지표는 메모리 상태라 그대로
@@ -421,7 +435,8 @@ ingress:
 # ── 리소스 ───────────────────────────────────────────────────────────────────
 #
 # **메모리 한도를 정하는 것은 seal 이다.** 적재·조회·CVAT 은 전부 요청 단위(한 배치,
-# 한 페이지)라 데이터셋이 커져도 한 요청이 쓰는 양이 늘지 않는다. seal 만 **버전 하나를
+# 한 페이지)이고, 새 버전 만들기(fork)·버전 비교·샘플 가져오기는 annotation 을 샘플 묶음마다
+# 읽어 데이터셋이 커져도 한 요청이 쓰는 양이 늘지 않는다. seal 만 **버전 하나를
 # 통째로** 다룬다 — 그 버전의 샘플과 에셋 참조를 모아 manifest 한 덩어리로 직렬화해
 # CAS 에 올린다. 그래서 필요한 한도는 "데이터 총량"이 아니라 **가장 큰 버전 하나**로 정해진다.
 #

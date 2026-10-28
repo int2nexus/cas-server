@@ -38,7 +38,7 @@ pip install --upgrade --extra-index-url https://int2nexus.github.io/cas-server/s
 python -c "import importlib.metadata as m; print(m.version('int2nexus-sdk'))" 
 ```
 
-이 문서는 서버 `0.1.32`(차트 `0.3.26`)와 SDK `0.1.25` 기준이다. SDK는 서버와 따로 발행되므로 위 명령으로 최신을 유지한다 — 문서의 기능이 없다는 에러가 나면 대개 SDK가 낮은 것이다. 버전별 변경은 [차트 CHANGELOG](../CHANGELOG.md)와 [SDK 변경 이력](https://int2nexus.github.io/cas-server/sdk/changelog.html)에 있다.
+이 문서는 서버 `0.1.33`(차트 `0.3.27`)와 SDK `0.1.26` 기준이다. SDK는 서버와 따로 발행되므로 위 명령으로 최신을 유지한다 — 문서의 기능이 없다는 에러가 나면 대개 SDK가 낮은 것이다. 버전별 변경은 [차트 CHANGELOG](../CHANGELOG.md)와 [SDK 변경 이력](https://int2nexus.github.io/cas-server/sdk/changelog.html)에 있다.
 
 ### 2.2 연결 설정
 
@@ -1321,8 +1321,9 @@ ds.seal(if_sealed="ignore")     # 이미 sealed면 현재 상태 그대로 반�
 ds.seal(description="검수 완료, 2026-10 학습용")   # 버전 설명과 함께 seal (SDK `0.1.20`+, 서버 이미지 `0.1.21`+)
 ```
 - `description`은 **seal이 성공할 때만** 저장된다. `if_sealed="ignore"`로 불렀는데 이미 sealed인 버전이면 준 `description`은 적용되지 않는다 — 그때는 `ds.set_description()`(§7.7)을 쓴다.
-- **동시 seal 상한과 대기**(SDK `0.1.20`+, 서버 이미지 `0.1.21`+). 서버는 파드마다 동시에 도는 seal 수에 상한(`seal.maxConcurrent`, 기본 1)을 둔다. 상한이 차 있거나(`seal_busy`) 같은 버전의 seal이 이미 돌고 있으면(`seal_in_progress`) seal을 시작하지 않고 `429`(`Retry-After: 10`)로 답한다. 시작하지 않은 요청이라 다시 보내도 중복되지 않는다.
-  - `ds.seal(wait=600)`(기본)은 이 `429`를 최대 `wait`초 기다리며 다시 보내고, 넘기면 `NexusError(status_code=429)`다. `wait=0`이면 기다리지 않는다. 기다린 시간만 세고 seal 자체의 소요는 세지 않는다.
+- **동시 seal 상한과 대기**. 서버는 파드마다 동시에 도는 seal·fork 수에 상한(`seal.maxConcurrent`, 기본 1)을 둔다.
+  - 서버 이미지 `0.1.33`+: 자리가 없으면 seal을 작업 줄에 세우고 `202`(`{"job", "version"}`)로 답한다. 같은 버전의 작업이 이미 있으면 그 작업이다. SDK `0.1.26`+의 `ds.seal(wait=600, block=True)`(기본)는 작업이 끝날 때까지 최대 `wait`초 기다려 sealed 버전을 돌려주고, 넘기면 `nx.NexusVersionJobPending`(`job_id`·`job`)이다 — seal은 서버에서 계속 돈다. 작업이 실패·취소되면 `NexusError(status_code=409)`. `block=False`면 `202` 본문을 그대로 돌려준다. `fork`·`load_or_create(fork_from=)`도 같다. **SDK `0.1.25` 이하는 `202` 본문을 끝난 결과로 받는다** — 서버를 올릴 때 SDK도 올린다. 작업 목록·진행률은 `GET /api/v1/version-jobs`, 하나는 `client.get_version_job(job_id)`.
+  - 서버 이미지 `0.1.21`~`0.1.32`: 상한이 차 있거나(`seal_busy`) 같은 버전의 seal이 이미 돌고 있으면(`seal_in_progress`) seal을 시작하지 않고 `429`(`Retry-After: 10`)로 답한다. `ds.seal(wait=600)`(SDK `0.1.20`+)은 이 `429`를 최대 `wait`초 기다리며 다시 보내고, 넘기면 `NexusError(status_code=429)`다. `wait=0`이면 기다리지 않는다.
 - **seal은 연결이 끊겨도 서버에서 끝까지 돈다**(서버 이미지 `0.1.21`+). 프록시가 응답 대기 상한으로 연결을 끊어 `502`/`504`를 받았더라도 seal은 멈추지 않으므로, 그 버전의 상태를 조회해 sealed가 됐는지 확인한다. 아직 도는 중이면 버전 조회(`GET /datasets/{id}/versions/{v}`·목록)에 `"seal_in_progress": true`와 시작 시각 `seal_started_at`이 실리고, 진행 중이 아니면 두 키가 없다(서버 이미지 `0.1.25`+). 서버 교체(SIGTERM) 중에 끊긴 seal은 draft로 남는다.
 - **CAS 업로드가 전송 중에 손상되면 seal이 실패한다**(서버 이미지 `0.1.23`+). 서버는 스냅샷을 올릴 때 본문 해시를 함께 보내 CAS가 저장 전에 대조하게 하고, 다르면 seal은 nexus의 `502`(본문 `cas error: ... InvalidDigest`)로 끝나며 버전은 **draft로 남는다**. 일시적인 손상이면 다시 `ds.seal()`하면 된다. 프록시가 낸 `502`와 구별하려 애쓸 필요는 없다 — 어느 쪽이든 버전 상태를 조회해 sealed면 끝난 것이고, draft면 다시 seal한다.
 - **읽기 타임아웃.** SDK의 기본 읽기 타임아웃은 120초다. seal이 그보다 오래 걸리는 대규모 버전은 `nx.connect(timeout=(10, 1800))`처럼 읽기 쪽 초를 늘린다. 타임아웃이 나도 seal은 서버에서 계속되고(위) SDK는 이 타임아웃을 다시 보내지 않으므로, 실패로 단정하지 말고 `ds.seal(if_sealed="ignore")`로 다시 부르거나 버전 상태를 확인한다.
@@ -1332,8 +1333,9 @@ ds.seal(description="검수 완료, 2026-10 학습용")   # 버전 설명과 함
   |---|---|---|
   |`409`|`already_sealed`|이미 sealed인 버전|
   |`409`|`seal_key_collision`|seal 저장 위치가 같은 다른 sealed 버전이 있음(§7.1)|
-  |`429`|`seal_busy`|이 파드의 동시 seal 상한이 참. 시작하지 않았음|
-  |`429`|`seal_in_progress`|같은 버전의 seal이 이미 돌고 있음|
+  |`409`|`version_preparing`|준비 중(`preparing`)·실패(`failed`) 버전(서버 이미지 `0.1.33`+)|
+  |`429`|`seal_busy`|이 파드의 동시 seal 상한이 참. 시작하지 않았음(서버 이미지 `0.1.32`까지)|
+  |`429`|`seal_in_progress`|같은 버전의 seal이 이미 돌고 있음(서버 이미지 `0.1.32`까지)|
 
   이 `code`는 서버 이미지 `0.1.21`+에만 있다. SDK에서는 `NexusError.code`로 읽는다(SDK `0.1.22`+).
 - seal 응답의 버전에는 `sample_count`가 실린다(서버 이미지 `0.1.24`+, [7.3](#73-sealed-버전)).
@@ -1558,7 +1560,7 @@ except NexusError as e:
 ```
 
 - `e.status_code`(`int | None`)와 `e.server_message`(`str | None`)로 서버가 보낸 실제 에러 사유를 프로그램적으로 분기할 수 있다. `str(e)`에도 같은 내용이 포함되지만(사람이 읽는 용도), 상태코드로 분기하려면 이 두 속성을 쓴다.
-- 같은 상태 코드에 뜻이 여럿인 오류는 `e.code`로 가른다(SDK `0.1.22`+, 서버 본문의 `code` — 없으면 `None`). seal의 `already_sealed`·`seal_key_collision`·`seal_busy`·`seal_in_progress`([7.2](#72-seal--버전-잠금)), meta 일괄 쓰기의 `meta_write_rejected`([5.4](#54-meta-일괄-쓰기--set_valuesupdate_meta)), 에셋 붙이기의 `asset_write_rejected`([3.4](#이미-등록한-샘플에-에셋-붙이기--dsset_assets)), draft 대량 읽기 거절의 `draft_bulk_read_disabled`(403, [7.4](#74-dataframe-변환)), 세션 계획의 `plan_too_large`([6.3](#63-고칠-대상만-골라서-세션-만들기)), CVAT 가져오기 겹침의 `import_in_progress`(409, [6.2](#62-세션-생성)) 등이다. `meta_write_rejected`는 `e.rejected`(`[{"sample_id", "reason"}]`), `asset_write_rejected`는 `e.rejected`(`[{"sample_id", "role", "reason"}]`)를 함께 단다.
+- 같은 상태 코드에 뜻이 여럿인 오류는 `e.code`로 가른다(SDK `0.1.22`+, 서버 본문의 `code` — 없으면 `None`). seal의 `already_sealed`·`seal_key_collision`·`seal_busy`·`seal_in_progress`([7.2](#72-seal--버전-잠금)), 버전 작업의 `version_preparing`·`job_not_cancellable`, meta 일괄 쓰기의 `meta_write_rejected`([5.4](#54-meta-일괄-쓰기--set_valuesupdate_meta)), 에셋 붙이기의 `asset_write_rejected`([3.4](#이미-등록한-샘플에-에셋-붙이기--dsset_assets)), draft 대량 읽기 거절의 `draft_bulk_read_disabled`(403, [7.4](#74-dataframe-변환)), 세션 계획의 `plan_too_large`([6.3](#63-고칠-대상만-골라서-세션-만들기)), CVAT 가져오기 겹침의 `import_in_progress`(409, [6.2](#62-세션-생성)) 등이다. `meta_write_rejected`는 `e.rejected`(`[{"sample_id", "reason"}]`), `asset_write_rejected`는 `e.rejected`(`[{"sample_id", "role", "reason"}]`)를 함께 단다.
 - 인증된 응답에는 서버 판 헤더 `X-Nexus-Version` 이 붙는다(서버 이미지 `0.1.29`+). 「어느 판의 서버가 이 응답을 냈는가」를 확인할 때 본다 — 인증된 응답인데 헤더가 없으면 그보다 옛 서버다(교체 중 옛 파드 등).
 - `flush`/`patch_annotations`의 배치 호출은 건당 결과를 `IngestResult(ok, sample, sample_id, error, status_code, index, replayed)`로 입력 순서대로 모아 반환한다 — `strict=True`면 실패가 하나라도 있을 때 `NexusBatchError(failures=[...])`를 던진다. `patch_annotations` 는 `strict=False`(기본)에서 실패가 있으면 호출당 한 번 `RuntimeWarning`(실패 수·앞 다섯 sample_id·첫 실패 메시지)을 낸다. 서버 `400` 은 그 건의 `status_code=400` 실패다. 401·403 은 `strict` 와 무관하게 예외다. `replayed`는 멱등 재전송으로 서버가 기존 결과를 돌려준 건이고 성공으로 센다([3.4](#34-샘플-생성과-등록)).
 
@@ -1637,7 +1639,7 @@ except NexusError as e:
 |`.fork(new_version, sample_ids=, group_key=, label=, tags=, exclude_tags=, ...)`|	필터링된 fork(같은 dataset)|
 |`.clone(new_name, new_version, timeout=None)`|	통째 복제(서버 job, [7.6](#76-clone))|
 |`.update(name=, description=)`|	이름/설명 수정|
-|`.seal(if_sealed="error", wait=600, description=)`|	버전 확정([7.2](#72-seal--버전-잠금)). 동시 seal 상한 `429`는 `wait`초까지 기다린다|
+|`.seal(if_sealed="error", wait=600, description=, block=True)`|	버전 확정([7.2](#72-seal--버전-잠금)). 대기 작업 `202`(서버 `0.1.33`+)·동시 seal 상한 `429`(`0.1.32`까지)는 `wait`초까지 기다린다|
 |`.set_description(text)` / `.description`|	버전 설명 쓰기·읽기([7.7](#77-버전-설명))|
 |`.to_df(groups=, path=, format=, chunksize=, sample_fields=False)`|	DataFrame 변환. draft 버전은 explorer 를 읽는다(SDK `0.1.24`+). `sample_fields=True` 면 `tags`·`split` 열을 더한다(sealed 는 seal 시점 값, SDK `0.1.25`+, 서버 이미지 `0.1.29`+, [7.4](#74-dataframe-변환))|
 |`.fingerprint(groups=None, source="auto")` → str|	읽은 행의 지문 `nxfp1:<blake3>` — draft 에서 읽은 것과 seal 한 것의 대조(SDK `0.1.24`+, [7.4](#74-dataframe-변환))|
