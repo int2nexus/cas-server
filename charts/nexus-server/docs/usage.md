@@ -38,7 +38,7 @@ pip install --upgrade --extra-index-url https://int2nexus.github.io/cas-server/s
 python -c "import importlib.metadata as m; print(m.version('int2nexus-sdk'))" 
 ```
 
-이 문서는 서버 `0.1.33`(차트 `0.3.27`)와 SDK `0.1.26` 기준이다. SDK는 서버와 따로 발행되므로 위 명령으로 최신을 유지한다 — 문서의 기능이 없다는 에러가 나면 대개 SDK가 낮은 것이다. 버전별 변경은 [차트 CHANGELOG](../CHANGELOG.md)와 [SDK 변경 이력](https://int2nexus.github.io/cas-server/sdk/changelog.html)에 있다.
+이 문서는 서버 `0.1.34`(차트 `0.3.28`)와 SDK `0.1.27` 기준이다. SDK는 서버와 따로 발행되므로 위 명령으로 최신을 유지한다 — 문서의 기능이 없다는 에러가 나면 대개 SDK가 낮은 것이다. 버전별 변경은 [차트 CHANGELOG](../CHANGELOG.md)와 [SDK 변경 이력](https://int2nexus.github.io/cas-server/sdk/changelog.html)에 있다.
 
 ### 2.2 연결 설정
 
@@ -815,7 +815,7 @@ client.patch_group_kinds(ds.dataset_id, {"seatbelt_gt": "group", "old_gt": None}
 |---|---|---|---|---|
 | `Detection` | `bounding_box` | `rect`, `label`, `confidence` | `rotation` | `rect` 숫자 4개, `label` 문자열·`confidence` 숫자(있으면) |
 | `Classification` | `classification` | `label` | `confidence` | `label` 비어 있지 않은 문자열 |
-| `Keypoint2D` | `keypoint_2d` | `x`, `y`, `visibility` | `num_keypoints`, `label`, `confidence` | `x`·`y` 숫자 목록의 길이가 같아야 한다. `num_keypoints`는 있으면 정수이고 그 길이와 같아야 하며, `visibility`는 있으면 정수 목록이고 길이가 같아야 한다 |
+| `Keypoint2D` | `keypoint_2d` | `x`, `y`, `visibility` | `num_keypoints`, `label`, `confidence` | `x`·`y` 숫자 목록의 길이가 같아야 한다. `num_keypoints`는 있으면 정수이고 그 길이와 같아야 하며, `visibility`는 있으면 숫자 목록(SDK `0.1.27`+, 그 전에는 정수만)이고 길이가 같아야 한다. 값은 0 안 보임·1 가림·2 보임이고 소수도 그대로 저장한다 |
 | `Keypoint3D` | `keypoint_3d` | `x`, `y`, `z`, `visibility` | `num_keypoints`, `label`, `confidence` | `Keypoint2D`와 같고 `z`도 |
 | `ScalarValue` | `value` | `value` | | `value` 숫자 |
 | `VectorValue` | `values` | `values` | | `values` 숫자 목록, `dim` 정수(있으면) |
@@ -1246,6 +1246,7 @@ ds.annotation_sessions()                            # 이 dataset·version의 �
 ### 6.7 알아둘 것
 
 - CVAT으로 나가는 컴포넌트는 `bounding_box`/`polygon`/`polyline`/`keypoint_2d`/`mask` **5종뿐**이다. 3D(`cuboid_3d` 등)·classification·scalar는 편집 대상이 아니며 **그대로 보존**된다.
+- keypoint `visibility` 는 CVAT 의 점 플래그 둘로 오간다(서버 이미지 `0.1.34`+). 보낼 때 0 이하와 3 은 `outside`, 0 초과 1 이하는 `occluded`, 1 초과는 보임(값이 없으면 보임)이다. 가져올 때 플래그를 바꾸지 않은 점은 원본 값(소수 포함)을 그대로 두고, 바꾼 점과 새로 그린 점은 `outside` 0·`occluded` 1·보임 2 로 적는다. `0.1.33` 이하 서버가 연 세션은 1 보임·2 가림 규약으로 보낸 것이라 새 서버에서 가져오면 1 과 2 가 바뀌어 적힌다 — 서버를 올리기 전에 가져오고 닫는다.
 - 같은 버전 안에서 한 샘플은 하나의 활성 세션(`creating`·`open`)에만 속할 수 있다. 겹치면 세션 생성이 `409`로 거부되고(준비 중인 세션 포함, 서버 이미지 `0.1.21`+), 해당 세션을 `close()`하면 풀린다.
 - sealed 버전에는 세션을 만들 수 없다.
 - 세션 삭제는 CVAT project를 통째로 지우므로 **회수하지 않은 편집도 함께 사라진다.**
