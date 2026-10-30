@@ -9,6 +9,10 @@ pip install --extra-index-url https://int2nexus.github.io/cas-server/sdk/simple/
 `scripts/publish_sdk.py` 는 `sdk/pyproject.toml` 의 버전과 같은 `## <버전>` 절이 이 파일에 없으면
 빌드하지 않고 멈춥니다. 최신 버전이 위로 오게 적습니다.
 
+## 0.1.27
+
+- **`Keypoint2D`·`Keypoint3D` 의 `visibility` 는 숫자 목록이면 받습니다.** 종전에는 정수만 받아 `1.8` 같은 소수가 든 값이 `visibility must be a list of ints` 로 거부됐습니다. 이제 정수와 실수를 모두 받고 값을 바꾸지 않고 그대로 보냅니다. 불리언·문자열·`None` 이 섞이면 종전처럼 `NexusValidationError`(`visibility must be a list of numbers`)이고, 길이 검사도 같습니다. 서버는 이 값을 해석하지 않고 저장합니다. CVAT 세션은 visibility 를 「프레임 밖」·「가림」 두 플래그로만 주고받으므로, 서버 `0.1.34` 이상에서 작업자가 플래그를 바꾸지 않은 점은 소수값이 그대로 남고 플래그를 바꾸거나 새로 그린 점은 0·1·2 로 적힙니다(`0.1.33` 이하 서버는 가져올 때 소수값을 정수로 바꿉니다).
+
 ## 0.1.26
 
 - **`ds.seal(*, if_sealed="error", wait=600.0, description=, block=True)` 와 `NexusClient.seal(..., block=True)` 는 서버가 seal 을 작업 줄에 올려 202 로 답하면 끝날 때까지 기다립니다.** nexus-server `0.1.33` 부터 동시 seal 자리가 없으면 429 대신 202(`{"job", "version"}`, `Location: /api/v1/version-jobs/{id}`)를 줍니다. `block=True` 는 `GET /api/v1/version-jobs/{id}` 를 2 초 간격으로 물어 `done` 이면 버전을 다시 읽어 sealed 버전을 돌려줍니다. 기다리는 시간은 `wait` 초가 전부이고 429 로 기다린 시간과 한 예산입니다. 넘기면 `NexusVersionJobPending`(아래)이고 seal 은 서버에서 계속 돕니다. 작업이 `failed`·`cancelled` 면 `NexusError(status_code=409, server_message=작업 오류)` 입니다. 작업 조회가 404 이면(7 일이 지나 지워짐) 버전을 다시 읽어 sealed 면 끝난 것으로 보고 아니면 409 입니다. `block=False` 는 기다리지 않고 202 본문을 그대로 돌려줍니다(`ds.seal` 은 이때 핸들의 길이 기억을 갱신하지 않습니다). 200 응답과 `0.1.32` 이하 서버(429 `seal_busy`/`seal_in_progress` 를 `Retry-After` 대로 `wait` 까지 다시 보냄)의 동작은 종전과 같습니다. `if_sealed="ignore"` 는 202 뒤 작업이 `done` 이면 sealed 버전을 돌려주고, 작업이 실패하면 예외입니다. 곧바로 돌던(200·201 을 기다리던) seal·fork 가 관리자 취소로 멈추면 `NexusError(status_code=409)` 이고 `code` 가 `"job_cancelled"` 입니다 — 버전이 draft 로 남으므로 `if_sealed="ignore"` 여도 예외입니다.
