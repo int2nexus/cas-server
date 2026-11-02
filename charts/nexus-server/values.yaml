@@ -6,16 +6,16 @@
 #
 # ── 문서 ─────────────────────────────────────────────────────────────────────
 #   아키텍처 (도메인 모델·버전 관리·스냅샷 구조)
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.28/charts/nexus-server/docs/architecture.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.29/charts/nexus-server/docs/architecture.md
 #   사용법 (설치·SDK 연결·Dataset 워크플로우)
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.28/charts/nexus-server/docs/usage.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.29/charts/nexus-server/docs/usage.md
 #   차트 README
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.28/charts/nexus-server/README.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.29/charts/nexus-server/README.md
 # ─────────────────────────────────────────────────────────────────────────────
 
 image:
   repository: int2jieun/nexus-server
-  tag: "0.1.34"
+  tag: "0.1.35"
   # digest 로 핀하려면 여기에 넣으십시오 (`sha256:...`). 값이 있으면 tag 대신 이것이
   # 쓰이고, 렌더 결과가 `repository@sha256:...` 가 됩니다.
   #
@@ -355,6 +355,9 @@ auth:
 #                                        (여섯 다 0 부터)
 #   nexus_version_job_wait_seconds       요청부터 시작까지 기다린 시간 히스토그램. 라벨 kind
 #   nexus_version_job_duration_seconds   시작부터 끝까지 걸린 시간 히스토그램. 라벨 kind·result
+#   nexus_version_job_samples            done 으로 끝난 작업의 샘플 수 히스토그램. 라벨 kind
+#                                        (seal 은 sealed 샘플 수, fork 는 새 버전에 링크한 수)
+#   nexus_seal_main_manifest_bytes       done 으로 끝난 seal 의 메인 manifest 바이트 수 히스토그램
 #   nexus_version_job_stage              그 파드에서 도는 작업의 지금 단계(값 1). 라벨 kind·dataset_version_id·stage.
 #                                        끝난 작업·지난 단계의 시리즈는 다음 스크레이프에 없다
 #   nexus_version_job_progress_ratio     그 작업의 끝낸 비율(0~1). 라벨 kind·dataset_version_id.
