@@ -4,9 +4,9 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
 
 ## 문서
 
-- [아키텍처](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.29/charts/nexus-server/docs/architecture.md)
+- [아키텍처](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.30/charts/nexus-server/docs/architecture.md)
   — 도메인 모델, Version 생명주기, Annotation CoW, 스냅샷·Manifest 구조
-- [사용법](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.29/charts/nexus-server/docs/usage.md)
+- [사용법](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.30/charts/nexus-server/docs/usage.md)
   — 설치, Python SDK 연결, Dataset 적재·검색·seal 워크플로우, API 레퍼런스
 - [변경 이력](CHANGELOG.md)
   — 버전별 동작 변경·마이그레이션·설정 키. 각 항목은 해당 GitHub Release 본문과 동일하다
@@ -22,7 +22,7 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
   선택 키가 셋 더 있고, 쓰는 기능이 있을 때만 넣는다 — CVAT annotation 편집 세션의
   `NEXUS__CVAT__PASSWORD`, superuser의 `NEXUS__AUTH__SUPERUSER_PASSWORD`,
   지표의 `NEXUS__METRICS__TOKEN`(values 스위치가 없다 — 이 키가 곧 스위치다).
-  전체 목록은 [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.29/charts/nexus-server/examples/secret.example.yaml).
+  전체 목록은 [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.30/charts/nexus-server/examples/secret.example.yaml).
 - **CVAT은 선택** — 설정하지 않아도 서버는 정상 동작한다. 세션 생성·계획·결과 회수만 503이 되고 카탈로그·업로드·seal·조회는 영향이 없다.
 - **superuser도 선택** — 설정하지 않으면 관리자를 만들 부트스트랩 수단이 없다(`users.role = admin`은 백필하지 않는다). 다만 **CVAT과 달리 반쪽 설정은 조용히 꺼지지 않고 기동을 실패시킨다**(아래 참조).
 
@@ -56,7 +56,7 @@ kubectl create secret generic nexus-server -n <namespace> --dry-run=client -o ya
 kubectl apply -f sealed-nexus-server.yaml -n <namespace>
 ```
 
-평문 예시: [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.29/charts/nexus-server/examples/secret.example.yaml).
+평문 예시: [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.30/charts/nexus-server/examples/secret.example.yaml).
 Secret 이름은 `secret.existingSecret`(비우면 릴리즈 fullname, 기본 `nexus-server`)과 일치해야 한다.
 
 - `NEXUS__JWT__SECRET`은 직접 생성하는 임의의 비밀 키(로그인 JWT HS256 서명용)  
@@ -175,13 +175,13 @@ requests.post(f"{base}/api/v1/admin/datasets/transfer-owner",
 - **임시 비밀번호는 응답에 한 번만 실려 온다.** 서버 어디에도 저장되지 않으니 그 자리에서 전달하고, 받은 사람은 곧바로 `client.change_password(...)`로 바꾼다. 재설정해도 그 사람의 기존 토큰은 만료(`jwt.ttlHours`)까지 유효하다 — "잊어버림"을 푸는 도구지 "탈취 즉시 차단"이 아니다.
 - **재설정 링크는 임시 비밀번호 대신 쓰는 일회용 토큰이다.** 발급은 본문 `{"email", "expires_in_hours"}`(1~72, 필수)이고 `201` 응답에 `token` 평문이 한 번만 실린다. 사용자는 인증 없이 `POST /api/v1/auth/password-reset/inspect`(`{token}` → 이메일·만료 확인)와 `POST /api/v1/auth/password-reset/complete`(`{token, new_password}` → `204`, 로그인은 따로 한다)를 부른다. 판정 실패(없음·이미 씀·만료·대상 부적격)는 모두 `400` `reset_link_invalid` 하나이고 사유는 요청 로그의 `reset_error` 에만 남는다. 새 비밀번호가 규칙에 맞지 않으면 `code` 없는 `400` 이고 링크는 소모되지 않는다. 사용자당 살아 있는 링크는 하나이며, 다시 발급하거나 임시 비밀번호 재설정·본인 비밀번호 변경을 하면 이전 링크는 무효다. 링크를 사용자에게 전달하는 경로의 보안은 운영자 몫이다.
 - **계정 정지는 삭제가 아니다.** 이메일을 계속 점유하므로 그 주소로 재가입할 수 없고, `active: true`로 해제하면 그대로 돌아온다. 정지하면 로그인이 `403 forbidden`이 되고, **이미 발급된 토큰도 캐시 수명(`auth.revocationCacheTtlSecs`, 기본 5초) 안에 막힌다.**
-- **담당자 이전은 인가를 옮기지 않는다.** 이전 담당자도 계속 쓰고 지울 수 있다 — 역할이 `editor`이기 때문이다. 옮겨가는 것은 「다시 넘길 자격」 하나다. 담당자가 없는 dataset(`GET /datasets?unowned=true`)은 위험한 상태가 아니라 **인수 대기**이고, `editor` 이상이면 그대로 쓰고 지울 수 있다. 담당자가 있는 dataset을 넘기는 것은 담당자 본인이 한다([사용법 8.2](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.29/charts/nexus-server/docs/usage.md#82-담당자-이전)).
+- **담당자 이전은 인가를 옮기지 않는다.** 이전 담당자도 계속 쓰고 지울 수 있다 — 역할이 `editor`이기 때문이다. 옮겨가는 것은 「다시 넘길 자격」 하나다. 담당자가 없는 dataset(`GET /datasets?unowned=true`)은 위험한 상태가 아니라 **인수 대기**이고, `editor` 이상이면 그대로 쓰고 지울 수 있다. 담당자가 있는 dataset을 넘기는 것은 담당자 본인이 한다([사용법 8.2](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.30/charts/nexus-server/docs/usage.md#82-담당자-이전)).
 
 **로그인·가입·갱신·OIDC 교환의 `200` 응답은 모두 `{ token, user_id, email }`이다** — 로그인 화면이 실어 쓰는 토큰 필드는 `token`이다. 가입이 승인 대기(`auth.approvalRequired`)면 `202`이고 타입이 다르다.
 
 ### 로봇 계정 발급
 
-사람이 없는 워크로드(적재 잡·스케줄러·CI)용 계정이다. 쓰는 쪽은 [사용법 2.3](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.29/charts/nexus-server/docs/usage.md#23-로봇-토큰으로-연결)의 `nx.connect(robot_token=...)`로 붙는다.
+사람이 없는 워크로드(적재 잡·스케줄러·CI)용 계정이다. 쓰는 쪽은 [사용법 2.3](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.30/charts/nexus-server/docs/usage.md#23-로봇-토큰으로-연결)의 `nx.connect(robot_token=...)`로 붙는다.
 
 계정 생성(`POST /api/v1/admin/robots`, body `{"name": "...", "role": "editor", "display_name": "..."}`, `display_name`만 선택)의 이름은 소문자·숫자·하이픈 1~48자이고 하이픈으로 시작하거나 끝날 수 없다(`400`). **이름 검사가 `role` 검사보다 먼저 돈다** — 이름이 틀린 동안에는 `role` 오류를 볼 수 없다. 로봇의 `role`은 `editor`·`viewer`뿐이고 `admin`은 `400`이다 — `admin` 로봇의 장수명 토큰은 그대로 관리 평면 전권이 되기 때문이다. 경로의 `user_id`는 정수다(UUID를 넣으면 본문 검사 전에 `400`).
 
@@ -767,7 +767,7 @@ seal(`POST /datasets/{id}/versions/{v}/seal`)과 `fork_from` 이 있는 새 버�
   | fork | `link` | 없음 |
   | fork | `copy` → `finalize` | annotation 을 복제한 샘플 수 / 복제할 샘플 수(원본 버전에 버전 전용 annotation 이 있는 샘플 — `sample_ids` 를 주면 그중 고른 샘플). `finalize` 는 이어받아 두 값이 같다 |
 
-- **취소.** `POST /api/v1/version-jobs/{job_id}/cancel`(`editor` 이상, 로봇은 `403`). 대기 작업은 요청한 사람 또는 관리자(설정 superuser·`role=admin`)가 취소하고 그 자리에서 `cancelled` 다(새 버전 만들기면 버전이 `failed`). 실행 중 작업은 관리자만 취소하고, 같은 파드면 곧바로, 다른 파드면 30 초 안에 멈춘다 — 다만 그때 DB 문장 하나를 실행 중이면 그 문장이 끝난 뒤에 멈춘다(서버가 기다리기를 그만둬도 PostgreSQL 은 받은 문장을 끝까지 돌린다). 새 버전 만들기의 `link` 단계는 원본의 링크 전체를 문장 하나로 옮기므로 큰 버전이면 그 시간만큼 늦다. 멈춘 seal 은 버전이 draft 로 남고 이미 올린 스냅샷 객체를 지운다. 멈추기 직전에 끝났으면 작업은 `done` 이다. 응답은 `202` + 작업이고, 끝난 작업은 `409`(`code: job_not_cancellable`)다. 바로 돌던 작업이 취소되면 그 요청은 `409`(`code: job_cancelled`, `작업이 취소되었습니다`)로 끝난다.
+- **취소.** `POST /api/v1/version-jobs/{job_id}/cancel`(`editor` 이상, 로봇은 `403`). 대기 작업은 요청한 사람 또는 관리자(설정 superuser·`role=admin`)가 취소하고 그 자리에서 `cancelled` 다(새 버전 만들기면 버전이 `failed`). 실행 중 작업은 관리자만 취소하고, 같은 파드면 곧바로, 다른 파드면 30 초 안에 멈춘다. 새 버전 만들기는 그때 돌던 복제 문장에 DB 취소(`pg_cancel_backend`)를 보내 그 문장을 기다리지 않고 끝낸다. seal 은 멈춘 뒤 그때 돌던 DB 문장 하나만 끝날 때까지 그 커넥션을 쓴다(취소 정리가 그 문장과 잠금이 부딪히지 않아 기다리지 않는다, 메인 manifest 단계의 문장은 최대 300 초). 멈춘 seal 은 버전이 draft 로 남고 이미 올린 스냅샷 객체를 지운다. 멈추기 직전에 끝났으면 작업은 `done` 이다. 응답은 `202` + 작업이고, 끝난 작업은 `409`(`code: job_not_cancellable`)다. 바로 돌던 작업이 취소되면 그 요청은 `409`(`code: job_cancelled`, `작업이 취소되었습니다`)로 끝난다.
 - **SDK.** `202` 를 기다리는 SDK 를 함께 쓴다 — 기다리지 않는 SDK 는 `202` 본문을 끝난 결과로 받는다(변경 이력의 해당 판 **운영 조치**).
 
 ## seal 의 DB·cas 조건
@@ -775,6 +775,7 @@ seal(`POST /datasets/{id}/versions/{v}/seal`)과 `fork_from` 이 있는 새 버�
 seal 은 메인 manifest(샘플마다 에셋 참조를 적은 객체)를 `REPEATABLE READ READ ONLY` 트랜잭션 하나의 서버측 커서로 1,000 행씩 두 번 읽는다 — 1 차는 해시만 계산해 객체 키를 정하고, 2 차는 같은 스냅샷을 되감아 cas 로 흘려 올린다. 샤드는 샘플 1,000 개씩 읽는다. 그래서 메모리가 버전의 샘플 수와 무관하고, 대신 아래 조건이 붙는다.
 
 - **메인 manifest 는 `Content-Length` 없는 chunked PUT 이다**(cas `0.1.4`·`0.1.8`·`0.1.12`·`0.1.15`·`0.1.16`·`0.1.35` 가 바이트 그대로 받는 것을 확인했다). nexus 와 cas 사이에 프록시가 있으면 chunked 요청 본문을 받아야 하고, 요청 본문을 모아 두었다 보내는 프록시면 응답을 기다리는 시간이 그만큼 길어진다(서버는 본문을 다 보낸 뒤 `300 초 + 1 초/MiB` 까지 기다린다).
+- **cas 호출에는 서버의 시한이 있다**(설정 키가 아니다). 연결 10 초, HEAD · DELETE · 버킷 만들기 · 목록 · GET 응답 헤더 150 초, 메인 manifest 의 HEAD 30 초, 본문을 다 가진 PUT(샤드 등) `300 초 + 1 초/MiB`, GET 본문은 조각 사이 60 초다. 150 초는 cas 의 요청 상한(cas 차트 `config.requestTimeoutSecs`, 기본 120 초)보다 길게 잡은 값이라, cas 가 살아 있으면 cas 의 응답(408 · 503)이 먼저 온다 — 그 값을 150 초 이상으로 올리거나 `0`(끔)으로 둔 cas 에서는 이 시한이 먼저 걸린다. 시한에 걸린 호출은 다른 cas 오류와 같다 — 요청 안에서 기다린 호출은 `502 cas error: …`, seal 은 실패하고 버전은 draft 로 남으며, 샘플·버전 삭제의 cas 정리(커밋 뒤)는 삭제를 성공시키고 `nexus_cas_delete_failures_total` 을 올린다. PUT 은 `300 초 + 객체 크기(MiB) × 1 초` 안에 끝나지 않으면 끊긴다(1 GiB 면 평균 약 0.77 MiB/s 보다 느릴 때). 메인 manifest 의 PUT 은 이 시한이 아니라 이 절 첫 항목의 시한을 쓴다.
 - **DB 역할의 `idle_in_transaction_session_timeout` 은 5 분 이상이거나 `0` 이어야 한다.** 스냅샷 커넥션은 `FETCH` 사이·기록·cas 확인 동안 `idle in transaction` 이고, 끊기면 그 seal 이 실패한다(잠금 커넥션은 끊겨도 seal 이 끝까지 가는 것과 다르다). 스냅샷 트랜잭션의 문장(`DECLARE`·`FETCH`·`MOVE`)에는 서버가 `statement_timeout` 300 초를 건다 — 첫 `FETCH` 가 버전 전체를 정렬하므로 큰 버전에서 수 초~수십 초 걸린다.
 - **스냅샷이 열린 동안** `samples`·`dataset_version_samples`·`sample_assets` 에 AccessShareLock 을 쥐고 DB 전체의 vacuum 지평선을 붙든다. 그 시간은 두 패스 + cas 로 보내는 시간이다(로컬 측정 150 만 샘플 12.8 초, cas 가 느리면 그만큼 길다). 그동안 `deleted-sample-index --apply`(`CREATE INDEX CONCURRENTLY`)는 기다리고, 그 표를 바꾸는 마이그레이션이 든 판으로 올리면 기동이 seal 이 끝날 때까지 늦는다.
 - **seal 도중의 쓰기는 한 샤드 안에서 섞일 수 있다.** 샤드 하나의 샘플·annotation 을 묶음마다 다른 문장으로 읽기 때문이다. seal 하는 버전에 쓰지 않는 것이 전제다(서버가 막지는 않는다).
@@ -812,7 +813,7 @@ curl localhost:8090/_internal/health      # {"status":"ok","db":true}
 
 ### 지표
 
-`GET /_internal/metrics`는 Prometheus 텍스트를 낸다. **인증이 면제되지 않는다** — 시크릿의 `NEXUS__METRICS__TOKEN`을 bearer로 받고, 비어 있으면 경로 자체가 404다. 스크레이퍼는 로그인할 수 없고 JWT를 쓰게 하면 모니터링 스택이 카탈로그 전체를 읽는 계정을 들고 있어야 해서 토큰을 따로 뒀다. 스크레이프마다 DB 집계 한 왕복이 워크로드 풀에서 나가므로 15초보다 촘촘한 주기는 권하지 않는다. 설정 여부는 [`config-effective`](#적용된-설정-확인)의 `metrics.token_set`으로 확인한다.
+`GET /_internal/metrics`는 Prometheus 텍스트를 낸다. **인증이 면제되지 않는다** — 시크릿의 `NEXUS__METRICS__TOKEN`을 bearer로 받고, 비어 있으면 경로 자체가 404다. 스크레이퍼는 로그인할 수 없고 JWT를 쓰게 하면 모니터링 스택이 카탈로그 전체를 읽는 계정을 들고 있어야 해서 토큰을 따로 뒀다. 스크레이프마다 DB 조회 두 왕복(로봇 토큰 집계 하나, 줄에 선 버전 작업 수 하나)이 워크로드 풀에서 나가므로 15초보다 촘촘한 주기는 권하지 않는다. 설정 여부는 [`config-effective`](#적용된-설정-확인)의 `metrics.token_set`으로 확인한다.
 
 ```bash
 curl -H "Authorization: Bearer $METRICS_TOKEN" localhost:8090/_internal/metrics

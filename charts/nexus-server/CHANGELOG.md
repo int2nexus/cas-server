@@ -81,6 +81,53 @@ nexus-server 는 마이그레이션이 바이너리에 임베드되어 **기동 
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.3.30
+
+image: `int2jieun/nexus-server:0.1.35` → `int2jieun/nexus-server:0.1.36`
+digest: `sha256:75248830beede1a070d02a153c08ed1b81957bff7a74f5ac374a4db1d4677875`
+
+**동작 변경** — ⑴ cas 호출에 시한이 생깁니다. ⑵ explorer 요청에 `include_asset_urls` 가 더해집니다. ⑶ 진행 중인 fork 를
+관리자가 취소하면 도는 복제 문장을 기다리지 않고 끊습니다. 그 밖의 호출은 `0.1.35` 와 같습니다.
+
+1. **cas 호출의 시한.** `0.1.35` 까지는 cas 호출에 시한이 없어, cas 가 응답하지 않으면 seal 이 샤드 HEAD · PUT 에서 seal 자리와
+   DB 커넥션을 쥔 채 기다리기만 했습니다. 이제 요청 종류마다 시한이 있습니다(설정 키가 아닙니다).
+
+   ```
+   연결(TCP · TLS 수립)                              10 초
+   HEAD · DELETE · 버킷 만들기 · 목록 · GET 응답 헤더    150 초
+   seal 메인 manifest 의 HEAD                         30 초
+   PUT(본문을 다 가진 요청 — 샤드 등)                   300 초 + MiB 당 1 초
+   GET 본문                                          조각 사이 60 초
+   ```
+
+   seal 메인 manifest 의 PUT(본문을 흘려 보내는 요청)은 이 표가 아니라 그 단계의 시한을 씁니다 — 진행이 60 초 멈추면 끊고, 본문을 다
+   보낸 뒤 응답을 `300 초 + 1 초/MiB` 기다립니다(이전 판과 같습니다).
+
+   - 150 초는 cas 의 요청 상한(cas 차트 `config.requestTimeoutSecs`, 기본 120 초)보다 길게 잡은 값입니다. cas 가 살아 있으면 cas 의
+     응답(408 · 503)이 먼저 오고, 이 시한은 응답이 아예 오지 않을 때만 걸립니다. 그 값을 150 초 이상으로 올리거나 `0`(끔)으로 둔 cas 에서는
+     이 시한이 먼저 걸립니다.
+   - PUT 은 `300 초 + 객체 크기(MiB) × 1 초` 안에 끝나지 않으면 끊깁니다. 작은 객체는 300 초의 여유가 있고, 큰 객체일수록 끊기는
+     평균 속도가 1 MiB/s 에 가까워집니다(1 GiB 는 평균 약 0.77 MiB/s 보다 느리면 끊깁니다).
+   - 시한에 걸린 호출은 다른 cas 오류와 같이 처리합니다. 요청 안에서 기다린 호출은 응답이 502 `cas error: …` 이고, seal 은 그 작업이
+     실패해(작업 `error` 는 `cas error`) 버전이 draft 로 남습니다. 샘플 · 버전 삭제의 cas 정리는 커밋 뒤에 돌므로 삭제는 성공하고
+     `nexus_cas_delete_failures_total` 이 오릅니다.
+2. **explorer 의 `include_asset_urls`.** `POST /datasets/{id}/versions/{v}/samples/explorer` 본문에 `include_asset_urls: true` 를 주면 각
+   행에 `asset_urls`(`image` 밖 role → 주소, role 이름순, `image_url` 과 같은 규칙)를 싣습니다. `image` 밖 에셋이 없는 행에는 키가
+   없습니다.
+   - 생략하거나 `false` 면 응답이 `0.1.35` 와 같습니다.
+   - `fields`(projection)와 함께 `true` 면 400 입니다.
+   - 같은 이름(`asset_urls`)의 annotation 그룹이 있는 행에는 싣지 않습니다.
+   - 저장된 필터(subset)의 읽기 · 물질화는 이 값을 무시합니다.
+3. **진행 중 fork 의 취소.** `POST /api/v1/version-jobs/{job_id}/cancel` 로 진행 중인 fork 를 취소하면, 실행을 멈춘 뒤 그 fork 의 복제
+   문장에 DB 취소를 보냅니다. 실행을 멈추는 때는 종전과 같습니다(같은 파드면 곧바로, 다른 파드가 돌리면 다음 heartbeat 인 30 초 안).
+   `0.1.33` ~ `0.1.35` 는 실행만 멈추고 DB 는 그 문장을 끝까지 돌아, 그 문장이 끝날 때까지 작업이 `running` 으로 남고 버전도
+   `failed` 가 되지 않았습니다. 진행 중인 seal 의 취소는 그대로입니다 — 취소 정리가 그때 돌던 문장과 잠금이
+   부딪히지 않아 기다리지 않고, 그 문장 하나(메인 manifest 단계는 최대 300 초)가 끝날 때까지 그 DB 커넥션만 쓰입니다.
+
+**마이그레이션** — 없음. 롤백 안전(이미지 `0.1.35` 로 되돌리면 1 · 2 · 3 이 이전으로 돌아갑니다 — cas 호출의 시한이 없어지고,
+`include_asset_urls` 는 무시되며, fork 취소는 다시 그 문장을 기다립니다).
+**설정 키** — 없음
+
 ## 0.3.29
 
 image: `int2jieun/nexus-server:0.1.34` → `int2jieun/nexus-server:0.1.35`
