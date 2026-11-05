@@ -461,6 +461,28 @@ S3 표준에 없는 CAS 전용 헤더가 업로드 응답에 추가됩니다.
 - Presigned URL: `GET`, `PUT`, `DELETE` 방식
 - STS: `AssumeRoleWithWebIdentity` (이미지 `0.1.28` 이상. `auth.oidc.issuers` 를 설정한 배포에만 존재)
 
+#### 지원하지 않는 S3 API — 거절되는 것과 조용히 성공하는 것
+
+위 목록에 없는 S3 API 는 대부분 쿼리의 서브리소스(`?tagging`·`?acl`·`?lifecycle` 등)로
+구분됩니다. 처리는 메서드에 따라 다릅니다.
+
+- **객체 `PUT`·`DELETE`, 버킷 `DELETE`** — `501 NotImplemented` 이고 아무것도 바꾸지 않습니다
+  (이미지 `0.1.36` 이상). `PutObjectTagging`·`PutObjectAcl`·`PutObjectRetention`·
+  `PutObjectLegalHold`·`DeleteObjectTagging`·`DeleteBucketLifecycle`·`DeleteBucketPolicy`·
+  `DeleteBucketTagging`·`DeleteBucketCors` 등이 여기입니다. 쿼리로 보낸 `x-amz-copy-source` 도
+  `501` 입니다 — 복사 원본은 헤더로 보내십시오. S3 서브리소스가 아닌 쿼리 인자(캐시 버스터 등)와
+  presigned 서명 인자는 무시하고 처리합니다.
+- **버킷 `PUT`** — `PutBucketPolicy`·`PutBucketTagging`·`PutBucketLifecycleConfiguration`·
+  `PutPublicAccessBlock`·`PutObjectLockConfiguration` 등은 **아무것도 설정하지 않고 `200`** 입니다.
+  버킷이 없으면 그 버킷을 만듭니다. **정책·lifecycle·Object Lock 이 적용됐다고 믿지 마십시오.**
+- **`GET`** — 서브리소스를 무시합니다. `GetObjectTagging`·`GetObjectAcl` 등은 태그·ACL 이 아니라
+  객체 본문을, `GetBucketPolicy` 등은 객체 목록을 `200` 으로 돌려줍니다.
+- **객체 `POST`** — `RestoreObject`·`SelectObjectContent` 등은 `400` 입니다.
+- **`UploadPartCopy`**(`x-amz-copy-source` **헤더**가 붙은 `UploadPart`) — 지원하지 않습니다. 원본을
+  복사하지 않고 빈 파트를 저장하며 `200` 을 돌려줍니다(응답에 `CopyPartResult` 가 없습니다). 그 파트로
+  완료하면 **0 바이트 객체**가 만들어집니다. 큰 객체를 서버 쪽에서 복사하려면 `CopyObject` 를 쓰거나,
+  내려받아 다시 올리십시오.
+
 #### 목록 API 의 제약 — 조용히 어긋나는 자리
 
 **목록 페이지네이션은 V2 형태만 지원합니다.** 응답이 `NextContinuationToken` 만 싣고
@@ -559,7 +581,7 @@ CronJob 은 그대로 동작합니다.
 | 412 | `PreconditionFailed` | `If-None-Match: *` 인데 객체가 이미 있음 |
 | 413 | — | `config.maxUploadSizeBytes` 초과. 본문은 XML 이 아니라 `length limit exceeded` 문자열입니다 |
 | 500 | `InternalError` | 서버 내부 오류 (DB 오류 포함) |
-| 501 | `NotImplemented` | 지원하지 않는 파라미터 조합 (예: ListObjectVersions + delimiter) |
+| 501 | `NotImplemented` | 지원하지 않는 파라미터 조합 (예: ListObjectVersions + delimiter), 또는 객체 `PUT`·`DELETE`·버킷 `DELETE` 에 붙은 지원하지 않는 S3 서브리소스 (5.4 「지원하지 않는 S3 API」) |
 | 503 | `ServiceUnavailable` | 스토리지 백엔드 접근 불가 — 운영팀 확인 필요 (내부 오류 타입명은 `BackendUnavailable`) |
 | 503 | `SlowDown` | 업로드 상한(건수 또는 바이트 예산) 초과. `Retry-After` 동반 |
 | 503 | `SlowDown` | DB 커넥션 풀 획득 타임아웃 (이미지 `0.1.18` 이상. 그 이하는 `500`) |

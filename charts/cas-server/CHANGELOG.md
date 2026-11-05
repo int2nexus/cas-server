@@ -84,6 +84,18 @@ cas-server 는 기동 시 `sqlx::migrate!` 로 `migrations/` 를 적용합니다
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.1.43
+
+image: `int2jieun/cas-server:0.1.36`
+digest: `sha256:9d1d1231a0f88aa02263288b22ee252487c9f441cb1d354f2eec8da2b05f9644`
+
+**동작 변경** — 객체 `PUT`·`DELETE` 와 버킷 `DELETE` 에 지원하지 않는 S3 서브리소스가 붙은 요청은 `501 NotImplemented` 이고 아무것도 바꾸지 않습니다 — `PutObjectTagging`·`PutObjectAcl`·`PutObjectRetention`·`PutObjectLegalHold`·`DeleteObjectTagging`·`DeleteBucketLifecycle`·`DeleteBucketPolicy`·`DeleteBucketTagging`·`DeleteBucketCors` 등과, 쿼리로 보낸 `x-amz-copy-source`. **이전 이미지는 이 요청들에 `200`·`204` 로 응답하면서 객체를 요청 본문으로 덮어쓰거나, 객체 또는 빈 버킷을 지웠습니다**
+**운영 조치** — 위 API 를 부른 적이 있으면 그 객체와 버킷이 온전한지 확인하십시오
+**주의** — `501` 은 HTTP 지표에서 5xx 로 셉니다
+**주의** — 버킷 `PUT` 의 서브리소스(`PutBucketPolicy`·`PutBucketLifecycleConfiguration` 등)는 이 이미지에서도 아무것도 설정하지 않고 `200` 입니다. `UploadPartCopy` 는 지원하지 않습니다 — 원본을 복사하지 않고 빈 파트를 저장하므로, 그 파트로 완료하면 0 바이트 객체가 됩니다. 둘 다 [아키텍처 5.4](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.43/charts/cas-server/docs/architecture.md) 에 적었습니다
+**마이그레이션** — 없음. **롤백 하한은 `0.1.28` 그대로입니다**
+**설정 키** — 없음
+
 ## 0.1.42
 
 image: `int2jieun/cas-server:0.1.35`
