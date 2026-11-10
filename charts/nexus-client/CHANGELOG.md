@@ -44,6 +44,32 @@ nexus-server 버전을 함께 씁니다.
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.1.23
+
+image: `jiwonkim97/nexus-client:0.1.25`
+digest: `sha256:0355b8f682077a397d3114f068a1b78b7e94d46be35a6eab9acc44e9f547d0bf`
+
+이번 릴리스: nexus-server 0.1.37 의 버전 단위 샘플 meta · 태그 · split 대응(서버 판을 보고 경로를 고르므로 0.1.36 이하에도 그대로 동작), 데이터셋 이름 바꾸기, 이미지 프록시 응답의 CAS 소요 시간 헤더, depthmap · segmap 주소 고르기. 프록시 계약(`/api`·`/cas`, backendUrl·casUrl 해석)은 변경 없음.
+
+**동작 변경** - `/api`·`/cas` 프록시 경로와 backendUrl·casUrl 해석은 변경 없음. 아래는 전부 이미지 동작이다.
+- 응답 헤더 `X-Nexus-Version` 을 읽어 서버 판을 가린다. 0.1.37 이상이면 샘플 태그를 버전 경로(`.../versions/{v}/samples/{id}/tags`, `.../versions/{v}/samples/tags/items`)로 쓰고, 그보다 낮거나 헤더가 없으면 이전 경로(`/samples/{id}/tags`, `/samples/tags`)로 쓴다. 판을 잘못 알았을 때는 한 번만 반대쪽으로 다시 보낸다(이전 경로 410 → 버전 경로, 헤더 없는 404 · 405 → 이전 경로).
+- 0.1.37 에서 태그는 그 버전에만 반영된다. 선택한 샘플 일괄 태그는 한 번에 10,000 개까지(넘으면 버튼을 막는다).
+- 버전에 샘플 추가: 0.1.37 에서 보고 있던 버전을 출처(`from_version`)로 함께 보내고 200 응답의 추가 수로 결과를 보인다. 이전 서버에는 보내지 않는다.
+- 버전에서 샘플 제거: 0.1.37 에서는 확인창에 「이 버전에서 고친 태그 · meta · annotation 도 지워집니다.」를 보인다.
+- 쓰기 오류 문구: 잠긴 버전(409), 준비 중 버전(`version_preparing`), 열린 CVAT 세션이 잡은 샘플(`samples_in_open_session`), 그 버전에 없는 샘플(`meta_write_rejected`)을 구분해 보인다. 잠긴 버전 409 를 받으면 버전 목록을 다시 읽어 쓰기 버튼과 열린 창을 닫는다.
+- 샘플 화면을 버전(`?v=`) 없이 열면 그때 보이는 버전을 주소에 고정한다. 그 뒤로 새 버전이 생겨도 보던 버전이 저절로 바뀌지 않는다.
+- 버전 비교의 샘플 비교 창에 「샘플 값」 칸: 두 버전의 meta · tags · split 차이를 보인다(0.1.37 이력 응답에 그 값이 있을 때만).
+- 데이터셋 Management 탭에 이름 바꾸기(`PATCH /datasets/{dataset_id}`). 이미 쓰는 이름은 「이미 사용 중인 데이터셋 이름입니다.」, 권한이 없으면 「이름을 변경할 권한이 없습니다.」.
+- 이미지 프록시(`/cas/image`) 응답에 `Server-Timing: cas;dur=<ms>`(CAS 응답 헤더를 받기까지 걸린 시간)를 싣는다. CAS 가 준 `Server-Timing` 은 지우지 않고 뒤에 덧붙인다. 주소 검사로 거부한 403 에는 싣지 않는다.
+- 확대뷰의 depthmap · segmap: 서버가 준 에셋 주소(`asset_urls`)가 있으면 그대로 받고, 없으면 meta 의 filename 앞부분(http(s) · 호스트 · 포트)을 그 샘플 이미지 주소의 것으로 바꿔 받는다. 서명이 붙은 주소(`X-Amz-Signature`)는 바꾸지 않는다.
+
+**마이그레이션** - 없음
+**설정 키** - 없음
+**호환성** - nexus-server 0.1.37 로 올릴 때 이 판(appVersion 0.1.25) 이상이 필요하다. 이전 판 클라이언트(appVersion 0.1.24 이하)에 0.1.37 서버를 붙이면 샘플 태그 편집이 410 으로 실패한다.
+**호환성** - 이 판은 nexus-server 0.1.36 이하에도 이전 경로로 동작한다. `X-Nexus-Version` 은 0.1.29 부터 붙으며, 그보다 낮은 서버도 헤더가 없으므로 이전 경로를 쓴다.
+**호환성** - 에셋 주소(`asset_urls`)는 nexus-server 0.1.36(서버 차트 0.3.30)부터 온다. 그보다 낮은 서버는 요청의 `include_asset_urls` 를 무시하고, 화면은 meta 의 filename 으로 동작한다.
+**호환성** - 데이터셋 이름 바꾸기는 응답의 `created_by_kind` · `favorite_group_id` 를 확인하므로 nexus-server 차트 0.3.8 이상이 필요하다.
+
 ## 0.1.22
 
 image: `jiwonkim97/nexus-client:0.1.24`
