@@ -81,6 +81,284 @@ nexus-server 는 마이그레이션이 바이너리에 임베드되어 **기동 
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.3.31
+
+image: `int2jieun/nexus-server:0.1.36` → `int2jieun/nexus-server:0.1.37`
+digest: `sha256:e8ef4c61380c97f4d8683f5a09ae824de872aee4e528501459fc4a575df72f7e`
+
+**동작 변경** — 다섯으로 묶습니다. 1~6 은 meta·태그·split 의 버전 격리, 7~9 는 링크·링크 해제·fork, 10~13 은 스키마 관측의 버전
+단위화, 14~15 는 운영 CLI·문서, 16~18 은 샘플 이력·그 밖의 동작·지표입니다.
+
+1. **버전에서 고친 meta·태그·split 은 그 버전에만 남습니다.** sealed 를 포함한 다른 버전의 조회 결과는 바뀌지 않습니다. 이전에는
+   샘플 행에 값이 하나뿐이라 한 버전에서 고친 meta·태그가 그 샘플을 담은 모든 버전(sealed 포함)의 API 조회에 보였습니다.
+   - 그 샘플을 링크한 버전이 쓰는 버전 하나뿐이고 그 버전에 그 샘플의 기록(meta·태그·split 사본, annotation 버전 행·표식)이 없으면 이전처럼
+     샘플 행을 직접 고칩니다. 그 밖에는 그 버전의 사본(새 표 `version_sample_fields`)에 씁니다. **사본은 칸(meta·태그·split)마다
+     따로입니다** — 바꾸는 칸만 사본이 되고(태그만 고치면 태그 배열만, meta 를 고치면 그 시점의 meta 전체), 사본이 아닌 칸은
+     계속 샘플 행의 값을 읽습니다. 사본이 된 칸은 그 시점 값으로 고정됩니다(키 단위로 전파되지 않습니다).
+   - 적재 뒤 split 을 바꾸는 API 는 없습니다 — 그래서 split 사본은 생기지 않고 모든 버전이 샘플 행의 split 을 읽습니다(사본 표의 split
+     칸은 구조만 있습니다).
+   - 실효 값이 바뀌지 않는 쓰기는 사본을 만들지 않습니다. 응답의 `updated` 와 by-filter 의 `confirm` 비교 수는 이전처럼 대상 수입니다(`keypoint-info` 는 이전과 다릅니다 — 4).
+   - 저장: 사본은 바꾼 칸의 크기입니다(meta 를 바꾸면 그 샘플의 meta 전체, 태그만이면 태그 배열). sealed 버전을 부모로
+     fork 한 버전의 수정은 부모가 같은 샘플을 링크하므로 늘 사본이고, 여러 샘플을 한 번에 바꾸는 쓰기(`keypoint-info` 일괄, 크기 보정
+     overwrite, 태그 by-filter, CVAT 글 칸)는 다른 버전도 링크한(또는 그 버전에 기록이 있는) 샘플 가운데 값이 바뀐 수만큼 사본을 만듭니다. fork 는 부모의 사본을 복사하므로 부모 사본의 크기 합만큼
+     fork 마다 다시 듭니다. 사본은 버전을 지울 때까지 남습니다.
+   - 버전 문맥의 읽기 — 버전 경로의 샘플·annotation 조회(`GET /datasets/{id}/versions/{v}/samples/{sid}`·`.../annotations`), explorer·
+     개수·facet·히스토그램·태그 값 목록·projection, manifest·`/manifest/samples`, seal 스냅샷, CVAT 세션 계획·라벨 계획·글 칸, 버전 이력,
+     `GET /samples?dataset_id=&version=` — 는 그 버전의 값을 읽습니다. **버전 없는 샘플 읽기는 샘플 행의 값입니다**(`GET /samples/{id}`,
+     `dataset_id`·`version` 을 함께 주지 않은 `GET /samples` — `dataset_id` 만 준 경우 포함). 버전 없는 `GET /instances` 는 이전처럼 저장된 annotation 행 그대로입니다(버전 행도
+     함께 나옵니다).
+   - clone job·샘플 가져오기는 원본 버전에서 보이는 값을 새 샘플의 값으로 옮깁니다. 버전 비교(`GET …/diff`)의 `changed` 에 meta·태그·
+     split 이 다른 샘플이 더해집니다(태그 순서도 봅니다).
+   - **에셋(`sample_assets`)은 이 격리 밖입니다** — 이전처럼 버전 사이에 공유됩니다.
+2. **버전 없는 샘플 쓰기 경로 셋이 `410` 입니다.** 본문은 `{"error": "버전 경로를 쓰십시오: <새 경로>"}`(code 없음, 새 경로는
+   `/datasets/{dataset_id}/versions/{version}/…` 템플릿 그대로)이고 인증이 없으면 `401` 입니다. `POST /samples`(버전에 없는 샘플 만들기)는 그대로입니다.
+
+   | 이전 경로(`410`) | 새 경로 |
+   |---|---|
+   | `POST`·`DELETE /samples/{sample_id}/tags` | `POST`·`DELETE /datasets/{id}/versions/{v}/samples/{sample_id}/tags` |
+   | `POST`·`DELETE /samples/tags` | `POST`·`DELETE /datasets/{id}/versions/{v}/samples/tags/items` |
+   | `PATCH /samples/dimensions` | `PATCH /datasets/{id}/versions/{v}/samples/dimensions` |
+
+   - 단건 태그: 그 버전에 없거나 삭제된 샘플은 `404`, 빈 `tags` 는 `400`(이전 경로는 `200`), 응답은 그 버전의 `Sample` 입니다.
+   - `tags/items`(본문 `{"sample_ids", "tags"}`)는 **전부 또는 없음**입니다. 그 버전에 없거나 삭제된 샘플이 하나라도 있으면 `400`
+     `code: meta_write_rejected`(`rejected: [{sample_id, reason: "not_found"}]`)이고 아무것도 쓰지 않습니다(이전 경로는 그런 id 를
+     결과에서 조용히 뺐습니다). 같은 id 는 하나로 합치고 한 요청 10,000 건까지, 빈 `sample_ids`·`tags` 는 `400` 입니다. 응답은 요청
+     샘플 전부의 그 버전 행(`sample_id` 순)입니다(이전은 없거나 삭제된 id 를 뺀 나머지, 순서 보장 없음).
+   - 크기 보정: 그 버전에 없거나 삭제된 샘플은 그 항목만 `ok: false`(문구 「샘플이 없거나 삭제되었거나 이 버전에 속하지 않습니다」)라
+     한 요청에 여러 dataset 의 샘플을 섞을 수 없습니다. 관측 기록은 실제로 쓴 항목만, 커밋 뒤에 합니다(기록 실패가 보정을 실패시키지
+     않습니다).
+3. **sealed 버전 경로로 샘플의 meta·태그·크기를 고치는 쓰기가 모두 `409` 입니다**(버전 설명 수정·subset 은 이전처럼, 새
+   스키마 재계산도 sealed 에 됩니다). 크기 보정과 `keypoint-info` 는 이전에 sealed 를 일부러 통과시켰고, 태그 by-filter
+   (`POST`·`DELETE /datasets/{id}/versions/{v}/samples/tags`)는 버전 상태를 보지 않았습니다. 이제 셋 다 sealed `409`, 준비 중·실패 버전 `409`
+   `version_preparing` 이고, 태그 by-filter 는 없는 버전에 `404` 입니다(이전 `200` `updated: 0`). sealed 버전에 크기 보정을 하던 호출은
+   이제 실패합니다 — 그 샘플이 든 draft 버전 경로로 부릅니다.
+4. **`keypoint-info` 일괄 쓰기도 그 버전에만 반영됩니다.** 다른 버전도 링크한 샘플은 그 버전의 사본에 씁니다(이전에는 모든 버전이
+   보는 샘플 행에 썼습니다). `confirm` 은 쓴 수가 아니라 **필터에 걸린 수**(meta 가 객체가 아닌 샘플 포함)와 비교하고 `updated` 는
+   걸린 수 − `skipped_non_object_meta` 입니다(meta by-filter 와 같아졌습니다).
+5. **by-filter 쓰기 셋(meta·태그·`keypoint-info`)은 대상을 먼저 잠가 고정하고, 잠근 뒤 그 버전에서 빠진 대상이 있으면 `400`
+   `meta_write_rejected`(`not_found`, 앞 10,000 개)로 아무것도 쓰지 않습니다.** 태그·`keypoint-info` 경로에는 새 오류입니다. 다시 부르면
+   됩니다. 실효 값이 바뀌지 않는 샘플은 쓰지 않습니다(태그 by-filter 는 이전에 confirm 을 맞추려고 대상 전부를 UPDATE 했습니다). meta
+   by-filter 의 버전 `updated_at` 갱신은 실제로 쓴 것이 있을 때만입니다.
+6. **meta 일괄 쓰기(items·by-filter)·annotation PUT·PATCH 의 meta·CVAT 글 칸 가져오기도 1 의 규칙을 따릅니다.** annotation PUT 의 「받은
+   meta 가 저장값과 같으면 건너뜀」은 그 버전의 값과 비교합니다. 글 칸 가져오기에서 사본 쓰기가 그 버전에서 빠진 샘플에 걸리면 그
+   프레임은 버린 편집(경고)으로 처리합니다. 글 칸 가져오기 응답의 `updated_meta_samples` 는 그 버전의 meta 가 실제로 바뀐 샘플
+   수입니다(사본 쓰기가 그 버전에서 빠진 샘플에 걸려 버린 프레임은 세지 않습니다).
+7. **링크(`POST /datasets/{id}/versions/{v}/samples`)의 응답이 `204` 빈 본문에서 `200` `{"linked", "skipped", "had_residue"}` 로 바뀝니다.**
+   - **다른 버전에 링크된 샘플을 넣으려면 본문에 `from_version`(같은 dataset 의 버전 이름)이 필요합니다.** 없으면 `400`
+     `code: from_version_required` 이고 `needs_origin: [{sample_id, versions}]`(샘플 `sample_id` 순 앞 1,000 개, 샘플마다 그 샘플이 든 버전
+     앞 100 개)·`needs_origin_total` 이 실리며 아무것도 링크하지 않습니다. `from_version` 을 주면 새로 들어간 샘플은 그 버전에서 보이는
+     meta·태그·split·annotation 을 함께 가져옵니다. sealed 버전도 출처가 됩니다.
+   - 한 요청의 출처는 하나입니다. 보낸 샘플은 모두 `from_version` 의 멤버여야 하고(이미 대상에 있는 샘플은 예외), 아니면 `400` 입니다
+     — 어느 버전에도 없는 샘플과 섞어도 `400` 입니다. `from_version` 이 대상과 같으면 `400`, 없으면 `404`, 준비 중·실패면 `409`
+     `version_preparing` 입니다.
+   - 어느 버전에도 링크되지 않은 샘플(`POST /samples` 로 만든 것, 모든 버전에서 뺀 것)은 `from_version` 없이 넣습니다. 그 값은 마지막으로
+     공유 상태였을 때의 값이고 보장하는 값이 아닙니다(`compact-instances` 가 그 샘플의 읽히지 않던 annotation 공유 행을 지웠으면 그
+     그룹은 비어 있습니다).
+   - 이미 대상에 링크된 샘플은 건너뛰고 `skipped` 에 셉니다(그 편집은 그대로입니다 — 덮어쓰려면 빼고 다시 넣습니다).
+   - 없는·삭제된 샘플(`404`)과 다른 dataset 의 샘플(`400`)이 섞이면 입력 순서와 무관하게 `404` 가 먼저입니다(이전은 첫 거절 id 의 사유).
+   - 새로 들어간 샘플은 그 버전의 스키마 관측에 더해지고(11), 링크 트랜잭션 안에서 새 샘플 1,000 개마다 읽기가 늘어 샘플 잠금을 그만큼
+     오래 쥡니다.
+8. **샘플을 버전에서 빼면 그 버전의 기록(meta·태그·split 사본, annotation 버전 행·표식)은 사라진 것으로 봅니다.**
+   - 다시 넣으면 7 의 규칙대로 `from_version` 의 값이고, 예전 편집은 되살아나지 않습니다. **annotation 은 이전에 링크를 끊어도 그
+     버전의 행·표식이 남아 다시 넣으면 되살아났고, 이 변경은 이미 남아 있는 기록에도 적용됩니다**(이전 fork 의 자식이 이미 복제해 간
+     것은 그 자식에 링크돼 있으면 그대로입니다). `had_residue` 는 새로 넣은 샘플 가운데 그런 기록이 남아 있어 지운 수입니다.
+   - 링크 해제(`DELETE /datasets/{id}/versions/{v}/samples`) 응답 `{"removed"}` 에 `had_residue`(뺀 샘플 가운데 그 버전에 기록이 있던 수)가
+     더해집니다. 권한은 이전처럼 쓰기(`editor` 이상, 로봇 포함)입니다.
+   - **열린 CVAT 세션(`creating`·`open`)이 잡은 샘플이 하나라도 있으면 링크 해제가 `409` `code: samples_in_open_session`** 이고
+     아무것도 빼지 않습니다(이전 `200`). 세션을 close 한 뒤 다시 부릅니다. 같은 경로의 sealed `409` 는 이전처럼 code 가 없습니다.
+   - 링크 해제는 그 샘플들의 쓰기와 줄을 섭니다 — 해제가 진행 중인 샘플의 annotation PUT·PATCH·단건 태그 쓰기는 기다렸다가
+     `404`, 일괄 쓰기(meta·태그 items, 크기 보정, by-filter, CVAT 글 칸)는 해제가 끝난 뒤의 링크로 판정합니다(이전에는 해제와 겹친
+     쓰기가 성공으로 답하고 편집이 사라질 수 있었습니다). 커밋 중인 seal 과 겹친 해제는 seal 을 기다린 뒤 `409` 입니다.
+   - 기록은 해제 때 바로 지우지 않고 아무도 읽지 않는 채 남았다가 다시 넣을 때 지워지거나 `compact-instances` 가 회수합니다(14).
+   - annotation 쓰기의 직접 모드 판정은 그 샘플을 링크한 버전만 셉니다(이전에는 링크가 끊기고 행·표식이 남은 버전도 셌습니다).
+9. **새 버전 만들기(`fork_from`)·저장된 필터의 물질화는 부모의 meta·태그·split 사본을 물려받고, 부모에서 링크가 끊긴 샘플의 기록은
+   복제하지 않습니다**(이전에는 링크와 무관하게 부모의 버전 행·표식을 복제했습니다). 실행 시점의 부모 값을 물려받으므로 `202` 로 대기한
+   fork 는 그 사이 부모에 들어간 쓰기를 봅니다. 진행 목록의 fork `copy` 단계 수에 사본만 있는 샘플이 더해지고, 새 버전에 링크되지 않은 부모의 잔여 샘플은 빠집니다.
+10. **스키마 관측이 버전 단위입니다.** `/schema`·사이드바 값 목록(facet 의 `group_key`·`<group>.label`·`<group>.component.type`·관측
+    전용 meta 필드)이 그 버전의 데이터를 따릅니다. 이전에는 dataset 단위라 버전과 무관하게 같은 답을 주고 지운 데이터의 항목이 남았습니다.
+    - `/schema` 응답에 `schema_state`(`legacy`·`observed`·`exact`)와 `computed_at` 이 더해집니다.
+    - **`legacy` 는 이 이미지로 올리기 전에 있던 버전입니다** — 재계산 전까지 이전처럼 dataset 단위 관측으로 답하므로 올린 직후 기존
+      버전의 `/schema`·사이드바는 그대로입니다. 그 버전에 처음 쓰거나(링크·샘플 가져오기의 대상이 될 때 포함 — 거절된 링크도
+      해당합니다) 그 버전의 재계산·지정 삭제를 하면 그때의 dataset 관측을 「물려받은」 관측으로 복사하고 `observed` 가 됩니다(재계산이 끝나면 `exact`). legacy
+      버전을 부모로 fork 하면 부모는 legacy 로 남고 자식이 그때의 dataset 관측을 물려받습니다.
+    - **올린 뒤 빈 버전·적재로 만든 버전은 그 버전의 데이터에서 관측한 것만 보입니다** — 다른 버전에만 있는 그룹·meta 필드는 그 버전의
+      `/schema`·사이드바에 없고, 그런 meta 필드의 facet 은 `400` 입니다(오타와 같은 처리). fork 로 만든 버전은 부모의 관측을 물려받습니다
+      — 전체 fork 는 부모의 관측을 그대로, 부분·필터 fork 는 물려받은 관측으로 복사해 값이 없어도 목록에 남습니다. seal·재계산이 그 버전의
+      데이터로 다시 맞춥니다.
+11. **seal 이 그 버전의 관측을 seal 시점 데이터의 정확한 집합으로 바꾸고 `exact` 가 됩니다** — 버전에서 뺀 샘플·지운 데이터의 항목이
+    사라집니다. sealed 데이터에 한 컴포넌트 이름의 두 타입이 있으면 seal 은 성공하고 샘플 수가 많은 타입(같으면 타입 이름순 앞)을 남기며
+    서버 로그에 경고만 남깁니다. 링크는 새로 들어간 샘플의 실데이터를 관측합니다.
+12. **한 버전 안에서 한 그룹의 컴포넌트 이름은 한 타입입니다.** 그 버전에서 직접 관측한 이름을 다른 타입으로 쓰거나 한 요청 안에서 한
+    이름에 두 타입을 쓰면 `400`(code 없음, 메시지에 그룹·이름·두 타입)입니다.
+    - 대상: 적재(`/ingest/batch` 는 그 item 만), annotation PUT·PATCH, CVAT 가져오기(그 샘플은 반영하지 못한 편집으로 남아 force 없는
+      close 가 `409`), 샘플 가져오기·clone job(전체 실패 — clone job 은 `failed` 이고 대상을 롤백), `from_version` 링크(아무것도 링크하지
+      않음).
+    - **검사는 그 요청에서 바뀐 그룹에만 합니다** — 바꾸지 않은 GET→PUT 은 통과하지만, **이미 두 타입이 섞인 그룹은 한 인스턴스만
+      고쳐도 `400`** 입니다. 한 샘플 안에서 섞였으면 그 데이터를 고쳐야 하고(요청 자체에 두 타입이 있습니다), 샘플 사이에 섞였으면
+      지정 삭제로 그 관측을 지운 뒤 고칩니다(재계산은 많은 쪽 타입을 남겨 적은 쪽 샘플은 여전히 `400` 입니다).
+    - 물려받은 관측(legacy·부분 fork)과 다른 타입은 받고 관측이 새 타입으로 바뀝니다. meta 필드는 이 규칙 밖입니다. 버전마다 타입이
+      달라도 됩니다.
+    - **최선 노력입니다** — 같은 이름을 두 타입으로 동시에 처음 쓰는 쓰기, 같은 배치 안 두 item 의 첫 쓰기, 관측 기록이 실패해 빠진 이름은
+      통과합니다(재계산의 `conflicts` 가 잡습니다).
+    - 결함 수정: 적재에서 파서가 버리는 원소(label 없음 등)의 컴포넌트 타입이 더는 관측에 남지 않고 검사 근거도 되지 않습니다. 이전에는
+      저장되지 않은 원소의 컴포넌트가 `/schema` 에 나타날 수 있었습니다.
+13. **스키마 재계산과 지정 삭제 경로를 더합니다.**
+    - `POST /datasets/{id}/versions/{v}/schema/recompute` → 늘 `202` `{"job"}` + `Location: /api/v1/schema-jobs/{job_id}`(같은 버전의
+      재계산이 대기·실행 중이면 그 작업). 준비 중·실패 버전 `409` `version_preparing`, sealed 버전도 받되 seal 스냅샷(shard manifest)이
+      없는 sealed 버전은 `409` 입니다.
+    - `GET /api/v1/schema-jobs/{job_id}` — 상태(`queued`·`running`·`done`·`failed`)와 결과 `{"conflicts": [{"group", "name", "types",
+      "sample_count"}], "replaced", "samples"}`(`types` 는 많은 순이고 첫째가 관측에 남긴 타입, `sample_count` 는 타입 → 샘플 수). 로그인한
+      사용자면 viewer 도 봅니다(요청자 이메일은 본인·관리자에게만). 끝난 작업은 끝난 지 7 일이 지나면 하루마다 도는 정리가 지웁니다.
+    - draft 는 그 버전의 데이터를 샘플 1,000 개 묶음마다 짧은 트랜잭션으로, sealed 는 seal 스냅샷을 샤드 하나씩 읽습니다. 큰 버전은 오래
+      걸립니다. 시작할 때의 관측 중 결과에 없는 항목만 지우고 결과를 넣으므로 재계산 도중 기록된 항목은 남지만, 이미 훑은 샘플에 같은
+      항목을 도중에 다시 쓴 경우 그 항목이 지워질 수 있습니다 — **draft 의 `exact` 는 최선 노력입니다.** 도중에 그 버전이 sealed 가 되면
+      seal 의 결과를 덮지 않습니다(`replaced: false`). 취소는 없습니다.
+    - seal·fork 작업 줄(`/api/v1/version-jobs`)과 따로 파드마다 하나씩 돌아 그 줄을 밀지 않고 버전 응답의 `job` 에도 실리지 않습니다.
+    - `DELETE /datasets/{id}/versions/{v}/schema/labels`(`{"items": [{"group", "label"}]}`)·`.../schema/components`(`{"items": [{"group",
+      "name"}]}`)·`.../schema/meta-fields`(`{"items": [{"field", "value_type"?}]}`, 타입이 없으면 그 필드 전부) → `200` `{"deleted"}`. 데이터를
+      확인하지 않습니다 — 잘못된 데이터를 먼저 지우고 항목을 지웁니다. items 1~1,000, sealed `409`, 준비 중·실패
+      버전 `409` `version_preparing`. legacy 버전에 부르면 먼저 dataset 관측을 물려받은 뒤 지우므로 `observed` 가 됩니다.
+    - 재계산·지정 삭제는 `editor` 이상(로봇 포함)입니다.
+14. **`compact-instances` 에 잔여 단계를 더합니다.** 그 샘플을 읽는 버전이 링크만 세게 되어(8), 링크가 끊긴 (샘플, 버전)의 버전 행·
+    표식·meta·태그·split 사본을 1 단계보다 먼저 지웁니다. `--keep-residue` 로 끕니다(옮기기·공유 행 지우기는 이 옵션과 무관하게 링크만 보고
+    돕니다). 결과 JSON 에 `residue_version_rows_deleted`·`residue_sample_fields_deleted` 가 더해지고 `steps_disabled` 에 `residue` 가 올 수
+    있습니다. undo 기록에서 잔여 버전 행은 `"step": "residue"` 줄(instances 행 줄과 같은 모양, `kind` 없음), meta·태그·split 사본은
+    `"step": "residue", "kind": "sample_fields"` 줄입니다. 두 줄 모두 값은 `row` 객체 안에 있습니다(`{"run", "batch", "step", "kind"?, "row": {…}}`).
+    사본 줄의 `row` 는 `{sample_id, dataset_version_id, meta_text, meta_set, tags, split, split_set}` 이고(`meta_set` 이 참인데 `meta_text` 가
+    `null` 이면 NULL meta 의 사본입니다 —
+    `meta_text` 는 `meta::text` 원문, 사본이 아닌 칸은 `meta_set`·`split_set` 이 거짓이고 값이 `null`, 태그가 사본이 아니면 `tags` 가
+    `null` — 되살릴 때 `null` 을 빈 배열로 바꾸면 빈 태그 사본이 됩니다)입니다. 되살릴 때는 `kind` 로 두 모양을 가릅니다. **링크된 사본만 있는 샘플은 후보가 아닙니다.**
+15. **OpenAPI 문서**: 이전 경로 다섯 작업(태그 넷·크기 보정)의 operationId 가 `gone_sample_tags`·`gone_sample_tags_delete`·
+    `gone_sample_tags_bulk`·`gone_sample_tags_bulk_delete`·`gone_sample_dimensions` 로 바뀌고(응답은 `410`), 원래 이름
+    (`add_sample_tags`·`remove_sample_tags`·`add_sample_tags_bulk`·`remove_sample_tags_bulk`·`set_sample_dimensions`)은 새 버전 경로의
+    작업이 씁니다 — 스펙에서 생성한 클라이언트는 같은 이름의 메서드가 `dataset_id`·`version` 을 받는 새 경로로 바뀝니다. `GET …/schema` 의 요약 문구가 「그 버전의
+    관측(legacy 버전은 dataset 단위 관측)으로 만든 sample_fields 머지」로 바뀝니다.
+16. **샘플 이력(`GET /datasets/{id}/samples/{sample_id}/history`)의 항목이 그 버전의 값을 줍니다.** `annotation.meta` 가 그 버전에서
+    보이는 meta 가 되고(이전에는 버전과 무관한 샘플 행의 값), 항목 바로 아래에 `tags`(문자열 배열)·`split`(문자열 또는 `null`)이
+    더해집니다. `annotation` 은 annotation `PUT` 이 받는 모양 그대로입니다.
+17. **그 밖의 동작 변경.**
+    - 샘플 가져오기·clone job: 대상 버전이 가져오는 도중 sealed 가 되면 `409`(이전에는 sealed 버전에 샘플이 더해질 수 있었습니다),
+      원본 샘플이 그 사이 원본 버전에서 빠졌으면 `400` 입니다. 원본의 meta·태그·split 은 원본 샘플을 잠근 뒤 읽어 annotation 과 같은
+      시점의 값입니다.
+    - 태그·`keypoint-info` by-filter 가 실제로 쓰면 버전의 `updated_by`·`updated_at` 을 갱신합니다(meta by-filter 와 같습니다).
+    - `/ingest/batch` 의 한 배치가 한 컴포넌트 이름을 두 타입으로 처음 쓰면, 관측에는 그 타입을 쓴 item 이 많은 쪽(같으면 타입 이름순
+      앞)이 남습니다(seal·재계산과 같은 규칙, 이전에는 이름순 앞).
+    - annotation PUT·PATCH 의 스키마 관측은 받은 JSON 이 아니라 저장되는 인스턴스에서 뽑습니다(적재와 같습니다).
+18. **지표 셋을 더하고 커넥션 경고·seal 잠금이 바뀝니다**: `nexus_schema_jobs_total{result}`(`done`·`failed`, 둘 다 0 부터), 버전 사본 표의 크기
+    `nexus_version_sample_fields_bytes`(힙·TOAST·색인 합계 바이트)와 행 수 추정 `nexus_version_sample_fields_rows_estimate`(PostgreSQL 통계,
+    마지막 VACUUM·ANALYZE 기준). 뒤의 둘은 DB 전역 값이고 표를 읽지 않으며, 250 ms 안에 못 읽으면 직전 값이 남습니다. 기동 경고 `seal.max_concurrent` 의 커넥션
+    수에 스키마 재계산 몫이 더해집니다(계속 쥐는 수 `상한 × 2 + 1`, 순간 최대 `상한 × 5 + 3`) — 경고가 나는 문턱(상한 2 이상)은 같습니다.
+    seal 의 메인 manifest 단계가 `version_sample_fields` 에도 AccessShareLock 을 쥐고, seal 의 마지막 트랜잭션이 스키마 관측 표를
+    교체합니다.
+
+**마이그레이션** — 039 를 추가합니다. **이 버전은 마이그레이션 039 를 추가하며, 이미지 `0.1.36` 이하로 롤백할 수 없습니다.** 같은 마이그레이션 집합을 가진 가장 낮은 이미지는
+`0.1.37` 입니다.
+- **영향받는 테이블** — 새 표만 만듭니다: `version_sample_fields`, `version_schema_obs_labels`·`version_schema_obs_components`·
+  `version_schema_obs_meta_fields`, `version_schema_state`, `schema_jobs`. 기존 표 ALTER·백필은 없습니다. 외래 키 때문에
+  `dataset_versions`·`users` 에 ShareRowExclusiveLock 이 잠깐 걸리고 `lock_timeout` 3 초입니다.
+- 새 표 `version_sample_fields` 에만 자동 ANALYZE 문턱을 낮춥니다(`autovacuum_analyze_threshold = 1000`,
+  `autovacuum_analyze_scale_factor = 0.01`) — 대량 사본 쓰기 직후 통계가 비어 계획이 나빠지지 않게 합니다.
+- **예상 소요시간** — 행 수와 무관하게 표 생성만입니다(수 초 이내, 샘플 150 만 DB 에서 56 ms).
+- **롤백** — 사본·관측이 생긴 뒤에는 데이터를 잃습니다. 절차와 SQL 은 차트 README
+  [되돌리기 › 039 가 적용된 DB](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.31/charts/nexus-server/README.md#039-가-적용된-db) 이고, **파드를 0 개로 내린 뒤** SQL 을 돌리고 이전 판 리비전으로
+  `helm rollback` 합니다(파드를 0 개로 내리므로 rollback 전에 Recreate 로 바꿀 필요는 없습니다. helm 4 면 rollback 뒤 README 되돌리기 4 대로 RollingUpdate 로
+  되돌립니다). 파드가 떠 있는 채 SQL 을 돌리면 그 파드가 재시작하며
+  039 를 다시 적용합니다. `0.1.33` ~ `0.1.36` 으로 되돌릴 때는 039 만 걷습니다. 잃는 것과 미리 떠 둘 것(사본 표 내보내기)은 그 절에
+  있습니다 — 사본의 값, `0.1.37` 에서 seal 한 버전의 API 조회와 스냅샷의 일치, 지정 삭제·seal 이 지운 관측(되살아납니다). `0.1.37` 에서
+  `compact-instances --apply` 를 `--keep-residue` 로, `--keep-shared` 없이 돌렸다면 되돌리지 않습니다(스냅샷 복원만). 업그레이드 전 `pg_dump`(또는 PITR 기준점)가
+  가장 확실합니다.
+
+**설정 키** — 없음
+
+**호환성** — SDK·웹을 서버보다 **먼저** 올립니다 — SDK `0.1.28` 과 웹 nexus-client 차트 `0.1.23`(이미지 `0.1.25`)은 응답 헤더
+`X-Nexus-Version` 으로 서버 판을 보고 경로를 고르므로 이전 서버에서도 그대로 동작합니다.
+- 샘플 태그 일괄(`add_tags_bulk`·`remove_tags_bulk`)과 크기 보정(`set_sample_dimensions`·`backfill_dims`)은 SDK `0.1.28` 이상에서 새 경로로
+  갑니다. 단 `NexusClient` 메서드를 직접 부를 때는 `dataset_id`·`version` 을 넘겨야 하고, 넘기지 않으면 `0.1.28` 에서도 이전 경로로 가서
+  `410` 입니다. `0.1.27` 이하 SDK 는 이 호출들이 `410` 으로 실패합니다(dataset 태그는 영향이 없습니다).
+- 다른 버전에 있는 샘플을 `from_version` 없이 링크하면 SDK 와 무관하게 `400` 이고, `from_version` 인자는 SDK `0.1.28` 부터입니다.
+- 웹 `0.1.24` 이하(이미지)는 이 서버에서 태그 편집이 `410` 으로 실패합니다. 이전 경로를 직접 부르는 도구도 새 경로·링크 응답(`200`)·
+  `from_version`·링크 해제 `409` 를 다뤄야 합니다. 이전 경로를 남겨 두는 전환 기간은 없습니다(이전 경로는 모든 버전이 보는 값을 고칩니다).
+- 운영 CLI(`compact-instances`·`reconcile-snapshots`·`deleted-sample-index`)는 `0.1.37` 이미지로 돌립니다. `compact-instances` 는 dry-run 을
+  포함해 DB 와 바이너리의 마이그레이션 집합을 대조하므로 039 를 모르는 `0.1.36` 이하는 시작하지 않습니다(`reconcile-snapshots`·
+  `deleted-sample-index` 는 이 대조를 하지 않습니다).
+- `0.3.30` 을 건너뛰고 올리면 그 판의 cas 호출 시한이 함께 들어옵니다 — cas 차트 `config.requestTimeoutSecs` 가 `0` 이거나 150 이상이면
+  시한(150 초)이 cas 보다 먼저 걸립니다(`0.3.30` 절).
+
+**운영 조치** — **이 판의 교체는 `strategy.type=Recreate` 입니다.** 이전 이미지 파드와 섞이면 이전 파드가 사본을 모른 채 모든 버전이
+보는 값을 고치고, 그 파드가 돌린 seal 은 사본을 뺀 값으로 스냅샷을 cas 에 남깁니다(되돌릴 수 없습니다). 절차의 모양은 `0.3.23` 절
+1~5 와 같지만 **판 번호와 확인 값은 아래를 씁니다**(`0.3.23` 절의 `0.3.23`·`0.3.22`·`0.1.29`·`applied=2`·`34`·`36`·035·036 을 그대로
+쓰지 않습니다). `<릴리스>`·`<fullname>` 찾는 법은 `0.3.23` 절과 같습니다.
+
+교체 동안 서비스가 끊깁니다. 마이그레이션은 즉시라 끊기는 시간은 대부분 파드 종료(종료 유예 최대 30 초, preStop 5 초 포함)와 이미지
+받기·기동입니다. SDK 는 서버 부재를 첫 실패부터 120 초(`retry_timeout`)까지만 다시 시도하므로 이미지를 노드에 미리 받아 두고, 2 부터 5
+까지는 seal·새 버전 만들기(물질화 포함)·CVAT 세션 만들기·clone job 요청을 멈추게 합니다(적재는 멱등 키 덕에 다시 돌려도 중복되지
+않습니다).
+
+1. SDK `0.1.28`·웹(nexus-client 차트 `0.1.23`)을 먼저 올리고, 위 **호환성** 의 호출을 고칩니다.
+2. 진행 중인 작업이 없는지 확인합니다. `0.3.23` 절 1 의 세 질의(진행 중인 seal·`creating` 세션·도는 clone job)와 아래가 모두 0 행이어야
+   하고, 이전 이미지의 운영 CLI(`compact-instances`·`deleted-sample-index`·`reconcile-snapshots`)도 돌고 있지 않아야 합니다. 대기
+   (`queued`) 작업은 남아도 새 파드가 이어 돌립니다.
+
+   ```sql
+   SELECT j.job_id, j.kind, v.dataset_id, v.version, j.started_at
+   FROM version_jobs j JOIN dataset_versions v USING (dataset_version_id)
+   WHERE j.state = 'running';
+   ```
+
+3. 교체 직전에 `pg_dump` 스냅샷(또는 PITR 기준점)을 둡니다. 복원 방법과 주의(`--clean` 만으로는 안 되고 DB 를 다시 만든다)는
+   `0.3.23` 절 2 와 같습니다. 복원은 파드를 0 개로 내린 뒤 하고, 복원 뒤에는 이 교체 전 리비전(차트 `0.3.29` 등 지금 판)으로
+   `helm rollback` 합니다 — 0.1.37 파드가 떠 있는 채 복원하면 그 파드가 039 를 다시 적용합니다. 덤프가 오래 걸렸으면 4 로 가기 직전에
+   2 의 질의를 다시 돌려 모두 0 행인지 확인합니다.
+4. Deployment 를 먼저 Recreate 로 바꿉니다(strategy 만 바뀌어 파드는 다시 뜨지 않습니다).
+
+   ```bash
+   kubectl -n <namespace> patch deploy <fullname> --type=json \
+     -p '[{"op":"replace","path":"/spec/strategy/type","value":"Recreate"},{"op":"remove","path":"/spec/strategy/rollingUpdate"}]'
+   kubectl -n <namespace> get deploy <fullname> -o jsonpath='{.spec.strategy}'   # {"type":"Recreate"} 이어야 합니다
+   ```
+
+   이미 Recreate 이고 `rollingUpdate` 가 없으면 patch 가 `The request is invalid` 로 실패합니다 — jsonpath 가 `{"type":"Recreate"}` 이면
+   그대로 5 로 갑니다. **helm 4 에서는 4 가 필수입니다**(건너뛰면 5 가 `spec.strategy.rollingUpdate: Forbidden` 으로 거부되고 이전 파드가
+   그대로 남습니다 — 4 를 한 뒤 5 를 다시 실행합니다). GitOps 로 배포한다면 4 대신 Git 의 values 에 `strategy.type: Recreate` 를
+   적습니다(`kubectl patch` 는 sync 가 되돌릴 수 있습니다).
+5. 올립니다. `--install` 을 붙이지 않습니다.
+
+   ```bash
+   helm repo update
+   helm upgrade <릴리스> int2nexus/nexus-server -n <namespace> --version 0.3.31 \
+     -f <기존 values 파일> --set strategy.type=Recreate
+   ```
+
+   - `--reuse-values` 를 쓰면 이미지가 이전 태그로 남습니다 — 쓴다면 `--set image.tag=0.1.37` 을 함께 줍니다. values 파일이
+     `image.tag`·`image.digest` 를 고정해 두었다면 `0.1.37`(digest 는 위 값)로 바꿉니다.
+   - values 에 `strategy.rollingUpdate` 가 적혀 있으면 지웁니다 — Recreate 에 그 값이 함께 있으면 helm 3·4 모두 거부됩니다.
+6. 확인합니다.
+   - `kubectl -n <namespace> get deploy <fullname> -o jsonpath='{.spec.strategy.type} {.spec.template.spec.containers[0].image}'` 가
+     `Recreate int2jieun/nexus-server:0.1.37`(digest 로 핀했으면 그 digest).
+   - 파드 로그에 `마이그레이션 완료 applied=1`(`0.1.33` ~ `0.1.36` 에서 올린 DB 기준, `applied=0` 만 보이면 이미 적용된 DB 입니다).
+   - `SELECT max(version) FROM _sqlx_migrations;` 가 `39`.
+   - 인증된 요청의 응답 헤더 `X-Nexus-Version: 0.1.37`.
+   - 올린 뒤 쓰기·링크·fork 가 없었던 기존 버전(예: sealed 버전)의 `GET /datasets/{id}/versions/{v}/schema` 가
+     `schema_state: "legacy"`(올리기 전과 같은 답). 쓰기를 받은 버전은 `observed` 가 정상입니다.
+   - 파드가 재시작을 반복하고 로그가 `lock timeout` 이면 `pg_stat_activity` 에서 `dataset_versions`·`users` 를 쥔 nexus 밖의 긴
+     트랜잭션을 찾습니다.
+7. 교체가 끝나면 RollingUpdate 로 되돌립니다(`0.3.23` 절 「이 판 뒤의 교체」와 같은 방법). helm 3 은 5 의 `helm upgrade` 를
+   `--set strategy.type=Recreate` 없이 한 번 더 실행합니다(strategy 만 바뀌어 파드는 다시 뜨지 않습니다, `--reuse-values` 면
+   `--set strategy.type=RollingUpdate`). helm 4 는 4 의 patch 가 `strategy.type` 을 소유하므로 `0.3.23` 절의 `kubectl patch --type=merge`
+   로 되돌립니다.
+   GitOps 면 Git 의 values 에서 `strategy.type` 을 지웁니다.
+
+올린 뒤 기존 버전의 스키마를 그 버전의 데이터로 맞추려면 버전마다 재계산을 겁니다(필요한 버전만). 링크가 끊긴 기록을 회수하려면
+`compact-instances` 를 교체가 끝난 뒤 `0.1.37` 이미지로 돌립니다(교체·되돌리기 중에는 돌리지 않습니다).
+
+**주의** — 사본 meta 의 포함 검사(CVAT 트랙 할당·시퀀스 조회)는 그 버전의 사본 수에 비례합니다(샘플 150 만이 모두 사본인 버전에서
+1.3~1.5 초). 사본이 많은 버전의 facet 개수·히스토그램은 사본이 없는 버전보다 느릴 수 있습니다(150 만 샘플이 모두 태그 사본인 버전의
+태그 facet 2.95 초 대 사본 없음 1.52 초). 사본이 없는 버전은 같은 DB 에서 이전 이미지보다 빠르거나 비슷했습니다(태그 facet 6.98 →
+1.58 초, `meta.camera` facet 31.6 → 21.9 초, 히스토그램 2.76 → 2.87 초, 태그 하나 개수 3.89 → 0.93 초 — 응답 본문은 같습니다). 버전 문맥의
+개수·facet·목록은 버전 링크 조건을 그 버전의 id 로 겁니다(결과 집합은 같습니다). 태그 조건이 붙은 개수·facet·일괄 쓰기 대상 고르기는
+그 버전의 링크 수에 비례해, 드문 태그는 이전보다 느리고(150 만 버전 0.4 초 안) 흔한 태그는 빠릅니다. 측정은 로컬 PostgreSQL 18.6,
+샘플 150 만 기준입니다.
+
 ## 0.3.30
 
 image: `int2jieun/nexus-server:0.1.35` → `int2jieun/nexus-server:0.1.36`

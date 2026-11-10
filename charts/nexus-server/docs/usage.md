@@ -12,8 +12,8 @@ Nexus는 다음과 같은 특징을 가진다.
 원본 파일은 CAS 엔드포인트를 통한 직접 업로드 또는 SDK 메서드를 이용한 업로드 방식으로 CAS에 저장되며, Nexus에는 CAS 객체를 참조하는 정보와 메타데이터만 저장된다.
 - DatasetVersion 간 Sample을 공유한다.  
 새로운 DatasetVersion은 기존 버전을 Fork하여 생성할 수 있으며, 변경되지 않은 Sample은 기존 버전과 공유된다. 따라서 데이터셋 전체를 복사하지 않고도 새로운 버전을 효율적으로 관리할 수 있다.
-- Annotation은 DatasetVersion 단위로 관리된다.  
-동일한 Sample이라도 DatasetVersion마다 서로 다른 Annotation을 가질 수 있으며, 한 버전에서의 수정은 다른 버전에 영향을 주지 않는다.
+- Annotation과 meta·태그·split은 DatasetVersion 단위로 관리된다.  
+동일한 Sample이라도 DatasetVersion마다 서로 다른 Annotation·meta·태그를 가질 수 있으며, 한 버전에서의 수정은 다른 버전에 영향을 주지 않는다. split 은 적재 때 정하며 적재 뒤 바꾸는 API 가 없어 모든 버전이 같은 값을 본다. 원본 파일(에셋)은 버전 사이에 공유된다.
 - Seal을 통해 Immutable 버전을 생성한다.  
 DatasetVersion은 Seal하여 변경이 불가능한 스냅샷으로 고정할 수 있다. Seal된 버전은 학습 및 평가에 사용되는 기준 데이터셋으로 활용되며, 동일한 데이터를 언제든지 재현할 수 있다.
 - Annotation은 CVAT에서 편집할 수 있다.  
@@ -38,7 +38,7 @@ pip install --upgrade --extra-index-url https://int2nexus.github.io/cas-server/s
 python -c "import importlib.metadata as m; print(m.version('int2nexus-sdk'))" 
 ```
 
-이 문서는 서버 `0.1.36`(차트 `0.3.30`)와 SDK `0.1.27` 기준이다. SDK는 서버와 따로 발행되므로 위 명령으로 최신을 유지한다 — 문서의 기능이 없다는 에러가 나면 대개 SDK가 낮은 것이다. 버전별 변경은 [차트 CHANGELOG](../CHANGELOG.md)와 [SDK 변경 이력](https://int2nexus.github.io/cas-server/sdk/changelog.html)에 있다.
+이 문서는 서버 `0.1.37`(차트 `0.3.31`)과 SDK `0.1.28` 기준이다. 서버 `0.1.37` 이상에서 SDK 가 `0.1.28` 보다 낮으면 태그 저장·크기 보정이 `410` 이고, 다른 버전에 있는 샘플의 링크가 `400` 이다. SDK는 서버와 따로 발행되므로 위 명령으로 최신을 유지한다 — 문서의 기능이 없다는 에러가 나면 대개 SDK가 낮은 것이다. 버전별 변경은 [차트 CHANGELOG](../CHANGELOG.md)와 [SDK 변경 이력](https://int2nexus.github.io/cas-server/sdk/changelog.html)에 있다.
 
 ### 2.2 연결 설정
 
@@ -332,7 +332,7 @@ print(report)
 - 서버는 **빈칸만 채우고 기록된 값은 축 단위로 거부한다.** 이미 크기가 있는 샘플을 보내면 `rejected`에 사유와 함께 돌아온다. `applied + len(rejected) == measured - unchanged`이므로 스크립트가 종료 코드를 정할 수 있다.
 - 멱등이라 중단 후 다시 돌려도 안전하다(이미 채워진 샘플은 SDK 가 대상에서 빼고 보내지 않는다).
 - **적재 당시의 선언값 자체가 틀린 경우는 `overwrite=True`로 고친다.** 그 값은 「기록됨」이라 위 채우기 모드로는 구조적으로 닿지 않는다. 이 모드는 전량을 다시 재고 **실측값이 기록값과 다른 것만** 보내며, `dry_run=True`가 개수가 아니라 변경 목록(`from` → `to`)을 준다 — 그 목록이 "probe가 엉뚱한 객체를 재고 있다"를 잡는 자리다. `patch_annotations`로 `meta`만 고치는 것은 권하지 않는다 — 그 경로의 `meta`는 병합이 아니라 통째 교체라 다른 `meta` 키가 사라지고, sealed 버전에서는 `409`다.
-- sealed 버전의 샘플도 보정된다 — `samples.meta`는 버전 격리가 없는 살아 있는 값이고, 애초에 그 `0`은 측정된 값이 아니었다. 다만 seal은 그 시점 `meta` 사본을 스냅샷에 기록하므로, 고친 값은 API 조회에만 보이고 이미 seal된 버전의 `to_df()`에는 반영되지 않는다([architecture.md 10.3](architecture.md#103-version-불변성)).
+- **sealed 버전은 `409`다**(첫 청크에서 `NexusError(status_code=409)`). `dry_run=True` 이거나 보낼 대상이 없으면 쓰기 요청을 보내지 않으므로 sealed 핸들에서도 보고서를 돌려주고, `409` 는 적용할 때 난다. 보정은 그 버전에만 반영되므로, sealed 버전에 든 샘플을 고치려면 그 샘플을 담은 draft 버전의 핸들로 부른다 — 고친 값은 그 draft 에만 보이고 sealed 버전의 조회와 `to_df()`는 그대로다([architecture.md 10.3](architecture.md#103-version-불변성)). 같은 샘플이 여러 draft 에 있으면 버전마다 부른다. 이 버전에 없거나 삭제된 샘플은 그 항목만 `rejected`(「샘플이 없거나 삭제되었거나 이 버전에 속하지 않습니다」)다.
 
 ### 3.4 샘플 생성과 등록
 
@@ -385,7 +385,7 @@ CAS 조회가 401/403이면 아무것도 적재하지 않고 `NexusCasError`를 
 적재를 마친 뒤 깊이 맵처럼 다른 모달리티를 나중에 붙일 때 쓴다(SDK `0.1.24`+, 서버 이미지 `0.1.29`+). 재적재하지 않는다.
 
 ```python
-refs = nx.upload(depth_paths, bucket="depth", prefix="kitti/depth")   # {경로: 리치 CasRef} — 끝난 순서라 경로로 찾는다
+refs = nx.upload(depth_paths, bucket="depth", prefix="kitti/depth", strict=True)   # {경로: 리치 CasRef} — 끝난 순서라 경로로 찾는다(strict 가 없으면 실패한 파일은 dict 에 없다)
 n = ds.set_assets("depth", {sample_id: refs[str(p)] for sample_id, p in zip(ids, depth_paths)})
 ds.set_assets("depth", {sample_id: new_ref}, overwrite=True)            # 이미 있는 role 을 바꿀 때만
 ```
@@ -395,7 +395,7 @@ ds.set_assets("depth", {sample_id: new_ref}, overwrite=True)            # 이미
 - 이미 그 role 이 있는 샘플은 거절이고 `overwrite=True`면 바꾼다. 같은 값을 다시 보내면 거절이 아니라 변경 없음이라 중단된 호출을 그대로 다시 불러도 된다. 같은 값은 bucket·key 가 같고 해시가 둘 다 있으면 해시까지 같은 것이다 — `nx.upload(..., overwrite=True)`로 같은 key 의 내용을 바꾼 뒤 새 `CasRef`로 붙이면 다른 값이다.
 - **sealed 버전에도 든 샘플의 기존 role 은 `overwrite=True`여도 바꿀 수 없다**(그 sealed 버전의 조회가 바뀌어 보이기 때문이다). 새 role 은 붙일 수 있다.
 - 한 요청 안에서 하나라도 거절되면 그 요청은 아무것도 쓰지 않는다. 예외 `NexusError`의 `code == "asset_write_rejected"`, `rejected`(`[{sample_id, role, reason}]`, 사유 `not_found`·`role_exists`·`sealed_role`)를 본다. SDK 는 10,000 건·약 800 KB 단위로 나눠 보내므로, 앞 요청이 이미 적용됐으면 예외의 `applied`가 그 건수다.
-- **에셋은 샘플에 붙는다.** draft 에서 붙인 에셋은 그 샘플이 든 다른 버전의 조회에도 보인다(sealed 버전의 seal 스냅샷은 그대로). 버전마다 다른 에셋이 필요하면 clone 한 뒤 붙인다.
+- **에셋은 샘플에 붙는다** — meta·태그·split 과 달리 버전마다 나뉘지 않는다. draft 에서 붙인 에셋은 그 샘플이 든 다른 버전의 조회에도 보인다(sealed 버전의 seal 스냅샷은 그대로). 버전마다 다른 에셋이 필요하면 clone 한 뒤 붙인다.
 - `overwrite=True`로 바꾼 옛 CAS 객체는 지워지지 않고 서버가 옛 좌표를 기록하지도 않는다. 나중에 정리하려면 바꾸기 전에 옛 `cas_url`을 적어 둔다.
 
 **서버 교체 중의 적재**(SDK `0.1.19`+, 서버 이미지 `0.1.20`+). `flush` 는 샘플마다 멱등 키(`idempotency_key`)를 실어
@@ -472,7 +472,7 @@ by_split = ds.samples(split="val", tags=["night"])
 `samples(sample_ids=, group_key=, label=, confidence_min=, confidence_max=, track_id=, split=, tags=, exclude_tags=, meta=, include_annotations=True, limit=, after=)` 특정 조건 필터를 추가하여 조건에 맞는 샘플만 조회한다.  `limit`을 지정하지 않으면 커서를 자동으로 순회해 매칭 전체를 모아서 반환한다.  
 매칭되는 샘플이 아주 많을 수 있는 대규모 dataset이면 `limit`없이 그냥 부를 경우 전체 데이터를 로드하느라 느려지거나 메모리를 많이 쓸 수 있다. `limit`을 명시하여 필요한 만큼만 가져오는 것을 권장한다. annotation이 필요 없는 대규모 스캔이라면 `include_annotations=False`로 경량 코어 필드만 받는 편이 훨씬 싸다. 이때 행은 읽기 전용 dict 인 `nx.SampleSummary`다(SDK `0.1.25`+). 최상위 키를 고치면 `TypeError`이고, 고칠 사본은 `dict(row)`(안쪽까지는 `copy.deepcopy(dict(row))`)로 만든다. 그룹이 없는 행이라 `save_annotation`·`patch_annotations`·`merge_annotation`에 넘기면 `TypeError`다(`patch_annotations` 배치에서는 그 건의 실패 결과).  
 
-**`meta=` 필터는 번들 스키마에 선언되지 않은 키도 받는다.** 선언된 필드는 선언된 타입에 맞는 필터만 받고(어긋나면 400), 선언되지 않은 키는 요청의 필터 종류(`include`·`exclude`·`range`·`ternary`)를 그대로 믿는다 — 그래서 **선언되지 않은 키의 오타는 400이 되지 않는다** — `include`·`range` 는 빈 결과가 되고, `exclude` 와 `ternary` 의 `none` 은 그 키가 없는 샘플을 전부 고르므로 버전 전체가 나온다(일괄 meta 쓰기·일괄 태그에 쓰면 버전 전체가 대상이다)(facet 값 목록·histogram 은 선언에도 관측 표에도 없는 이름을 400으로 거절한다). 값 타입이 어긋난 `range`·`ternary` 는 그 샘플을 고르지 않는다. 관측된 문자열은 날짜처럼 보여도 범위가 아니라 값 목록이다. 다만 **meta 키 이름이 `[A-Za-z0-9_]`를 벗어나면(예: `capture-time`, `카메라`) 그 필드는 필터·facet 대상이 되지 않는다** — 값은 그대로 저장되고 `ds.get_sample()`·`ds.samples()` 응답에도 보이지만 걸러낼 수는 없고 `GET .../schema` 목록에도 나타나지 않으니, 필터로 쓸 키는 영문·숫자·밑줄로 짓는다.  
+**`meta=` 필터는 번들 스키마에 선언되지 않은 키도 받는다.** 선언된 필드는 선언된 타입에 맞는 필터만 받고(어긋나면 400), 선언되지 않은 키는 요청의 필터 종류(`include`·`exclude`·`range`·`ternary`)를 그대로 믿는다 — 그래서 **선언되지 않은 키의 오타는 400이 되지 않는다** — `include`·`range` 는 빈 결과가 되고, `exclude` 와 `ternary` 의 `none` 은 그 키가 없는 샘플을 전부 고르므로 버전 전체가 나온다(일괄 meta 쓰기·일괄 태그에 쓰면 버전 전체가 대상이다)(facet 값 목록·histogram 은 선언에도 그 버전의 관측에도 없는 이름을 400으로 거절한다 — fork 로 물려받은 관측과 legacy 버전의 dataset 전체 관측에 있는 이름은 그 버전에 값이 없어도 통과한다). 값 타입이 어긋난 `range`·`ternary` 는 그 샘플을 고르지 않는다. 관측된 문자열은 날짜처럼 보여도 범위가 아니라 값 목록이다. 다만 **meta 키 이름이 `[A-Za-z0-9_]`를 벗어나면(예: `capture-time`, `카메라`) 그 필드는 필터·facet 대상이 되지 않는다** — 값은 그대로 저장되고 `ds.get_sample()`·`ds.samples()` 응답에도 보이지만 걸러낼 수는 없고 `GET .../schema` 목록에도 나타나지 않으니, 필터로 쓸 키는 영문·숫자·밑줄로 짓는다.  
 
 **`meta=` 필터의 종류**(`exclude` 와 선언 필드의 「값 없음」은 서버 이미지 `0.1.24`+, 그 이하는 400).
 
@@ -531,17 +531,21 @@ print(count, exact)    # 1204 True
 
 기본은 10,000에서 세기를 멈추고 `exact: false`를 돌려준다 — 그때 실제 개수는 `count` **이상**이므로 화면에는 "10,000+"로 적으면 된다. 정확한 값이 필요하면 `exact=True`를 준다(비용이 결과 크기에 비례하므로 필요한 곳에만 쓴다).
 
-**필터 스코프 일괄 태그** — 필터에 걸리는 **전부**의 태그를 한 번에 고친다. `client.add_tags_bulk(sample_ids, tags)`가 넘긴 id만 다루는 것과 다르고, 둘 다 남는다.
+**필터 스코프 일괄 태그** — 필터에 걸리는 **전부**의 태그를 한 번에 고친다. `client.add_tags_bulk(sample_ids, tags, dataset_id=ds.dataset_id, version=ds.version)`이 넘긴 id만 다루는 것과 다르고, 둘 다 남는다. `add_tags_bulk`·`remove_tags_bulk`는 `dataset_id`·`version`을 주어야 버전 경로(`.../samples/tags/items`)로 간다 — 주지 않으면 버전 없는 옛 경로라 서버 `0.1.37` 이상에서 `410`이다. 버전 경로는 전부 또는 없음이라, 이 버전에 없거나 삭제된 샘플이 하나라도 있으면 `400`(`code == "meta_write_rejected"`)이고 아무것도 쓰지 않는다.
 
 ```python
-r = client._post(f"/datasets/{ds.dataset_id}/versions/{ds.version}/samples/tags",
+from urllib.parse import quote
+r = client._post(f"/datasets/{ds.dataset_id}/versions/{quote(ds.version, safe='')}/samples/tags",
                  json={"tags": ["reviewed"],
                        "filter": {"tags": ["train"], "include_annotations": False}})
 print(r.json())    # {"updated": 1204}
 ```
 
 - **대상이 10,000건을 넘으면 `?confirm=<건수>`가 필수다.** 없으면 `409`이고, 값이 실제와 다르면 역시 `409`이며 **아무것도 바뀌지 않는다.** `409` 본문의 건수는 구조화된 필드가 아니라 메시지 문장 안에 있으므로, 파싱하지 말고 위 개수 조회를 다시 부르는 편이 안전하다.
-- 응답은 갱신된 행 수만 준다. 대상이 수십만이면 샘플 목록 응답이 수백 MB가 되기 때문이다.
+- **그 버전에만 반영된다.** 다른 버전도 담은 샘플은 이 버전의 사본에 쓰고, 다른 버전의 태그는 바뀌지 않는다.
+- sealed 버전은 `409`, 준비 중·실패 버전은 `409`(`version_preparing`), 없는 버전은 `404`다.
+- 잠근 뒤 이 버전에서 빠진 대상이 있으면 `400`(`code == "meta_write_rejected"`, `rejected`의 사유 `not_found`)이고 아무것도 쓰지 않는다. 다시 부르면 된다.
+- 응답은 필터에 걸린 수(`updated`)만 준다 — 이미 그 태그를 가졌거나(붙일 때) 없는(뗄 때) 샘플도 센다. 대상이 수십만이면 샘플 목록 응답이 수백 MB가 되기 때문이다.
 - **`DELETE`로 떼면 원래부터 그 태그를 갖고 있던 샘플에서도 지워진다** — 이번에 붙은 것과 구분하지 않는다. 일괄 부여는 새 태그 이름으로 하면 되돌리기가 안전하다.
 
 ### 4.3 태그 후보 목록
@@ -553,7 +557,7 @@ client.facet_values(ds.dataset_id, ds.version, "tags")
 # {"kind": "enum", "field": "tags", "values": ["blurry", "night", "train"], "truncated": false}
 
 # 타입어헤드 — 대소문자를 구분하지 않는 부분일치(q 는 SDK 인자가 없어 저수준으로 부른다)
-client._get(f"/datasets/{ds.dataset_id}/versions/{ds.version}/facets",
+client._get(f"/datasets/{ds.dataset_id}/versions/{quote(ds.version, safe='')}/facets",   # quote 는 urllib.parse
             params={"field": "tags", "q": "trai"})
 ```
 
@@ -653,15 +657,15 @@ for s in ds.shuffle(seed=0, split="train"):      # 섞은 순서의 AnnotatedSam
 
 - **필터**는 `ds.samples()`와 같은 키워드(`split`·`tags`·`exclude_tags`·`meta`·`group_key`·`label`·`confidence_min`/`max`·`track_id`·`sample_ids`)이고 `include_annotations`는 받지 않는다 — annotation 없이 만든 샘플에 그룹을 넣고 저장하면 서버의 그 그룹이 통째로 교체되기 때문이다(가벼운 순회는 `values()`나 `ds.samples(include_annotations=False)`). 모르는 필터 키워드와 `include_annotations`는 `TypeError`다.
 - **`iter_samples(page_size=1000)`** 은 `page_size`(1~1000)만큼씩 서버에 묻는 제너레이터이고 순서는 `sample_id` 내림차순이다. 제너레이터라서 인자 오류는 호출할 때가 아니라 첫 샘플을 꺼낼 때 난다. 받은 샘플의 `save()`는 [5.2](#52-객체-api-부분-저장)의 부분 저장이다(서버 이미지 `0.1.18` 미만에서는 `RuntimeWarning`과 함께 통째 교체로 저장한다).
-- **`AnnotatedSample.tags`·`.split`** — `iter_samples`·`shuffle`·`ds.load_sample()`로 받은 샘플은 태그(고칠 수 있는 리스트)와 split(읽기 전용)을 든다. `save()`는 바뀐 그룹·meta를 저장한 뒤 더해진 태그를 붙이고 빠진 태그를 뗀다(순서만 바뀐 것은 변경이 아니다). 태그를 모두 떼려면 `s.tags = []`로 둔다(`None`은 `NexusValidationError`). 핸들의 버전이 sealed인데 태그를 바꿨으면 아무것도 보내지 않고 `NexusError(409)`다. 두 저장은 한 트랜잭션이 아니어서 태그 단계가 실패하면 meta·그룹은 이미 저장된 상태이고, 다시 `save()`하면 태그만 보낸다.
-- **meta와 태그는 샘플에 붙어 있다.** 같은 샘플을 공유하는 다른 버전(sealed 포함)의 조회에도 바뀐 값이 보인다. API 조회(`get_sample`·explorer·`samples()`·`iter_samples()`)는 sealed 버전이어도 meta·태그 모두 현재 값을 준다. seal 때의 값은 두 곳에 남는다 — meta 는 annotation 스냅샷(`to_df()` 가 읽는 것)에, 태그·split 은 메인 manifest(`GET .../manifest` 의 `main_manifest`, 서버 이미지 `0.1.29`+)에 샘플별로. `to_df(sample_fields=True)`(SDK `0.1.25`+)는 `tags`·`split` 열을 더한다 — sealed 버전은 메인 manifest 의 **seal 시점 값**이고(서버 이미지 `0.1.29`+, CAS 키에 `manifests/` 읽기 권한 필요, `chunksize`여도 manifest 를 통째로 받는다), draft 는 지금 값이다. manifest 의 해시가 seal 기록과 다르면 열을 `None`으로 두고 `RuntimeWarning`을 낸다. 기본(`False`)에는 이 열이 없다.
+- **`AnnotatedSample.tags`·`.split`** — `iter_samples`·`shuffle`·`ds.load_sample()`로 받은 샘플은 태그(고칠 수 있는 리스트)와 split(읽기 전용)을 든다. `save()`는 바뀐 그룹·meta를 저장한 뒤 더해진 태그를 붙이고 빠진 태그를 뗀다(순서만 바뀐 것은 변경이 아니다). 태그는 이 핸들의 버전에만 저장된다. 태그를 모두 떼려면 `s.tags = []`로 둔다(`None`은 `NexusValidationError`). 핸들의 버전이 sealed인데 태그를 바꿨으면 아무것도 보내지 않고 `NexusError(409)`다. 두 저장은 한 트랜잭션이 아니어서 태그 단계가 실패하면 meta·그룹은 이미 저장된 상태이고, 다시 `save()`하면 태그만 보낸다.
+- **meta·태그·split 은 버전마다 따로다.** 한 버전에서 고친 값은 그 버전에만 남고, 같은 샘플을 담은 다른 버전(sealed 포함)의 조회는 바뀌지 않는다. sealed 버전은 쓰기가 모두 `409`이므로 API 조회(`get_sample`·explorer·`samples()`·`iter_samples()`)의 값도 바뀌지 않는다 — 다만 서버를 올리기 전에 고친 값은 이미 반영돼 있어 seal 시점 값과 다를 수 있다. 버전 없는 조회(`GET /samples/{id}`)는 버전과 무관한 샘플 행의 값이다. seal 때의 값은 두 곳에 남는다 — meta 는 annotation 스냅샷(`to_df()` 가 읽는 것)에, 태그·split 은 메인 manifest(`GET .../manifest` 의 `main_manifest`, 서버 이미지 `0.1.29`+)에 샘플별로. `to_df(sample_fields=True)`(SDK `0.1.25`+)는 `tags`·`split` 열을 더한다 — sealed 버전은 메인 manifest 의 **seal 시점 값**이고(서버 이미지 `0.1.29`+, CAS 키에 `manifests/` 읽기 권한 필요, `chunksize`여도 manifest 를 통째로 받는다), draft 는 그 버전의 지금 값이다. manifest 의 해시가 seal 기록과 다르면 열을 `None`으로 두고 `RuntimeWarning`을 낸다. 기본(`False`)에는 이 열이 없다.
 - **`len(ds)`는 핸들이 값을 기억한다**(SDK `0.1.22`+). sealed 버전은 서버가 seal 때 저장한 수(`sample_count`, [7.3](#73-sealed-버전))를 읽고 — `Dataset.open`으로 열었거나 `seal()` 직후면 요청 없이 끝난다 — draft 버전은 한 번 세고 기억한다. 이 핸들의 `flush`·`link_samples`·`unlink_samples`·`import_samples`·`seal`·`delete`·`refresh` 뒤에는 버리고 다시 센다. **핸들 밖의 변경**(다른 프로세스·다른 핸들·웹 화면·REST)은 `ds.refresh()` 전까지 반영되지 않는다. 버전이 지워졌으면 `NexusError(404)`다. 서버 이미지 `0.1.23` 이하에서는 sealed 버전도 한 번 세고 기억한다.
 - **`values(field, **필터)`** — `field`는 `"meta.<키>"`·`"tags"`·`"split"`·`"sample_id"`만 받고 그 밖은 `ValueError`다. `"tags"`의 값은 리스트다.
 - **`distinct(field, *, fast=False, **필터)`** — `None`은 빼고 배열 값은 원소를 펼친다. 객체 값이 있으면 `ValueError`, 값이 없는 키는 `[]`다. 숫자는 숫자 순서로 정렬되고 `1`과 `1.0`은 하나다. 기본은 걸린 샘플을 훑어 원래 타입으로 돌려주므로 처리 시간이 샘플 수에 비례한다(`values()`와 같은 읽기). `fast=True`는 필터 없는 `"meta.<키>"`에서 서버 histogram 을 쓰고, 스칼라 타입이 둘 이상 섞인 필드는 값을 모두 문자열(`"3"`·`"true"`)로 준다.
 - **`count_values(field)`** — 단위는 인스턴스가 아니라 샘플이다. `field`는 `"tags"`·`"meta.<문자열·불리언 키>"`·`"group_key"`·`"<그룹>.label"`·`"<그룹>.component.type"`이고 그 밖(숫자 meta 키 포함)은 서버가 `400`이다. 키는 서버가 준 문자열이다(불리언은 `"true"`/`"false"`). 필터는 받지 않는다. 서버의 전수 모드([4.4](#44-필터-옵션별-개수))로 세어 값 종류 100,000개·50초까지 보고(서버 이미지 `0.1.23` 이하는 500개·3초), 값 종류가 상한을 넘으면 `RuntimeWarning`과 함께 개수가 큰 쪽만 오고, 제한 시간을 넘으면 0건으로 돌려주지 않고 `NexusError`다. 요청 하나가 서버의 DB 커넥션을 그 시간 동안 쥐므로 여러 필드를 동시에 부르지 않는다. 응답을 못 받으면(읽기 타임아웃·프록시 `504`) 다시 보내지 않는다 — 서버에서 아직 세고 있을 수 있어서다.
 - **`shuffle(seed=None, page_size=1000, **필터)`** — 같은 `seed`와 같은 데이터면 같은 순서다. `sample_id`를 먼저 모아 섞은 뒤 `page_size`개씩 본문을 받으므로 id 목록은 메모리에 둔다. 도중에 지워진 샘플은 건너뛴다.
 - **`sort_by(field, reverse=False, *, page_size=1000, **필터)`**(SDK `0.1.25`+) — 걸린 샘플을 `field` 값 순서로 `AnnotatedSample`로 낸다. 서버 정렬이 아니라 `(sample_id, 값)`을 먼저 모아 클라이언트에서 정렬하므로 id·값 목록은 메모리에 둔다. `field`는 `"meta.<키>"`·`"split"`·`"sample_id"`이고 `"tags"`는 `ValueError`다. 값이 없거나 `None`이면 `reverse`와 무관하게 맨 뒤이고, 같은 값끼리는 `sample_id` 오름차순이다. 값 종류가 섞이거나 배열·객체 값이 있으면 본문을 받기 전에 `ValueError`다.
-- **`get_field_schema()`** → `{"meta.<키>": 타입}`. dataset에서 관측된 키를 담고 버전과 무관하다. 타입은 아래 값이다(서버 이미지 `0.1.24`+ — 그 이하는 관측만 된 숫자 필드가 늘 `float`이고 배열·객체만 가진 필드가 빠진다).
+- **`get_field_schema()`** → `{"meta.<키>": 타입}`. 그 버전에서 관측된 키를 담는다(`GET .../schema`). fork 로 만든 버전은 부모의 관측을 물려받고, 서버를 올리기 전에 있던 버전(`schema_state: "legacy"`)은 dataset 전체의 관측을 그대로 보여 주므로, 다른 버전에만 있는 키도 나올 수 있다. 서버를 올린 뒤 seal 한 버전은 seal 시점 데이터의 정확한 집합이 된다. 올리기 전에 이미 sealed 였던 버전과 fork 로 물려받은 관측은 아래 재계산으로 맞춘다. 그런 버전의 관측을 그 버전의 데이터로 맞추려면 `POST /datasets/{id}/versions/{v}/schema/recompute`(`202`, 진행은 `GET /api/v1/schema-jobs/{job_id}`)를 부른다. SDK 메서드가 없어 저수준으로 부른다 — `job = ds._client._post(f"/datasets/{ds.dataset_id}/versions/{quote(ds.version, safe='')}/schema/recompute").json()["job"]`, 진행은 `ds._client._get(f"/api/v1/schema-jobs/{job['job_id']}").json()`(`quote` 는 `urllib.parse`). 타입은 아래 값이다(서버 이미지 `0.1.24`+ — 그 이하는 관측만 된 숫자 필드가 늘 `float`이고 배열·객체만 가진 필드가 빠진다).
 
 | 값 | 의미 |
 |---|---|
@@ -706,10 +710,11 @@ ds.patch_annotations(sample_id, {"det": [{"id": "a", "label": "truck"}]})   # �
 - draft 버전에서만 가능(sealed면 409). 이전 patch를 완전 교체하는 방식(누적 아님).
 - 교체 단위는 group_key 단위가 아닌 샘플 전체(이 버전 한정). 기존 그룹을 유지하려면 바꾸지 않는 그룹도 `annotation_data`에 같이 넣어야 한다. 그룹 단위로만 바꾸려면 아래 [부분 저장](#52-객체-api-부분-저장)을 쓴다.
 - **그룹 키를 하나도 보내지 않으면(`meta`만, 또는 `{}`) 인스턴스를 건드리지 않는다** — `meta`만 바뀐다. 키를 빼는 것이 그 그룹을 지운다는 뜻이 아니다. 그룹을 비우려면 그 키를 빈 배열로 보낸다(`{"det": []}`).
-- **보낸 그룹이 전부 비어도 저장된다**(`200`, 서버 이미지 `0.1.29`+). 그 버전에서 그 그룹이 빈 상태로 남고, 공유 원본(적재한 GT)이 다른 버전에 있어도 이 버전에서 되살아나지 않는다. **`meta` 밖의 최상위 키는 값이 배열이 아니어도 그룹 키로 본다.** 그래서 배열이 아닌 키(예: `{"split": "train"}`)가 있으면 요청 전체가 `400` 이고 아무것도 쓰지 않는다(서버 이미지 `0.1.30`+). `split`·`tags` 는 이 경로로 바꾸지 않는다.
+- **보낸 그룹이 전부 비어도 저장된다**(`200`, 서버 이미지 `0.1.29`+). 그 버전에서 그 그룹이 빈 상태로 남고, 공유 원본(적재한 GT)이 다른 버전에 있어도 이 버전에서 되살아나지 않는다. **`meta` 밖의 최상위 키는 값이 배열이 아니어도 그룹 키로 본다.** 그래서 배열이 아닌 키(예: `{"det": {"label": "car"}}`)가 있으면 요청 전체가 `400` 이고 아무것도 쓰지 않는다(서버 이미지 `0.1.30`+). 코어 키(`split`·`tags` 등)가 배열이 아닌 값으로 들어 있으면 SDK 가 보내기 전에 `NexusValidationError`(`status_code` 는 `None`)로 막는다. split 은 적재 뒤 바꾸는 API 가 없고, 태그는 태그 경로([4.2](#42-태그-제외-필터-결과-개수-필터-스코프-일괄-태그)·[4.8](#48-fiftyone-식-조회와-집계)의 `s.tags`)로 바꾼다.
 - **형식이 어긋난 원소도 요청 전체 `400` 이다**(서버 이미지 `0.1.30`+): 객체가 아닌 원소, 문자열 `label` 이 없는 원소, 공통 필드의 형식이 틀린 원소(`id` 는 문자열, `track_id` 는 32 비트 부호 있는 정수 — `3.0`·`"3"` 도 거절, `confidence` 는 32 비트 실수로 나타낼 수 있는 수, `null` 은 값 없음으로 받는다). 문구는 첫 위반 하나(그룹 키 사전순)와 그 위치다(`group 'det'[2] field 'track_id' must be an integer or null`). COCO 처럼 정수 `id` 를 쓰는 스크립트는 문자열로 바꾼다. `get_annotation` 이 돌려주는 모양을 그대로 보내면 통과한다. SDK 는 이 `400` 을 `NexusValidationError`(`NexusError`의 하위, `status_code=400`)로 낸다. `patch_annotations({...})` 배치에서는 그 건이 `status_code=400` 인 실패 결과가 된다.
+- **한 버전 안에서 한 그룹의 컴포넌트 이름은 한 타입이다.** 그 버전에서 직접 관측한 이름을 다른 타입으로 보내거나 한 요청 안에서 한 이름에 두 타입을 쓰면 `400`(code 없음, `NexusValidationError`)이고 아무것도 쓰지 않는다. fork 부모나 서버를 올리기 전의 dataset 관측에서 물려받은 타입과 다를 때는 경고만 하고 쓴다. 검사는 그 요청에서 바뀐 그룹에만 하므로 손대지 않은 GET→PUT 은 통과하지만, 이미 두 타입이 섞인 그룹은 한 인스턴스만 고쳐도 `400` 이다 — 관측과 무관하게 그 요청 안에 두 타입이 있기 때문이다. 그 그룹을 한 타입으로 맞춰(어긋난 인스턴스의 컴포넌트를 바꾸거나 다른 이름을 쓴다) 한 요청으로 보낸다. 맞추는 타입이 그 버전의 직접 관측과 다르면 먼저 그 관측을 지운다(`DELETE /datasets/{id}/versions/{v}/schema/components`, 본문 `{"items": [{"group", "name"}]}`, `editor` 이상, SDK 메서드 없음 — `ds._client._delete(f"/datasets/{ds.dataset_id}/versions/{quote(ds.version, safe='')}/schema/components", json={"items": [{"group": "det", "name": "bbox"}]})`). 버전이 다르면 타입이 달라도 된다.
 - **바뀐 그룹만 실제로 쓴다.** 서버가 보낸 그룹을 지금 값과 비교해 같은 그룹은 쓰지 않으므로 그 그룹의 인스턴스 id(`instance_id`)가 바뀌지 않는다(서버 이미지 `0.1.29`+). 보내지 않은 그룹은 이 경로에서는 비우는 것으로 보므로 바뀐 그룹이 된다.
-- **이 샘플을 읽는 버전이 이 draft 하나뿐이면 적재 원본을 고친다.** 다른 버전이 없으면 버전 전용 사본을 만들지 않고 공유 원본을 바로 고치므로(서버 이미지 `0.1.29`+), 이후 이 샘플을 다른 버전에 링크해도 적재 때의 annotation 으로 돌아갈 수 없다. 적재 원본을 남겨야 하면 고치기 전에 fork 한다. 다른 버전이 이미 이 샘플을 읽고 있으면 그 버전은 영향을 받지 않는다([아키텍처 5.2](architecture.md#52-copy-on-write)).
+- **이 샘플을 링크한 버전이 이 draft 하나뿐이고 이 버전에 그 샘플의 기록(버전 전용 annotation·meta/태그/split 사본)이 아직 없으면 적재 원본을 고친다.** annotation 과 meta·태그·split 이 같은 규칙이다. 다른 버전이 없으면 버전 전용 사본을 만들지 않고 공유 원본을 바로 고치므로(annotation 은 서버 이미지 `0.1.29`+, meta·태그·split 은 `0.1.37`+), 이후 이 샘플을 다른 버전에 링크해도 적재 때의 annotation 으로 돌아갈 수 없다. 적재 원본을 남겨야 하면 고치기 전에 fork 한다. 다른 버전이 이미 이 샘플을 읽고 있으면 그 버전은 영향을 받지 않는다([아키텍처 5.2](architecture.md#52-copy-on-write)).
 - `save_annotation`/`patch_annotations`에 그룹 키가 없는 본문(`meta`만, 또는 `{}`)을 넘기면 SDK가 `RuntimeWarning`을 낸다(아무것도 지워지지 않으므로). `-W error`로 도는 스크립트는 여기서 멈출 수 있다. 그룹을 비우려면 그 키를 빈 배열로 보낸다(`{"det": []}`).
 
 한 그룹의 일부만 고치고 싶을 때 안전한 방법은 전체를 가져와서 필요한 부분만 바꾼 뒤 통째로 다시 보내는 것이다. 
@@ -717,7 +722,7 @@ ds.patch_annotations(sample_id, {"det": [{"id": "a", "label": "truck"}]})   # �
   full = ds.get_sample(sample_id)                          # 이 버전의 annotation 전체
   CORE = ("sample_id", "split", "tags", "created_at", "image_url", "thumbnail_url")
   annotation_data = {k: v for k, v in full.items() if k not in CORE}
-  annotation_data.pop("meta", None)                        # meta 를 고치지 않으면 빼고 보낸다(보내면 samples.meta 를 통째로 덮는다)
+  annotation_data.pop("meta", None)                        # meta 를 고치지 않으면 빼고 보낸다(보내면 이 버전의 meta 를 통째로 덮는다)
                                                            # {"det": [...], "seatbelt": [...]}
 
   for inst in annotation_data["det"]:                      # det 그룹 안 인스턴스 하나만 라벨 수정
@@ -727,7 +732,7 @@ ds.patch_annotations(sample_id, {"det": [{"id": "a", "label": "truck"}]})   # �
   ds.patch_annotations(sample_id, annotation_data)         # seatbelt 등 나머지 그룹은 그대로 유지됨
   ```
 
-**코어 필드를 빠뜨리면 대개 요청 전체가 거부되고 아무것도 쓰지 않는다** — `sample_id`처럼 배열이 아닌 값은 SDK 가 보내기 전에 `NexusValidationError`로 막고(SDK `0.1.25`+), 비어 있지 않은 `tags`는 서버가 그룹으로 보아 `400`으로 거절한다. 다만 태그가 없는 샘플의 `"tags": []`는 거절되지 않고 `tags`라는 빈 그룹으로 저장되므로 반드시 뺀다. 1건만 고칠 때는 아래 `get_annotation`/`save_annotation`이 더 안전하다.
+**코어 필드를 걸러내지 않고 보내면 대개 요청 전체가 거부되고 아무것도 쓰지 않는다** — `sample_id`처럼 배열이 아닌 값은 SDK 가 보내기 전에 `NexusValidationError`로 막고(SDK `0.1.25`+), 비어 있지 않은 `tags`는 서버가 그룹으로 보아 `400`으로 거절한다. 다만 태그가 없는 샘플의 `"tags": []`는 거절되지 않고 `tags`라는 빈 그룹으로 저장되므로 반드시 뺀다. 1건만 고칠 때는 아래 `get_annotation`/`save_annotation`이 더 안전하다.
 
 **annotation 왕복 전용 메서드**: 위 패턴처럼 `get_sample()` 응답에서 `sample_id`/`split`/`tags`/`created_at`/`image_url`/`thumbnail_url` 같은 코어 필드를 직접 걸러내지 않아도, `get_annotation`/`save_annotation`이 이 버전의 annotation만 그대로 주고받는다.
 
@@ -743,7 +748,7 @@ rep = ds.save_annotation(sample_id, ann)                  # 그대로 다시 저
 #         "skipped_reasons": {"missing_label": 0, "not_an_object": 0, "group_not_an_array": 0}}
 ```
 - `save_annotation`은 **이 버전의 인스턴스를 병합이 아니라 통째로 교체**한다(`patch_annotations`와 같다). 받은 것 중 일부 그룹만 빼고 보내면 그 그룹은 사라진다(위 패턴대로 건드리지 않는 그룹도 함께 넣어 보낼 것). 위의 빈 그룹·바뀐 그룹 규칙도 똑같이 적용된다.
-- **`save_annotation`은 `meta`를 `replace_meta=True`일 때만 보낸다**(SDK `0.1.25`+). `meta`는 버전이 아니라 샘플에 붙어 **모든 버전이 함께 보는 값**이라, 왕복만으로 그 사이 다른 곳에서 바꾼 `meta`를 되돌리지 않게 기본은 빼고 보내고 핸들당 한 번 `RuntimeWarning`을 낸다. `replace_meta=True`면 `samples.meta`를 보낸 값으로 통째 바꾼다. 키 일부만 고치려면 아래 부분 저장이나 `ds.set_values()`를 쓴다. `patch_annotations`는 dict 에 `meta`가 있으면 그대로 보낸다.
+- **`save_annotation`은 `meta`를 `replace_meta=True`일 때만 보낸다**(SDK `0.1.25`+). `meta`는 `get_annotation()` 결과에 늘 들어 있어, 왕복만으로 그 사이 다른 곳에서 바꾼 `meta`를 되돌리지 않게 기본은 빼고 보내고 핸들당 한 번 `RuntimeWarning`을 낸다. `replace_meta=True`면 이 버전의 `meta`를 보낸 값으로 통째 바꾼다(서버 `0.1.36` 이하는 `samples.meta`를 덮어 모든 버전이 함께 보는 값이 바뀐다). 키 일부만 고치려면 아래 부분 저장이나 `ds.set_values()`를 쓴다. `patch_annotations`는 dict 에 `meta`가 있으면 그대로 보낸다.
 - `save_annotation`은 저장 보고서를 반환한다. 서버 이미지 `0.1.30`+ 는 형식이 어긋난 원소·그룹을 버리지 않고 요청 전체를 `400`(`NexusValidationError`)으로 거절하므로 `skipped` 는 늘 0 이다. 서버 이미지 `0.1.29` 이하는 그런 원소를 버리고 저장해 그만큼 기존 인스턴스가 지워지며, 이때 `skipped`가 그 수이고 SDK 가 `RuntimeWarning`을 낸다. `patch_annotations` 배치는 기본 `strict=False` 에서 실패한 건이 있으면 호출당 한 번 `RuntimeWarning` 을 낸다.
 
 ### 5.2 객체 API (부분 저장)
@@ -800,7 +805,7 @@ ds.declare_group_kinds({"extra_gt": "group"})     # 나중에 더할 수도 있�
 **dataset 단위 저장소**(서버 이미지 `0.1.29`+). SDK 의 선언이 이 저장소를 쓴다. 직접 읽고 쓰려면 `client.get_group_kinds(dataset_id)`·`client.patch_group_kinds(dataset_id, kinds)`(값 `None`은 그 키를 지운다)를 쓴다.
 
 ```python
-client = ds._client
+client = nx.connect()
 kinds = client.get_group_kinds(ds.dataset_id)                       # {"seatbelt_gt": "group", ...}
 client.patch_group_kinds(ds.dataset_id, {"seatbelt_gt": "group", "old_gt": None})   # 넣기·덮기, None 은 지움
 ```
@@ -848,7 +853,7 @@ s["seatbelt_gt"].add(inst)
 - 인스턴스: `inst.get_component(이름)` / `set_component(이름, label)` / `remove_component(이름)` — 이름은 component 키다.
 - `meta`: `s.meta[k] = v`, `del s.meta[k]`(또는 `s.meta[k] = None` — 저장 때 그 키를 지운다), `s["meta"] = {...}`(통째로 바꾼다 — 사라진 키는 저장 때 삭제로 나간다).
 
-**검증은 `save()` 때 한 번 한다.** 로드·생성·속성 대입은 검증하지 않으므로 기존 데이터가 그대로 열린다. 검사는 **타입과 구조만** 본다 — 위 표의 검사(모든 component 는 wire `type`이 클래스와 같아야 하고, `Polygon`/`Polyline`의 `points`는 짝수 길이)와 인스턴스의 `label`(필수, 문자열)·`confidence` 숫자(있으면)·`track_id` 정수(있으면), 그룹 행에 `Instance`만, component 자리에 `Label`만(그룹 중첩 금지), container의 행당 component 1개·같은 타입, 그룹 안 instance id 유일(그룹이 다르면 같은 id는 정상), `meta`가 객체인지. 좌표가 0~1을 넘거나 visibility가 0~3 밖이어도 통과한다. **바뀐 그룹만 검사하므로** 손대지 않은 그룹의 옛 데이터가 저장을 막지 않는다. 실패하면 `nx.NexusValidationError`(`status_code`는 `None`)이고 서버로 아무것도 나가지 않는다.
+**검증은 `save()` 때 한 번 한다.** 로드·생성·속성 대입은 검증하지 않으므로 기존 데이터가 그대로 열린다. 검사는 **타입과 구조만** 본다 — 위 표의 검사(모든 component 는 wire `type`이 클래스와 같아야 하고, `Polygon`/`Polyline`의 `points`는 짝수 길이)와 인스턴스의 `label`(필수, 문자열)·`confidence` 숫자(있으면)·`track_id` 정수(있으면), 그룹 행에 `Instance`만, component 자리에 `Label`만(그룹 중첩 금지), container의 행당 component 1개·같은 타입, 그룹 안 instance id 유일(그룹이 다르면 같은 id는 정상), `meta`가 객체인지. 좌표가 0~1을 넘거나 visibility가 0~2 밖이어도 통과한다. **바뀐 그룹만 검사하므로** 손대지 않은 그룹의 옛 데이터가 저장을 막지 않는다. 실패하면 `nx.NexusValidationError`(`status_code`는 `None`)이고 서버로 아무것도 나가지 않는다.
 
 **`save()`가 보내는 것.**
 
@@ -861,7 +866,7 @@ rep = s.save()      # PATCH — seatbelt_gt 그룹 통째 + meta 의 width 키�
 
 - 불러온 시점과 비교해 **바뀐 그룹은 통째로, `meta`는 바뀐 키만** `PATCH .../annotations`로 보낸다. 바뀐 것이 없으면 요청을 보내지 않는다. `s.groups`에서 없앤 그룹은 빈 배열(비우기)로 나간다.
 - 서버는 보낸 그룹만 교체하고 나머지 그룹은 그대로 둔다. 그래서 양쪽 모두 `save()`로 저장하면 두 곳에서 같은 샘플의 **다른** 그룹을 동시에 고쳐도 서로 지우지 않는다(같은 그룹이면 나중 저장이 이긴다). 한쪽이 `save_annotation`/`patch_annotations`이면 그 저장은 통째 교체라, 받은 뒤 그 사이 다른 곳에서 고친 그룹까지 덮는다. CVAT `pull()`도 통째 교체지만 가져오는 시점의 draft 를 다시 읽어 병합하므로, 가져오기가 도는 동안 겹친 저장만 덮일 수 있다.
-- 반환값은 `save_annotation`과 같은 보고서(`instances`/`skipped`/`skipped_reasons`)다. 서버가 형식이 어긋난 그룹·원소(공통 필드 `id`·`track_id`·`confidence` 의 타입 위반 포함)를 받으면 요청 전체가 `400` 이고 아무것도 쓰지 않으며, SDK 는 이것을 `nx.NexusValidationError`(`status_code=400`)로 올린다(서버 이미지 `0.1.30`+). `skipped` 는 늘 0 이다.
+- 반환값은 `save_annotation`과 같은 보고서(`instances`/`skipped`/`skipped_reasons`)다. 서버가 형식이 어긋난 그룹·원소(공통 필드 `id`·`track_id`·`confidence` 의 타입 위반 포함)를 받으면 요청 전체가 `400` 이고 아무것도 쓰지 않으며, SDK 는 이것을 `nx.NexusValidationError`(`status_code=400`)로 올린다(서버 이미지 `0.1.30`+). 한 그룹의 컴포넌트 이름이 두 타입이 되는 저장도 같은 `400` 이다([5.1](#51-dict-api-통째-교체)의 한 이름·한 타입). `skipped` 는 늘 0 이다.
 - 그룹 하나를 비우는 것(`clear_field`)은 된다. 저장 결과 그 샘플의 인스턴스가 하나도 남지 않아도 저장된다(서버 이미지 `0.1.29`+).
 
 **FiftyOne 식 필드 함수.** 필드는 그룹 이름 또는 `"meta"`다. 모두 제자리 수정이고 저장은 `save()`로 한다.
@@ -897,8 +902,8 @@ ds.set_keypoint_info({
 - **`edges`의 원소는 쌍이 아니라 경로다.** `[3, 2, 1, 0]`은 3-2·2-1·1-0을 잇는 사슬 하나다. 생략하면 연결선 없이 점만 그려진다.
 - **인스턴스를 건드리지 않는다.** `get_annotation()` → 고침 → `save_annotation(..., replace_meta=True)` 왕복으로도 쓸 수 있지만, 그쪽은 샘플마다 그 버전의 annotation 을 통째로 다시 보내고 meta 전체를 덮는다(`replace_meta` 없이 저장하면 meta 는 보내지 않는다).
 - **병합이지 교체가 아니다.** 적어 보낸 컴포넌트 키만 덮고 `meta`의 다른 필드(`width`/`height` 등)는 보존한다.
-- **버전은 대상을 고르는 데만 쓰인다.** `samples.meta`는 버전 격리가 없어 쓴 값은 그 샘플을 담은 모든 버전이 함께 본다. 같은 이유로 sealed 버전에서도 된다(다만 이미 seal된 버전의 스냅샷에는 반영되지 않는다).
-- 옛 배열 모양(`{"<키>": ["hip", ...]}`), 빈 `labels`, **관절 수 밖을 가리키는 `edges` 인덱스**는 400이다. 대상이 10,000건을 넘으면 `confirm=True`(개수를 먼저 센다) 또는 정확한 정수가 필요하다.
+- **쓴 값은 그 버전에만 남는다.** 다른 버전도 담은 샘플은 그 버전의 사본에 쓰이고, 다른 버전(sealed 포함)의 조회는 바뀌지 않는다. **sealed 버전 핸들로는 쓸 수 없다**(`409`). 준비 중·실패 버전은 `409` `version_preparing` 이다.
+- 옛 배열 모양(`{"<키>": ["hip", ...]}`), 빈 `labels`, **관절 수 밖을 가리키는 `edges` 인덱스**는 400이다. 대상이 10,000건을 넘으면 `confirm=True`(개수를 먼저 센다) 또는 정확한 정수가 필요하다. `confirm` 은 필터에 걸린 수(meta 가 객체가 아닌 샘플 포함)와 비교하고, `updated` 는 걸린 수 − `skipped_non_object_meta` 다. 잠근 뒤 그 버전에서 빠진 대상이 있으면 `400` `meta_write_rejected` 이고 아무것도 쓰지 않는다 — 다시 부르면 된다.
 - 이미 적재된 샘플은 옛 모양 그대로 읽히므로 급하지 않다. 심으면 연결선이 생긴다. 이미 열려 있는 CVAT 세션은 영향받지 않는다.
 
 ### 5.4 meta 일괄 쓰기 — `set_values`·`update_meta`
@@ -924,15 +929,15 @@ print(r)    # {"updated": 1204, "skipped_non_object_meta": 0}
 **`ds.update_meta(meta, /, *, confirm=None, **필터)`** → `{"updated", "skipped_non_object_meta"}`(서버 이미지 `0.1.24`+, 그 이하는 `404`).
 
 - `meta`는 위치 인자 전용이고 비어 있지 않은 매핑이어야 한다(아니면 `ValueError`). 필터는 [4.8](#48-fiftyone-식-조회와-집계)의 `iter_samples`와 같은 키워드이고, **필터를 주지 않으면 버전 전체가 대상이다.** `sample_ids=[]`는 서버를 부르지 않고 0건을 돌려준다.
-- `skipped_non_object_meta`는 meta가 JSON 객체가 아니라 건너뛴 샘플 수다. `updated`는 대상 수라 값이 이미 같아도 센다.
-- **대상이 10,000건을 넘으면 `confirm=<건수>`가 필요하다**(없거나 다르면 `409`이고 본문에 실제 수가 담긴다). 건수는 필터에 걸린 수(meta가 객체가 아닌 샘플 포함)이고, `client.count_samples(ds.dataset_id, ds.version, filter, exact=True)`([4.2](#42-태그-제외-필터-결과-개수-필터-스코프-일괄-태그))가 돌려주는 `(개수, 정확한가)`의 앞 값이다(`filter`는 explorer 요청 본문 모양). 기본 `exact=False`는 10,000에서 멈추므로 이 값으로 쓸 수 없다.
+- `skipped_non_object_meta`는 meta가 JSON 객체가 아니라 건너뛴 샘플 수다.
+- **대상이 10,000건을 넘으면 `confirm=<건수>`가 필요하다**(없거나 다르면 `409`다 — 실제 수는 메시지 문장 안에만 있으므로 파싱하지 말고 아래 개수 조회로 다시 센다). 건수는 필터에 걸린 수(meta가 객체가 아닌 샘플 포함)이고, `client.count_samples(ds.dataset_id, ds.version, filter, exact=True)`([4.2](#42-태그-제외-필터-결과-개수-필터-스코프-일괄-태그))가 돌려주는 `(개수, 정확한가)`의 앞 값이다(`filter`는 explorer 요청 본문 모양). 기본 `exact=False`는 10,000에서 멈추므로 이 값으로 쓸 수 없다.
 - `exclude` 필터는 그 키가 없는 샘플을 남기므로 대상에 그 키를 아직 채우지 않은 샘플까지 들어간다([4.1](#41-샘플-조회)).
 - **응답을 못 받으면 자동으로 다시 보내지 않는다**(서버에서는 적용됐을 수 있다). 아주 큰 버전 전체에 쓰면 읽기 타임아웃(기본 120초)을 넘을 수 있으니 필터로 좁히거나 `nx.connect(timeout=...)`을 늘린다.
 
 **두 메서드 공통.**
 
-- **sealed 버전 핸들로는 쓸 수 없다**(`409`). 다만 `samples.meta`는 버전 격리가 없어 draft 버전 핸들로 쓴 값은 같은 샘플이 든 다른 버전(sealed 포함)의 조회에도 보인다. sealed 버전의 seal 스냅샷(`to_df()`)은 바뀌지 않는다.
-- 쓴 키와 타입은 `get_field_schema()`·`GET .../schema`의 관측 목록에 기록된다(삭제한 키는 목록에서 빠지지 않는다 — 관측은 누적만 된다).
+- **sealed 버전 핸들로는 쓸 수 없다**(`409`). 쓴 값은 **그 버전에만 남는다** — 같은 샘플이 든 다른 버전(sealed 포함)의 조회는 바뀌지 않는다. 다른 버전도 담은 샘플은 그 버전의 사본에 쓰이고, 값이 이미 같은 샘플은 쓰지 않는다(`updated` 는 그래도 센다). `update_meta` 는 잠근 뒤 그 버전에서 빠진 대상이 있으면 `400` `meta_write_rejected`(`not_found`)이고 아무것도 쓰지 않는다.
+- 쓴 키와 타입은 **그 버전의** 관측 목록(`get_field_schema()`·`GET .../schema`)에 기록된다. 삭제한 키는 쓰기만으로는 목록에서 빠지지 않는다. seal 하면 그 시점 데이터의 정확한 집합으로 바뀌고, draft 에서는 재계산(`POST /datasets/{id}/versions/{v}/schema/recompute` — `202` + `Location: /api/v1/schema-jobs/{job_id}`)이나 지정 삭제(`DELETE .../schema/meta-fields`, 본문 `{"items": [{"field", "value_type"?}]}`)로 정리한다. 둘 다 SDK 메서드가 없어 HTTP 로 부르고 `editor` 이상이다.
 - 권한은 `editor` 이상(로봇 포함)이다.
 - 저수준은 `client.patch_meta_items(dataset_id, version, items)`(응답 없는 실패를 자동으로 다시 보낸다)와 `client.patch_meta_by_filter(dataset_id, version, filter, meta, confirm=None)`(다시 보내지 않는다)이다. HTTP 본문에 모르는 키가 있으면 `422`이고 아무것도 쓰지 않는다(`filter`를 `filters`로 잘못 쓰면 필터가 빠져 버전 전체에 쓰게 되기 때문이다).
 
@@ -1042,14 +1047,14 @@ ds.create_annotation_session(ids, extra_labels=[
 - 세션을 만들 때 meta 값이 문자열이면 그 글로 태그를 채우고, 값이 없거나 `null`·빈 문자열이면 빈 칸 태그로 채운다. 값이 문자열이
   아니거나, `a.b` 의 `a` 가 객체가 아니거나, CVAT 글 상한(4,096 자)을 넘는 자리는 채우지 않고 세션 경고만 남긴다. 그런 프레임에
   작업자가 태그를 새로 달아도 가져오기는 반영하지 않고 경고만 남긴다(`close` 를 막지 않는다). CVAT 는 글의 앞뒤 공백을 지운다.
-- 「가져오기」(`pull()`)는 CVAT 값이 기준(세션을 만들 때 CVAT 가 저장한 값, 이후에는 직전 가져오기 때의 값)과 다른 프레임만 `meta` 에
-  쓰고 기준을 옮긴다. **태그를 두고 글을 비우면 그 키를 지우고**(`a.b` 는 안쪽 키만), **태그가 없는 프레임은 변경 없음**이고 그 수가
-  `warnings` 에 한 줄 남는다 — job 의 「Remove annotations」 한 번이 모든 글 칸을 지우지 않게 하려는 것이다. 쓴 샘플 수는 응답의
-  `updated_meta_samples` 다(0 이면 키가 없다).
+- 「가져오기」(`pull()`)는 CVAT 값이 기준(세션을 만들 때 CVAT 가 저장한 값, 이후에는 직전 가져오기 때의 값)과 다른 프레임만 그 버전의
+  `meta` 에 쓰고(다른 버전의 값은 바뀌지 않는다) 기준을 옮긴다. **태그를 두고 글을 비우면 그 키를 지우고**(`a.b` 는 안쪽 키만), **태그가 없는 프레임은 변경 없음**이고 그 수가
+  `warnings` 에 한 줄 남는다 — job 의 「Remove annotations」 한 번이 모든 글 칸을 지우지 않게 하려는 것이다. 그 버전의 `meta` 가 실제로
+  바뀐 샘플 수는 응답의 `updated_meta_samples` 다(이미 같은 값인 프레임은 세지 않는다, 0 이면 키가 없다).
 - 세션이 열린 동안 meta 도 바뀌고 CVAT 에서도 바뀌었으면 CVAT 값이 이기고 `warnings` 에 샘플 id 가 남는다. 반영하지 못한 글 칸 편집(같은
   프레임에 값이 다른 태그 둘, 그 사이 쓸 수 없는 모양이 된 자리, 쓰는 도중 seal 되거나 가져오기 임대를 잃은 경우)이 남으면 `force` 없는 `close()` 가 `409` 이고, 그 가져오기의 `warnings`
-  맨 앞에 `force=True` 로 닫는 방법이 적힌다. 세션 도중 버전에서 빠지거나 삭제된 샘플의 편집은 버리고 경고만 남긴다(다시 링크해도
-  되살아나지 않는다).
+  맨 앞에 `force=True` 로 닫는 방법이 적힌다. 세션 도중 삭제된 샘플의 편집은 버리고 경고만 남긴다. 열린 세션이 잡은 샘플은 버전에서
+  뺄 수 없다(`unlink_samples` 가 `409` `samples_in_open_session`).
 - 같은 세션의 「가져오기」가 겹치면 뒤엣것이 `409`(`import_in_progress`)다.
 - 관측 skeleton 의 CVAT 라벨 이름은 `{group}/{label}/kp` 이되, 그 (group, 인스턴스 라벨) 에서 `extra_labels` 가 덮지 않은 관측
   구성요소 키가 둘 이상이거나 `label` 이 인스턴스 라벨과 같은 extra skeleton 이 `/kp` 를 쓰면 키마다 `{group}/{label}/{키}` 다.
@@ -1147,7 +1152,8 @@ for ch in plan["chunks"]:
   생략하면 상한이다.
 - 응답: `matched`(필터에 걸린 수)·`items`(정렬된 전체 — `sample_id`·`sequence_id`·`file_name`·`sort`)·`chunks`(`start`·`count`·
   `sequences`·`first`·`last`·`split_sequences`)·`excluded_by_open_sessions`(열린 세션이 잡은 샘플의 세션별 개수)·`unsendable`
-  (`sample_id`·`reason`)·`missing_sort_key`(정렬 값이 없어 맨 뒤로 간 행 수).
+  (`sample_id`·`reason`)·`missing_sort_key`(정렬 값이 없어 맨 뒤로 간 행 수)·`total`(`items` 수)·`session_cap`(서버 세션 샘플 상한)·
+  `chunk_size`(이 계획이 쓴 묶음 크기).
 - 빠지는 샘플: 열린 세션이 잡은 샘플, 세션 준비가 실패시킬 샘플 — `no_image`·`no_dimensions`·`url_too_long`(서명한 이미지 URL 이
   1024 자 초과, key 를 줄인다)·`invalid_location`·`duplicate_file_name`(같은 시퀀스 안 파일 이름 겹침 — 그 이름의 행을 **전부** 뺀다).
   크기가 0 이하인 샘플은 빠지지 않는다 — 세션은 열리지만 그 샘플의 annotation 은 CVAT 으로 가지 않으므로 `ds.backfill_dims()` 로
@@ -1177,7 +1183,7 @@ print(summary)
 | `removed_instances` | CVAT에서 지워져 사라진 인스턴스 |
 | `updated_components` | 좌표 등이 바뀐 컴포넌트 |
 | `deleted_components` | 지워진 컴포넌트 |
-| `updated_meta_samples` | 글 칸 태그로 `meta`를 쓴 샘플 수(서버 이미지 `0.1.30`+, 0 이면 키가 없다) |
+| `updated_meta_samples` | 글 칸 태그로 그 버전의 `meta`가 실제로 바뀐 샘플 수(서버 이미지 `0.1.30`+, 0 이면 키가 없다) |
 | `imported_tracks` | 들인 CVAT 트랙 수(서버 이미지 `0.1.27`+) |
 | `rejected_tracks` | 들이지 못한 CVAT 트랙 수, 사유는 `warnings`(서버 이미지 `0.1.27`+) |
 | `warnings` | 반영되지 않은 것들의 사유 |
@@ -1206,6 +1212,8 @@ print(summary)
   종류를 바꾸려면 옛 도형을 지우고 새로 그린다.
 - **다른 그룹의 라벨로 바꾼 도형은 반영하지 않는다.** 옮겨 간 그룹에 같은 id 의 인스턴스가 있어도 합치지 않고 원래 인스턴스를
   남기며 `warnings` 에 한 줄 남긴다. 다른 그룹으로 옮기려면 지우고 새로 그린다.
+- **한 버전 안에서 한 그룹의 컴포넌트 이름은 한 타입이다.** CVAT 에서 들인 구성요소가 그 버전에서 직접 관측한 같은 이름과 종류가 다르면
+  그 샘플은 `warnings` 에 「반영 실패」로 남고, 반영하지 못한 편집이라 `force` 없는 `close()` 가 `409` 다 — CVAT 에서 고친 뒤 다시 가져온다.
 - `warnings`를 버리지 말 것 - "CVAT에서 지웠는데 annotation에 남아 있다"의 이유가 대개 여기 있다. 일부 샘플 반영 실패도 예외가 아니라 이 목록으로 온다.
 
 ### 6.5 종료 - `close`와 `delete`는 다르다
@@ -1247,7 +1255,7 @@ ds.annotation_sessions()                            # 이 dataset·version의 �
 
 - CVAT으로 나가는 컴포넌트는 `bounding_box`/`polygon`/`polyline`/`keypoint_2d`/`mask` **5종뿐**이다. 3D(`cuboid_3d` 등)·classification·scalar는 편집 대상이 아니며 **그대로 보존**된다.
 - keypoint `visibility` 는 CVAT 의 점 플래그 둘로 오간다(서버 이미지 `0.1.34`+). 보낼 때 0 이하와 3 은 `outside`, 0 초과 1 이하는 `occluded`, 1 초과는 보임(값이 없으면 보임)이다. 가져올 때 플래그를 바꾸지 않은 점은 원본 값(소수 포함)을 그대로 두고, 바꾼 점과 새로 그린 점은 `outside` 0·`occluded` 1·보임 2 로 적는다. `0.1.33` 이하 서버가 연 세션은 1 보임·2 가림 규약으로 보낸 것이라 새 서버에서 가져오면 1 과 2 가 바뀌어 적힌다 — 서버를 올리기 전에 가져오고 닫는다.
-- 같은 버전 안에서 한 샘플은 하나의 활성 세션(`creating`·`open`)에만 속할 수 있다. 겹치면 세션 생성이 `409`로 거부되고(준비 중인 세션 포함, 서버 이미지 `0.1.21`+), 해당 세션을 `close()`하면 풀린다.
+- 같은 버전 안에서 한 샘플은 하나의 활성 세션(`creating`·`open`)에만 속할 수 있다. 겹치면 세션 생성이 `409`로 거부되고(준비 중인 세션 포함, 서버 이미지 `0.1.21`+), 해당 세션을 `close()`하면 풀린다. 세션이 잡은 샘플은 그 버전에서 뺄 수도 없다(`unlink_samples` 가 `409` `samples_in_open_session`).
 - sealed 버전에는 세션을 만들 수 없다.
 - 세션 삭제는 CVAT project를 통째로 지우므로 **회수하지 않은 편집도 함께 사라진다.**
 
@@ -1291,11 +1299,17 @@ ses.close()
 
 이 상태에서 할 수 있는 일:
 - 샘플 추가/등록, Annotation 추가, 버전 삭제(열린 CVAT 세션이 있으면 `409` — [8.3](#83-삭제-정책))
-- 같은 Dataset의 다른 버전에서 샘플 재사용(재적재 없이 참조만 연결)
+- 같은 Dataset의 다른 버전에서 샘플 재사용(재적재 없이 연결)
 ```python
-ds.link_samples([sid1, sid2])          # 이미 존재하는 sample_id를 이 버전에 연결
-ds.unlink_samples([sid1, sid2])        # 연결 해제(샘플 자체·다른 버전은 유지)
+ds.link_samples([sid1, sid2], from_version="v0")   # v0 에서 보이는 meta·태그·split·annotation 을 함께 가져온다
+# {'linked': 2, 'skipped': 0, 'had_residue': 0}
+ds.unlink_samples([sid1, sid2])                     # 연결 해제(샘플 자체·다른 버전은 유지) → {'removed': 2, 'had_residue': 0}
+                                                    # 서버 이미지 0.1.36 이하는 {'removed': 2} 만
 ```
+- **다른 버전에 링크된 샘플을 넣으려면 `from_version`(같은 dataset 의 버전 이름)이 필요하다.** 없으면 `NexusError(status_code=400, code="from_version_required")` 이고 아무것도 링크하지 않는다. `e.needs_origin` 에 `[{"sample_id", "versions"}]`(샘플마다 그 샘플이 든 버전)가 실린다 — `sample_id` 순 앞 1,000 개 샘플과 샘플마다 앞 100 개 버전까지이고, 걸린 샘플 전체 수는 응답 본문의 `needs_origin_total` 이다(SDK 예외에는 그 속성이 없고, 같은 수가 `e.server_message` 맨 앞에 「N 건」으로 실린다). 한 호출의 출처는 하나다 — 보낸 샘플은 모두 `from_version` 의 멤버여야 하고(이미 이 버전에 있는 샘플은 예외) 아니면 `400`, 출처가 대상과 같아도 `400` 이다. sealed 버전도 출처가 된다. 가져온 annotation 의 컴포넌트 타입이 이 버전의 관측과 부딪치면 `400`(code 없음)이고 아무것도 링크하지 않는다.
+- 이미 이 버전에 있는 샘플은 건너뛰고 `skipped` 에 센다(그 편집은 그대로다 — 덮어쓰려면 뺀 뒤 다시 넣는다). 어느 버전에도 링크되지 않은 샘플은 `from_version` 없이 넣는다. 그 값은 마지막으로 공유 상태였을 때의 값이라 보장하지 않는다.
+- **버전에서 뺀 샘플의 그 버전 편집(meta·태그·split·annotation)은 사라진 것으로 본다** — 다시 넣어도 되살아나지 않는다. 다시 넣은 샘플은 `from_version` 을 주면 그 버전의 값, 다른 버전 어디에도 없으면 공유 값이다. `had_residue` 는 그런 기록이 있던 수다. 열린 CVAT 세션(`creating`·`open`)이 잡은 샘플이 있으면 `unlink_samples` 가 `409`(`code == "samples_in_open_session"`)이고 아무것도 빼지 않는다.
+- 서버 이미지 `0.1.36` 이하는 `from_version` 을 무시하고, `link_samples` 가 `{}` 를 돌려준다.
 - 다른 Dataset의 샘플 재사용(Sample은 Dataset 범위 객체라 직접 링크가 아닌 복사)
 ```python
 ds.import_samples(source_dataset_id, "v0", [sid1, sid2])
@@ -1306,12 +1320,14 @@ source = nx.Dataset.load_or_create("source-dataset", "v0")
 people = source.samples(label="Person")           # 조건에 맞는 샘플 검색(전체, 자동 페이지네이션)
 
 target = nx.Dataset.load_or_create("target-dataset", "v0")
-target.import_samples(
-    source.dataset_id, source.version,
-    [s["sample_id"] for s in people],              # samples()의 dict에서 sample_id만 뽑는다
-)
+ids = [s["sample_id"] for s in people]             # samples()의 dict에서 sample_id만 뽑는다
+for i in range(0, len(ids), 10_000):               # 한 호출 10,000 개까지
+    target.import_samples(source.dataset_id, source.version, ids[i:i + 10_000])
 ```
+- **한 호출의 `sample_ids` 는 중복을 뺀 뒤 10,000 개까지다**(서버 이미지 `0.1.33`+, 넘으면 `400`). 한 호출은 전부 또는 없음이라, 나눠 부르다 실패하면 그 묶음만 다시 보낸다. 버전 전체를 옮기려면 clone(§7.6)을 쓴다.
 - **복사 도중 원본 샘플이 지워지면 요청 전체가 `400`이고 아무것도 복사되지 않는다**(서버 이미지 `0.1.23`+). 서버가 원본 샘플을 잠근 뒤 Asset을 읽으므로, 삭제된 원본의 CAS 객체를 가리키는 샘플이 만들어지지 않는다. 그 잠금이 요청이 끝날 때까지 유지되어, 그동안 같은 원본 샘플의 수정(태그·크기 보정·삭제 등)은 기다린다.
+- 새 샘플의 meta·태그·split 은 원본 버전에서 보이는 값이다. 가져오는 도중 대상 버전이 sealed 가 되면 `409`, 원본 샘플이 그 사이 원본 버전에서 빠졌으면 `400` 이다.
+- 옮기는 annotation 에 한 그룹의 한 컴포넌트 이름이 두 타입으로 들어 있거나 대상 버전에서 직접 관측한 타입과 다르면 `400`(code 없음)이고 아무것도 복사하지 않는다([5.1](#51-dict-api-통째-교체)의 한 이름·한 타입).
 
 ### 7.2 seal — 버전 잠금
 검수가 끝난 draft 버전을 봉인해 불변 상태로 전환한다(draft → sealed, 단방향 - 되돌릴 수 없음). seal 시 annotation을 NDJSON 스냅샷으로 CAS에 박제하고 manifest hash를 기록한다. 스냅샷의 CAS key에는 버전 id와 내용 해시가 들어가 버전마다 따로다(서버 이미지 `0.1.24`+, [architecture.md 6.2](architecture.md#62-shard-기반-저장)).
@@ -1336,16 +1352,17 @@ ds.seal(description="검수 완료, 2026-10 학습용")   # 버전 설명과 함
   |`409`|`seal_key_collision`|seal 저장 위치가 같은 다른 sealed 버전이 있음(§7.1)|
   |`409`|`version_preparing`|준비 중(`preparing`)·실패(`failed`) 버전(서버 이미지 `0.1.33`+)|
   |`429`|`seal_busy`|이 파드의 동시 seal 상한이 참. 시작하지 않았음(서버 이미지 `0.1.32`까지)|
-  |`429`|`seal_in_progress`|같은 버전의 seal이 이미 돌고 있음(서버 이미지 `0.1.32`까지)|
+  |`429`|`seal_in_progress`|같은 버전의 seal이 이미 돌고 있음(정상 경로에서는 서버 이미지 `0.1.32`까지)|
 
   이 `code`는 서버 이미지 `0.1.21`+에만 있다. SDK에서는 `NexusError.code`로 읽는다(SDK `0.1.22`+).
 - seal 응답의 버전에는 `sample_count`가 실린다(서버 이미지 `0.1.24`+, [7.3](#73-sealed-버전)).
-- seal 이후로는 해당 버전에서 샘플 추가/삭제/annotation 추가 및 버전 삭제 동작이 전부 막히고(409 — 버전 삭제의 응답 코드와 관리자 HTTP 예외는 §8.3), to_df()로 학습 소비가 가능해진다.
+- seal 이후로는 해당 버전에서 샘플 추가/삭제/annotation·meta·태그 수정 및 버전 삭제 동작이 전부 막히고(409 — 버전 삭제의 응답 코드와 관리자 HTTP 예외는 §8.3), to_df()로 학습 소비가 가능해진다.
 - 수정하고 싶으면 새 버전으로 `fork`(§7.5) 해서 새로운 draft 버전을 만든다.
 
 ### 7.3 Sealed 버전
 Seal 하면 그 시점 상태로 불변 스냅샷이 된다. 이후:
-- 샘플 추가/삭제, Annotation 수정, meta 일괄 쓰기([5.4](#54-meta-일괄-쓰기--set_valuesupdate_meta)), 버전 삭제 불가(409)
+- 샘플 추가/삭제, Annotation 수정, meta 일괄 쓰기([5.4](#54-meta-일괄-쓰기--set_valuesupdate_meta)), 샘플 태그, 크기 보정(`backfill_dims`), `set_keypoint_info`, 에셋 붙이기(`set_assets`), 스키마 항목 지정 삭제, 버전 삭제 불가(409). 다른 버전에서 고친 meta·태그·split 은 이 버전의 조회에 보이지 않는다
+- 에셋은 버전 사이에 공유된다 — 같은 샘플이 든 다른 draft 에서 새 role 을 붙이면 이 버전의 조회에도 보인다(seal 스냅샷은 그대로). sealed 버전에 든 샘플의 기존 role 은 `overwrite` 여도 덮지 못한다(`asset_write_rejected`, 사유 `sealed_role`)
   - **버전 삭제 예외**: 관리자만 `?confirm=<버전>` 과 `?confirm_dataset_name=<데이터셋명>` 을 함께 주면 지울 수 있다(되돌릴 수 없음, SDK는 `ds.delete(confirm=..., confirm_dataset_name=...)`, [8.3 삭제 정책](#83-삭제-정책) 참조).
 - `to_df()`로 소비할 수 있다.
 - **버전 응답에 `sample_count`가 실린다**(서버 이미지 `0.1.24`+). 버전 조회·목록·설명 수정·seal 응답에서 sealed 버전에는 seal 때 저장한 샘플 수(삭제되지 않은 샘플)가 있고, draft 버전에는 필드가 없다(필요하면 `client.count_samples(..., exact=True)`로 센다). `len(ds)`가 이 값을 쓴다([4.8](#48-fiftyone-식-조회와-집계)). 이 수는 API 조회(manifest 조회의 `sample_count` 포함)와 같은 수이고 스냅샷의 수(shard manifest 의 `total_samples`)와 다를 수 있다 — 샤드를 만든 뒤 seal이 끝나기 전에 지워진 샘플은 스냅샷에만 있고, 그 사이 더해진 샘플은 저장된 수에만 있을 수 있다. 서버 이미지 `0.1.23` 이하가 seal한 버전은 `0.1.24` 기동 때 마이그레이션이 채우고, 저장된 값이 없는 sealed 버전은 필드가 빠진다(`len(ds)`는 그때 센다).
@@ -1405,7 +1422,7 @@ assert ds.fingerprint() == fp_draft         # sealed: 스냅샷으로 계산 —
 - 행 순서·키 순서를 보지 않고 `meta` 가 없는 것과 `{}` 를 같게 보므로 같은 내용이면 출처와 무관하게 같은 값이다. `groups=` 는
   `to_df(groups=)` 와 같게 줄인 행으로 계산한다. pandas 가 필요 없다.
 - `source="auto"`(기본)는 sealed 면 스냅샷, draft 면 explorer 를 읽는다. `"snapshot"` 은 스냅샷만(draft 면 `NexusError`), `"explorer"`
-  는 sealed 에서도 explorer 를 읽는다. explorer 의 `meta` 는 현재 값이라 seal 뒤 meta 를 고친 샘플이 있으면 스냅샷 지문과 다르다.
+  는 sealed 에서도 explorer 를 읽는다. 서버 이미지 `0.1.36` 이하에서는 explorer 의 `meta` 가 공유 값이라, seal 뒤 공유 meta 를 고친 샘플이 있으면 지문이 다르다(`0.1.37`+ 에서는 sealed 버전의 값이 바뀌지 않는다).
 - 같은 sealed 버전에서 `source="snapshot"` 과 `source="explorer"` 의 지문은 같았다 — 샘플 300,000 개 버전과, 샘플 삭제·fork 뒤 annotation
   교체·그룹 부분 저장·unlink·일괄 meta 쓰기를 거친 버전 둘에서 seal 직후 두 지문이 같았고 행 단위 차이도 없었으며, seal 전 draft 에서 읽은
   `to_df()` 의 지문과도 같았다.
@@ -1425,7 +1442,7 @@ ds_v1 = nx.Dataset.load_or_create("my-dataset", "v1", fork_from="v0")   # 전량
 
 > `sealed v0` --(fork_from)--> `draft v1`
 
-fork된 버전은 원본의 샘플 구성(+ Annotation)을 그대로 이어받지만, 이후 샘플 추가/제거나 Annotation 수정은 새 버전에서 독립적으로 이루어진다(원본에 영향 없음).  
+fork된 버전은 원본의 샘플 구성과 그 버전에서 보이는 annotation·meta·태그·split 을 그대로 이어받지만(대기한 fork 는 실행 시점의 값), 이후 샘플 추가/제거나 annotation·meta·태그 수정은 새 버전에서 독립적으로 이루어진다(원본에 영향 없음).  
 특정 샘플만 골라서 fork하고 싶으면 sample_ids=[...]를 같이 넘기거나, 조건으로 바로 고르고 싶으면 ds.fork()를 사용해 매칭되는 샘플만 담은 새 버전을 만든다:
 ```python
 cars_v1 = ds.fork("v1", group_key="det", label="car")   # label=car인 샘플만 담은 새 버전
@@ -1438,9 +1455,10 @@ fork가 같은 Dataset 안에서 새 버전을 만드는 것이라면, clone은 
 new_ds = ds.clone("my-dataset-copy", "v0")
 ```
 - **서버의 비동기 job으로 복제한다.** SDK가 `POST /datasets/{id}/versions/{version}/clone-jobs`로 시작하고 `GET /clone-jobs/{job_id}`로 완료까지 폴링하며(진행률 표시), 복사와 실패 시 롤백을 서버가 담당한다 — 대규모 Dataset도 클라이언트가 import를 수천 번 왕복하지 않는다.
-- 원본의 tags/description을 복사해 새 dataset을 만들고(원본 **버전의 설명**도 복사한다, 서버 이미지 `0.1.21`+, §7.7), 항상 **Draft**로 시작한다(복제 직후 바로 이어서 patch/추가 작업이 가능하다). Asset은 참조만 재사용해 CAS 재업로드가 없다.
+- 원본의 tags/description을 복사해 새 dataset을 만들고(원본 **버전의 설명**도 복사한다, 서버 이미지 `0.1.21`+, §7.7), 항상 **Draft**로 시작한다(복제 직후 바로 이어서 patch/추가 작업이 가능하다). 샘플의 meta·태그·split 은 원본 버전에서 보이는 값을 옮긴다. Asset은 참조만 재사용해 CAS 재업로드가 없다.
 - 실패하면 서버가 만들던 대상을 롤백한다. 단 복사 중에 누가 대상을 seal했거나 버전을 붙였으면 롤백하지 않고 사유를 job의 `error`에 남긴다.
 - **복제 도중 원본 샘플이 지워지면 job은 실패로 끝나고 대상을 롤백한다**(서버 이미지 `0.1.23`+). 복사 중인 청크의 원본 샘플은 그 청크가 끝날 때까지 잠겨, 같은 샘플의 수정이 잠시 기다린다.
+- 원본 annotation 에서 한 그룹의 한 컴포넌트 이름이 두 타입으로 쓰였으면 그 복사가 `400`(code 없음, [5.1](#51-dict-api-통째-교체)의 한 이름·한 타입)으로 거절되어 job 이 실패하고 대상을 롤백한다(사유에 그룹·이름·두 타입이 실린다).
 - 동시 복제가 전역 상한(3)을 넘으면 서버가 `429`를 주고 SDK가 물러났다 자동으로 재시도한다. 끝내 넘으면 `NexusError(status_code=429)`다.
 - `new_version`에도 §7.1의 버전 이름 규칙이 적용된다(어기면 `400`).
 - **대상 이름의 dataset이 이미 있으면 `409`다.** 기존 dataset에 버전을 더하려면 그 핸들에서 `import_samples`를 쓴다.
@@ -1536,13 +1554,13 @@ nx.delete_dataset("my-dataset", confirm_dataset_name="my-dataset", delete_cas=Fa
 # {'dataset_id': ..., 'versions_deleted': ['v1', 'v0'], 'samples_deleted': 3, 'cas_objects_deleted': 0}
 ```
 
-- `confirm_dataset_name` 은 늘 필수다(틀리면 `400`). sealed 버전이 있으면 관리자만 지우고(아니면 `409`), seal 이 진행 중인 버전이나
-  열린 세션이 있어도 `409` 다 — 이 판정은 지우기 전에 하므로 걸리면 아무것도 지우지 않는다.
+- `confirm_dataset_name` 은 늘 필수다(틀리면 `400`). sealed 버전이 있으면 관리자만 지우고(아니면 `409`), 준비 중인 버전(`409`
+  `version_preparing`)이나 seal 이 진행 중인 버전, 열린 세션이 있어도 `409` 다 — 이 판정은 지우기 전에 하므로 걸리면 아무것도 지우지 않는다.
 - 버전 하나씩 지우므로 dataset 전체로는 원자적이지 않다. 도중에 실패하면 다시 부르면 남은 버전부터 지우고, 다 지워졌으면 `404` 다.
 
 ## 9. 에러 처리
 
-서버·CAS와 관련된 SDK 예외는 `NexusError`(및 하위 클래스 `NexusAuthError`/`NexusCasError`/`NexusIngestError`/`NexusBatchError`/`NexusValidationError`)를 상속한다. 인자 오류는 `ValueError`로 난다(예: 매칭 샘플이 0개인 `fork()`, 비대화형에서 `confirm` 없는 `delete()`). `NexusValidationError`는 보낸 데이터의 형식 오류다. SDK 가 보내기 전에 거른 것(객체 모델 `save()` 검증, 행 모양 dict 저장 — `status_code`는 `None`)과, annotation 쓰기(`save_annotation`·`patch_annotations`·`merge_annotation`·`save()`)에서 서버가 `400` 으로 거절한 것(`status_code=400`, 서버 이미지 `0.1.30`+)이 이 예외다.
+서버·CAS와 관련된 SDK 예외는 `NexusError`(및 하위 클래스 `NexusAuthError`/`NexusCasError`/`NexusIngestError`/`NexusBatchError`/`NexusValidationError`/`NexusVersionJobPending`)를 상속한다. `NexusVersionJobPending`은 seal·fork 가 서버 작업 줄에 올라 `wait` 안에 끝나지 않은 것이고 `.job_id`·`.job`(마지막으로 읽은 작업)을 든다 — 작업은 서버에서 계속 돈다([7.2](#72-seal--버전-잠금)). 인자 오류는 `ValueError`로 난다(예: 매칭 샘플이 0개인 `fork()`, 비대화형에서 `confirm` 없는 `delete()`). `NexusValidationError`는 보낸 데이터의 형식 오류다. SDK 가 보내기 전에 거른 것(객체 모델 `save()` 검증, 행 모양 dict 저장 — `status_code`는 `None`)과, annotation 쓰기(`save_annotation`·`patch_annotations`·`merge_annotation`·`save()`)에서 서버가 `400` 으로 거절한 것(`status_code=400`, 서버 이미지 `0.1.30`+)이 이 예외다.
 
 ```python
 from nexus import NexusError
@@ -1561,7 +1579,7 @@ except NexusError as e:
 ```
 
 - `e.status_code`(`int | None`)와 `e.server_message`(`str | None`)로 서버가 보낸 실제 에러 사유를 프로그램적으로 분기할 수 있다. `str(e)`에도 같은 내용이 포함되지만(사람이 읽는 용도), 상태코드로 분기하려면 이 두 속성을 쓴다.
-- 같은 상태 코드에 뜻이 여럿인 오류는 `e.code`로 가른다(SDK `0.1.22`+, 서버 본문의 `code` — 없으면 `None`). seal의 `already_sealed`·`seal_key_collision`·`seal_busy`·`seal_in_progress`([7.2](#72-seal--버전-잠금)), 버전 작업의 `version_preparing`·`job_not_cancellable`·`job_cancelled`, meta 일괄 쓰기의 `meta_write_rejected`([5.4](#54-meta-일괄-쓰기--set_valuesupdate_meta)), 에셋 붙이기의 `asset_write_rejected`([3.4](#이미-등록한-샘플에-에셋-붙이기--dsset_assets)), draft 대량 읽기 거절의 `draft_bulk_read_disabled`(403, [7.4](#74-dataframe-변환)), 세션 계획의 `plan_too_large`([6.3](#63-고칠-대상만-골라서-세션-만들기)), CVAT 가져오기 겹침의 `import_in_progress`(409, [6.2](#62-세션-생성)) 등이다. `meta_write_rejected`는 `e.rejected`(`[{"sample_id", "reason"}]`), `asset_write_rejected`는 `e.rejected`(`[{"sample_id", "role", "reason"}]`)를 함께 단다.
+- 같은 상태 코드에 뜻이 여럿인 오류는 `e.code`로 가른다(SDK `0.1.22`+, 서버 본문의 `code` — 없으면 `None`). seal의 `already_sealed`·`seal_key_collision`·`seal_busy`·`seal_in_progress`([7.2](#72-seal--버전-잠금)), 버전 작업의 `version_preparing`·`job_not_cancellable`·`job_cancelled`, meta 일괄 쓰기의 `meta_write_rejected`([5.4](#54-meta-일괄-쓰기--set_valuesupdate_meta)), 에셋 붙이기의 `asset_write_rejected`([3.4](#이미-등록한-샘플에-에셋-붙이기--dsset_assets)), draft 대량 읽기 거절의 `draft_bulk_read_disabled`(403, [7.4](#74-dataframe-변환)), 세션 계획의 `plan_too_large`([6.3](#63-고칠-대상만-골라서-세션-만들기)), CVAT 가져오기 겹침의 `import_in_progress`(409, [6.2](#62-세션-생성)), 링크의 `from_version_required`(400, `e.needs_origin` 이 `[{"sample_id", "versions"}]` — 앞 1,000 개 샘플·샘플마다 앞 100 개 버전, 전체 수는 본문의 `needs_origin_total`·메시지 맨 앞, [7.1](#71-draft-버전)), 링크 해제의 `samples_in_open_session`(409) 등이다. `meta_write_rejected`는 `e.rejected`(`[{"sample_id", "reason"}]`), `asset_write_rejected`는 `e.rejected`(`[{"sample_id", "role", "reason"}]`)를 함께 단다.
 - 인증된 응답에는 서버 판 헤더 `X-Nexus-Version` 이 붙는다(서버 이미지 `0.1.29`+). 「어느 판의 서버가 이 응답을 냈는가」를 확인할 때 본다 — 인증된 응답인데 헤더가 없으면 그보다 옛 서버다(교체 중 옛 파드 등).
 - `flush`/`patch_annotations`의 배치 호출은 건당 결과를 `IngestResult(ok, sample, sample_id, error, status_code, index, replayed)`로 입력 순서대로 모아 반환한다 — `strict=True`면 실패가 하나라도 있을 때 `NexusBatchError(failures=[...])`를 던진다. `patch_annotations` 는 `strict=False`(기본)에서 실패가 있으면 호출당 한 번 `RuntimeWarning`(실패 수·앞 다섯 sample_id·첫 실패 메시지)을 낸다. 서버 `400` 은 그 건의 `status_code=400` 실패다. 401·403 은 `strict` 와 무관하게 예외다. `replayed`는 멱등 재전송으로 서버가 기존 결과를 돌려준 건이고 성공으로 센다([3.4](#34-샘플-생성과-등록)).
 
@@ -1583,7 +1601,7 @@ except NexusError as e:
 | `error`: `pending_approval` | 승인 게이트가 켜진 배포에서 아직 승인되지 않은 계정이다 |
 | `code`: `draft_bulk_read_disabled` | 운영자가 draft 대량 읽기를 끈 서버에서 draft 를 대량으로 읽으려 했다([7.4](#74-dataframe-변환)) |
 
-**정상 동작 중에 갑자기 403이 날 수 있다.** 관리자가 역할을 낮추거나 계정을 정지하면 이미 발급된 토큰도 캐시 수명(기본 5초) 안에 막히기 때문이다. 오래 도는 적재 스크립트라면 이 경우를 잡아 중단하는 편이 낫다 — SDK는 403을 재시도하지 않고 그대로 올린다(다시 보내는 것은 401 재로그인, `429`, 서버 부재뿐이다).
+**정상 동작 중에 갑자기 403이 날 수 있다.** 관리자가 역할을 낮추거나 계정을 정지하면 이미 발급된 토큰도 캐시 수명(기본 5초) 안에 막히기 때문이다. 오래 도는 적재 스크립트라면 이 경우를 잡아 중단하는 편이 낫다 — SDK는 403을 재시도하지 않고 그대로 올린다(다시 보내는 것은 401 재로그인, `429`, 서버 부재, 그리고 버전 경로가 있는 서버가 옛 버전 없는 경로에 `410` 을 줄 때 새 경로로 한 번뿐이다).
 
 `flush`와 `patch_annotations` 배치는 권한 때문에 거부된 건이 있으면 조용히 넘기지 않고 예외를 던진다. 남의 dataset에 적재를 시도하다 일부만 들어가는 상황을 막기 위해서다.
 
@@ -1609,7 +1627,7 @@ except NexusError as e:
 ### Dataset
 |||
 |---|---|
-|`Dataset.load_or_create(name, version, tags=, description=, fork_from=, sample_ids=, group_kinds=)`|dataset/버전 생성 또는 조회. 핸들을 열 때 dataset 에 저장된 그룹 종류를 읽는다. `group_kinds`는 저장값과 다른 키만 dataset 에 저장한다(전역 값을 덮는다, [5.2](#52-객체-api-부분-저장))|
+|`Dataset.load_or_create(name, version, tags=, description=, fork_from=, sample_ids=, group_kinds=, wait=600, block=True)`|dataset/버전 생성 또는 조회. 핸들을 열 때 dataset 에 저장된 그룹 종류를 읽는다. `group_kinds`는 저장값과 다른 키만 dataset 에 저장한다(전역 값을 덮는다, [5.2](#52-객체-api-부분-저장))|
 |`Dataset.open(dataset_id, version)`|이미 있는 dataset의 버전을 id로 연다. 아무것도 만들지 않고, 없으면 `NexusError`(`status_code=404`)([7.4](#74-dataframe-변환))|
 |`.dataset_id` / `.version`|이 핸들이 가리키는 dataset UUID · 버전 문자열(저수준 호출에 그대로 쓴다)|
 |`.name` / `.refresh()`|핸들이 아는 dataset 이름 / `dataset_id`로 다시 읽어 이름을 갱신하고 핸들을 돌려준다|
@@ -1618,7 +1636,7 @@ except NexusError as e:
 |`.sort_by(field, reverse=False, page_size=1000, **필터)`|`field` 값 순서로 `AnnotatedSample` 을 내는 제너레이터(클라이언트 정렬, 값 없는 샘플은 맨 뒤, SDK `0.1.25`+, [4.8](#48-fiftyone-식-조회와-집계))|
 |`.values(field, **필터)` / `.distinct(field, fast=False, **필터)`|샘플마다 값 하나 / 정렬된 고유 값(원래 타입, 걸린 샘플을 훑는다 — `fast=True` 는 필터 없는 `meta.<키>` 에서 histogram 을 쓰고 섞인 타입을 문자열로 준다). `field`는 `"meta.<키>"`·`"tags"`·`"split"`·`"sample_id"`|
 |`.count_values(field)` / `.count_sample_tags()`|값별 샘플 수(전수 모드, [4.4](#44-필터-옵션별-개수)) / 샘플 태그별 샘플 수|
-|`.get_field_schema()`|`{"meta.<키>": 타입}` — `int`·`float`·`string`·`enum`·`bool`·`datetime`·`list`·`object`·`any`|
+|`.get_field_schema()`|그 버전에서 관측된 `{"meta.<키>": 타입}` — `int`·`float`·`string`·`enum`·`bool`·`datetime`·`list`·`object`·`any`|
 |`.tags` / `.add_tag(*tags)` / `.remove_tag(*tags)`|dataset 태그(튜플) 읽기 / 더하기 / 빼기|
 |`.set_values("meta.<키>", {sample_id: 값})` → int|샘플마다 다른 meta 값을 일괄로 쓴다([5.4](#54-meta-일괄-쓰기--set_valuesupdate_meta))|
 |`.set_assets(role, {sample_id: ref}, overwrite=False)` → int|적재한 샘플에 에셋을 붙인다(SDK `0.1.24`+, 서버 이미지 `0.1.29`+, [3.4](#이미-등록한-샘플에-에셋-붙이기--dsset_assets))|
@@ -1633,11 +1651,11 @@ except NexusError as e:
 |`.declare_group_kinds({그룹: "group"\|"container"})`|	`load_sample`이 타입 객체로 다룰 그룹 선언. 누적이고 dataset 에 저장되어(서버 이미지 `0.1.29`+, SDK `0.1.25`+) 그 dataset 을 여는 모든 핸들이 같은 종류로 읽는다. 저장하지 못하면(`viewer`·옛 서버·받지 않는 키) 핸들에만 두고 `RuntimeWarning` 을 낸다([5.2](#52-객체-api-부분-저장))|
 |`.get_annotation(sample_id)` / `.save_annotation(sample_id, ann, replace_meta=False)`|	annotation 왕복. 받은 dict를 고쳐 그대로 저장하고, `meta` 는 `replace_meta=True` 일 때만 통째로 바꾼다(SDK `0.1.25`+, [5.1](#51-dict-api-통째-교체))|
 |`.transfer_owner(email)`|	담당자 이전. 현재 담당자만 호출할 수 있다([8.2](#82-담당자-이전))|
-|`.backfill_dims(workers=8, chunk_size=500, overwrite=False, dry_run=False)` → dict|	`meta.width/height`를 실측값으로 보정. 기본은 **빈칸만** 채우고, `overwrite=True`면 **기록된 값도 교체한다**(적재 당시 선언값 자체가 틀린 경우). 그 모드는 `dry_run=True`가 개수가 아니라 변경 목록(`from` → `to`)을 준다|
-|`.set_keypoint_info(info, filter=None, confirm=None)` → dict|	CVAT skeleton의 관절 이름·연결선을 심는다([5.3](#53-골격-정의-심기--set_keypoint_info)). 인스턴스를 건드리지 않는다|
-|`.sample_history(sample_id)` / `.diff(against=)`|	이력 / 비교|
-|`.link_samples(ids)` / `.unlink_samples(ids)` / `.import_samples(src_dataset, src_version, ids)`|	샘플 재사용|
-|`.fork(new_version, sample_ids=, group_key=, label=, tags=, exclude_tags=, ...)`|	필터링된 fork(같은 dataset)|
+|`.backfill_dims(workers=8, chunk_size=500, overwrite=False, dry_run=False)` → dict|	`meta.width/height`를 실측값으로 보정. 기본은 **빈칸만** 채우고, `overwrite=True`면 **기록된 값도 교체한다**(적재 당시 선언값 자체가 틀린 경우). 그 모드는 `dry_run=True`가 개수가 아니라 변경 목록(`from` → `to`)을 준다. 쓴 값은 그 버전에만 남고 sealed 버전 핸들은 `409` 다(그 샘플이 든 draft 버전 핸들로 부른다). 이 버전에 없거나 삭제된 샘플은 그 항목만 거부된다|
+|`.set_keypoint_info(info, filter=None, confirm=None)` → dict|	CVAT skeleton의 관절 이름·연결선을 심는다([5.3](#53-골격-정의-심기--set_keypoint_info)). 인스턴스를 건드리지 않고, 그 버전에만 반영한다(sealed `409`)|
+|`.sample_history(sample_id)` / `.diff(against=)`|	이력(항목의 `annotation.meta` 는 그 버전의 값, `tags`·`split` 이 함께 실린다) / 비교|
+|`.link_samples(ids, from_version=None)` → dict / `.unlink_samples(ids)` → dict / `.import_samples(src_dataset, src_version, ids)`|	샘플 재사용. 링크는 `{linked, skipped, had_residue}`, 해제는 `{removed, had_residue}`(서버 이미지 `0.1.36` 이하는 `{removed}`). 다른 버전에 있는 샘플은 `from_version` 이 필요하다([7.1](#71-draft-버전))|
+|`.fork(new_version, sample_ids=, group_key=, label=, tags=, exclude_tags=, ..., wait=600, block=True)`|	필터링된 fork(같은 dataset)|
 |`.clone(new_name, new_version, timeout=None)`|	통째 복제(서버 job, [7.6](#76-clone))|
 |`.update(name=, description=)`|	이름/설명 수정|
 |`.seal(if_sealed="error", wait=600, description=, block=True)`|	버전 확정([7.2](#72-seal--버전-잠금)). 대기 작업 `202`(서버 `0.1.33`+)·동시 seal 상한 `429`(`0.1.32`까지)는 `wait`초까지 기다린다|
@@ -1656,7 +1674,7 @@ except NexusError as e:
 |`.samples(include_annotations=, page_size=, max_samples=)`|필터를 resolve해 샘플 조회(explorer와 같은 형식)|
 |`.update(name=, filter=)` / `.delete()`|이름·필터 수정 / 삭제|
 |`.to_version(version)` → Dataset|이 필터에 걸린 샘플로 새 버전을 만든다|
-|`.to_df(groups=)`|DataFrame 변환|
+|`.to_df(groups=)`|DataFrame 변환(sealed 버전에서만 — draft 면 `NexusError`)|
 
 ### AnnotationSession
 |||
@@ -1674,7 +1692,8 @@ except NexusError as e:
 ### 그 외
 |||
 |---|---|
-|`client.add_tags_bulk(sample_ids, tags)` / `.remove_tags_bulk(...)`|태그 일괄 처리|
+|`client.add_tags_bulk(sample_ids, tags, dataset_id=, version=)` / `.remove_tags_bulk(...)`|태그 일괄 처리. 서버 이미지 `0.1.37`+ 에서 `dataset_id`·`version` 을 주면 버전 경로로 보내 그 버전에만 반영한다(전부 또는 없음 — 그 버전에 없거나 삭제된 샘플이 하나라도 있으면 `400` `meta_write_rejected`, sealed `409`). 서버가 그보다 낮으면 둘을 주어도 옛 경로로 보내 공유 값을 고친다. 주지 않으면 늘 옛 경로이고, 서버 이미지 `0.1.37`+ 에서는 `410` 이다|
+|`client.set_sample_dimensions(items, overwrite=False, dataset_id=, version=)`|크기 보정 저수준(`items` 는 `{sample_id, width, height}`). 경로 선택은 `add_tags_bulk` 와 같다(버전 경로는 서버 이미지 `0.1.37`+ 에서만, 그보다 낮은 서버는 `dataset_id`·`version` 을 주어도 옛 경로로 공유 값을 고친다. 둘 없이 부르면 `0.1.37`+ 에서 `410`)|
 |`client.count_samples(dataset_id, version, filter=None, exact=False)` → (개수, 정확한가)|필터에 걸리는 샘플 수만 조회(목록을 받지 않는다). 기본은 10,000에서 멈추고 `exact=True`가 전수|
 |`client.facet_counts(dataset_id, version, field, filter=None, exact=False)`|필터 옵션별 개수([4.4](#44-필터-옵션별-개수)). `exact=True`가 전수 모드(서버 이미지 `0.1.24`+)|
 |`client.get_group_kinds(dataset_id)` / `client.patch_group_kinds(dataset_id, kinds)`|그룹 종류 저장소 저수준(값 `None` 은 그 키 삭제, 서버 이미지 `0.1.29`+)|
@@ -1685,5 +1704,5 @@ except NexusError as e:
 |`client.delete_dataset(dataset_id, confirm_dataset_name=, delete_cas=False)`|dataset 통째 삭제 저수준(SDK `0.1.23`+, 서버 이미지 `0.1.26`+, [8.3](#83-삭제-정책))|
 |`client.change_password(current, new)`|본인 비밀번호 변경(현재 비밀번호 재확인)|
 |`client.delete_account(password)` → dict|본인 계정 **완전 삭제** — 되돌릴 수 없다. 담당하던 dataset은 담당자만 해제되고 남는다([8.2](#82-담당자-이전))|
-|`NexusError`, `NexusAuthError`, `NexusCasError`, `NexusIngestError`, `NexusBatchError`, `NexusValidationError`|	예외 타입(`.status_code`, `.server_message`, `.code`, `.rejected` — 뒤의 둘은 SDK `0.1.22`+, [9](#9-에러-처리)). `NexusValidationError`는 형식 오류(SDK 사전 검사는 `status_code` 없음, annotation 쓰기의 서버 `400` 은 `status_code=400`)|
+|`NexusError`, `NexusAuthError`, `NexusCasError`, `NexusIngestError`, `NexusBatchError`, `NexusValidationError`, `NexusVersionJobPending`|	예외 타입(`.status_code`, `.server_message`, `.code`, `.rejected` — 뒤의 둘은 SDK `0.1.22`+, `.needs_origin` — 링크의 `from_version_required`, 앞 1,000 개 샘플·샘플마다 앞 100 개 버전, 전체 수는 응답 본문 `needs_origin_total` 과 `.server_message` 맨 앞, [9](#9-에러-처리)). `NexusVersionJobPending`은 `.job_id`·`.job`(seal·fork 가 `wait` 안에 끝나지 않음). `NexusValidationError`는 형식 오류(SDK 사전 검사는 `status_code` 없음, annotation 쓰기의 서버 `400` 은 `status_code=400`)|
 |`IngestResult(ok, sample, sample_id, error, status_code, index, replayed)`|	배치 처리 건별 결과. `replayed`는 멱등 재전송으로 기존 결과를 받은 성공 건|

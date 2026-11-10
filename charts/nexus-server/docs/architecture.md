@@ -105,12 +105,15 @@ erDiagram
     SAMPLE ||--o{ ASSET : "참조한다"
     SAMPLE ||--o{ INSTANCE : "대상이다"
     DATASET_VERSION ||--o{ INSTANCE : "Annotation 상태를 가진다"
+    DATASET_VERSION ||--o{ VERSION_SAMPLE_FIELDS : "필드 사본을 가진다"
+    SAMPLE ||--o{ VERSION_SAMPLE_FIELDS : "대상이다"
     DATASET_VERSION ||--o{ SUBSET : "정의한다"
 ```
 Dataset은 데이터셋의 관리 범위를 정의하며, Sample과 Dataset Version을 포함한다.  
 Dataset Version은 특정 시점의 Dataset 상태를 표현하며, 여러 Sample을 포함할 수 있다.  
 Sample은 하나 이상의 Asset을 가지며, Asset은 CAS에 저장된 실제 파일을 참조한다.  
-Annotation Instance는 Sample에 속하며, Dataset Version별 상태로 관리된다.
+Annotation Instance는 Sample에 속하며, Dataset Version별 상태로 관리된다.  
+Sample 의 `meta`·태그·split 도 Dataset Version별 사본으로 격리된다(§5.4).
 
 ### 3.2 Dataset
 Dataset은 하나의 ML 프로젝트를 구성하는 최상위 관리 단위이다.  
@@ -133,7 +136,7 @@ Sample 자체는 논리적 객체이며 실제 파일은 직접 저장하지 않
 Asset은 Sample이 참조하는 실제 파일이다.  
 원본 파일은 모두 CAS에 저장되며, Nexus는 CAS의 Bucket, Key, Hash 등 파일 참조 정보만 관리한다.  
 하나의 Sample은 여러 개의 Asset을 가질 수 있으며, 서로 다른 역할(RGB Image, Depth Image, Point Cloud 등)을 가질 수 있다.  
-Asset 은 적재할 때 함께 등록하고, 이미 적재한 Sample 에는 Draft Version 경로로 역할을 더하거나 바꿀 수 있다(`PATCH .../samples/assets`, 서버 `0.1.29`+, `image` 역할 제외). Asset 은 Version 격리 없이 Sample 에 붙으므로 그 Sample 이 든 다른 Version 의 조회에도 보인다. 그래서 Sealed Version 에 든 Sample 의 기존 역할은 바꾸지 않는다(새 역할은 더할 수 있다). 바뀐 옛 CAS 객체는 지우지 않는다.
+Asset 은 적재할 때 함께 등록하고, 이미 적재한 Sample 에는 Draft Version 경로로 역할을 더하거나 바꿀 수 있다(`PATCH .../samples/assets`, 서버 `0.1.29`+, `image` 역할 제외). Asset 은 `meta`·태그·split 과 달리 Version 격리 없이 Sample 에 붙으므로 그 Sample 이 든 다른 Version 의 조회에도 보인다. 그래서 Sealed Version 에 든 Sample 의 기존 역할은 바꾸지 않는다(새 역할은 더할 수 있다). 바뀐 옛 CAS 객체는 지우지 않는다.
 
 ### 3.6 Annotation(Instance)
 Annotation은 Sample에 대한 Ground Truth(GT) 정보를 표현한다.  
@@ -149,24 +152,25 @@ Subset은 Sample을 별도로 복사하지 않으며, 저장된 필터를 통해
 ## 4. Dataset Version Lifecycle
 ### 4.1 개요
 Dataset Version은 Dataset의 특정 시점을 나타내는 논리적 스냅샷이다.  
-Version은 Draft 상태에서 생성되어 자유롭게 수정할 수 있으며, Seal되면 불변(Immutable)이 된다. Seal된 Version은 이후의 학습, 평가 및 재현에 사용된다.  
+Version은 Draft 상태에서 생성되어(Fork 는 Preparing 을 거친다) 자유롭게 수정할 수 있으며, Seal되면 불변(Immutable)이 된다. Seal된 Version은 이후의 학습, 평가 및 재현에 사용된다.  
 Version의 상태는 다음과 같은 생명주기를 따른다.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Draft
+    [*] --> Draft : 빈 Version 생성·적재
 
     Draft --> Draft : Sample/Annotation 수정
     Draft --> Sealed : Seal
 
-    Sealed --> Draft : Fork
-    Draft --> Draft : Fork
+    [*] --> Preparing : Fork(부모 Draft·Sealed 는 그대로)
+    Preparing --> Draft : 복제 완료
+    Preparing --> Failed : 실패·취소
 ```
 ### 4.2 Draft Version
 자유롭게 수정 가능한 작업 중 상태.  
 - Sample 추가 및 제거
 - Annotation 수정
-- 다른 Version의 Sample 연결(Link)
+- 다른 Version의 Sample 연결(Link) — 다른 Version 에 든 Sample 은 출처 `from_version` 을 함께 준다(§5.2.1)
 - 다른 Dataset으로부터 Sample 가져오기(Import)  
 
 등 모든 편집 작업이 가능하다.
@@ -174,15 +178,16 @@ stateDiagram-v2
 ### 4.3 Seal
 Seal은 Draft를 변경 불가능한 DatasetVersion으로 확정하는 과정이다.  
 Seal이 완료되면
-- 그 Version 의 구성과 Annotation 을 바꾸는 요청이 409 로 거부된다. 그 Version 에 속한 Sample 자체의 삭제도 409 다.
+- 그 Version 의 구성·Annotation·`meta`·태그를 바꾸는 요청이 모두 409 로 거부된다. 그 Version 에 속한 Sample 자체의 삭제도 409 다.
 - Snapshot(Manifest)이 생성된다.
+- 그 Version 의 스키마 관측이 Seal 시점 데이터의 정확한 집합으로 바뀐다(§8.3).
 - 이후 학습과 평가의 기준이 된다.  
 
-Seal 은 Version 하나 전체를 스냅샷으로 남기므로 메모리를 가장 많이 쓰는 작업이다 — 서버 `0.1.34`+ 에서는 Sample 목록을 묶음으로 읽어 흘려 올려 Version 의 Sample 수와 무관하고, 남는 몫은 가장 큰 Annotation 샤드 하나다(`0.1.33` 까지는 Sample 수에 비례했다). 그래서 서버는 파드마다 동시에 도는 Seal 과 Fork(새 Version 만들기) 수에 함께 상한(`seal.maxConcurrent`, 기본 1)을 두고, 같은 Version 의 Seal 은 DB 잠금으로 파드와 무관하게 하나만 돌린다(서버 `0.1.21`+). 서버 `0.1.33`+ 에서 넘친 요청은 DB 에 하나인 **작업 줄**에 서고 `202`(본문 `{"job", "version"}`, `Location: /api/v1/version-jobs/{job_id}`)로 답한다 — 요청을 붙잡아 두지 않으므로 프록시의 응답 대기 상한에 걸리지 않고, 자리가 난 파드가 줄 맨 앞부터 집어 돌린다. 판정 순서는 이미 Sealed 인가(409 `already_sealed`) → 같은 Version 의 작업이 이미 있는가(그 작업 `202`) → 줄이 비었고 이 파드에 자리가 있는가(바로 돌아 `200`/`201`) → 아니면 줄(`202`)이다. 도는 작업은 임대를 늘리며 돌고, 파드가 죽어 임대가 끝나면 다른 파드가 이어 돌린다. Fork 가 대기·실행 중인 새 Version 은 `preparing`, 실패·취소된 것은 `failed` 이고 둘 다 쓰기가 409(`version_preparing`)다. 진행은 `GET /api/v1/version-jobs`, 취소는 `POST /api/v1/version-jobs/{job_id}/cancel` 이다(차트 README 「버전 작업 줄」). `0.1.32` 까지는 넘친 요청을 시작하지 않은 채 `429`(`seal_busy`·`seal_in_progress`, `Retry-After: 10`)로 돌려보냈다.
+Seal 은 Version 하나 전체를 스냅샷으로 남기므로 메모리를 가장 많이 쓰는 작업이다 — 서버 `0.1.34`+ 에서는 Sample 목록을 묶음으로 읽어 흘려 올려 Version 의 Sample 수와 무관하고, 남는 몫은 Sample 1,000 개 묶음 하나와 가장 큰 Annotation 샤드 하나다(`0.1.33` 까지는 Sample 수에 비례했다). 그래서 서버는 파드마다 동시에 도는 Seal 과 Fork(새 Version 만들기) 수에 함께 상한(`seal.maxConcurrent`, 기본 1)을 두고(스키마 재계산은 이 줄과 상한 밖에서 파드마다 하나씩 돈다, §8.3), 같은 Version 의 Seal 은 DB 잠금으로 파드와 무관하게 하나만 돌린다(서버 `0.1.21`+). 서버 `0.1.33`+ 에서 넘친 요청은 DB 에 하나인 **작업 줄**에 서고 `202`(본문 `{"job", "version"}`, `Location: /api/v1/version-jobs/{job_id}`)로 답한다 — 요청을 붙잡아 두지 않으므로 프록시의 응답 대기 상한에 걸리지 않고, 자리가 난 파드가 줄 맨 앞부터 집어 돌린다. 판정 순서는 이미 Sealed 인가(409 `already_sealed`) → 본문 검증(400) → 준비 중·실패인가(409 `version_preparing`) → 같은 Version 의 작업이 이미 있는가(그 작업 `202`) → 줄이 비었고 이 파드에 자리가 있는가(바로 돌아 `200`/`201`) → 아니면 줄(`202`)이다. 도는 작업은 임대를 늘리며 돌고, 파드가 죽어 임대가 끝나면 다른 파드가 이어 돌린다. Fork 가 대기·실행 중인 새 Version 은 `preparing`, 실패·취소된 것은 `failed` 이고 둘 다 쓰기가 409(`version_preparing`)다. 진행은 `GET /api/v1/version-jobs`, 취소는 `POST /api/v1/version-jobs/{job_id}/cancel` 이다(차트 README 「버전 작업 줄(seal·새 버전 만들기)」). `0.1.32` 까지는 넘친 요청을 시작하지 않은 채 `429`(`seal_busy`·`seal_in_progress`, `Retry-After: 10`)로 돌려보냈다.
 
 Seal 은 요청과 분리된 태스크로 돈다. 클라이언트나 프록시가 연결을 끊어도 Seal 은 끝까지 진행되고, 끊긴 쪽은 Version 상태를 조회해 결과를 확인한다. 도는 중인 Seal 은 Version 조회에 `seal_in_progress`(와 시작 시각 `seal_started_at`)로 보인다(서버 `0.1.25`+) — `0.1.33`+ 에서는 작업 행으로 판정하므로 어느 파드가 돌리든 보이고, 파드가 죽으면 임대가 끝날 때까지(최대 약 2 분) 보이다가 줄로 돌아간다(`0.1.32` 까지는 DB 잠금으로 판정해 잠금과 함께 사라졌다). 같은 Version 잠금은 Seal 이 끝날 때까지 커넥션 하나를 쥔다(Postgres 에서는 `idle in transaction` 으로 보인다). 서버 종료(SIGTERM)는 연결이 끊긴 채 도는 Seal 을 기다리지 않으므로 그 Seal 은 Draft 로 남는다 — Version 을 Sealed 로 바꾸는 쓰기가 맨 마지막이라 반쯤 Sealed 인 상태는 없다. `0.1.33`+ 에서는 종료하는 파드가 돌리던 작업을 줄로 돌려 다른 파드가 처음부터 다시 돌린다.
 
-Seal 은 마지막 트랜잭션에서 그 Version 의 샘플 수(삭제되지 않은 Sample)를 세어 저장하고, Version 을 돌려주는 응답(Version 조회·목록·설명 수정·Seal)은 Sealed Version 에 그 값을 `sample_count` 로 싣는다(서버 `0.1.24`+). Draft Version 의 수는 저장하지 않는다 — 적재·링크·삭제마다 증감이 필요하고 병렬 적재가 Version 행 하나에서 줄을 서게 되기 때문이다. 이 값은 API 조회(Explorer 개수, Manifest 조회의 `sample_count`)와 같은 수이고, 스냅샷의 수(Shard Manifest 의 `total_samples`)와는 다를 수 있다 — 샤드를 만든 뒤 Seal 이 끝나기 전에 지워진 Sample 은 스냅샷에만 있고, 그 사이 더해진 Sample 은 저장된 수에만 있을 수 있다.
+Seal 은 마지막 트랜잭션에서 그 Version 의 샘플 수(삭제되지 않은 Sample)를 세어 저장하고, Version 을 돌려주는 응답(생성·Fork·조회·목록·설명 수정·작업 줄의 `202` 본문·Seal)은 Sealed Version 에 그 값을 `sample_count` 로 싣는다(서버 `0.1.24`+). Draft Version 의 수는 저장하지 않는다 — 적재·링크·삭제마다 증감이 필요하고 병렬 적재가 Version 행 하나에서 줄을 서게 되기 때문이다. 이 값은 API 조회(Explorer 개수, Manifest 조회의 `sample_count`)와 같은 수이고, 스냅샷의 수(Shard Manifest 의 `total_samples`)와는 다를 수 있다 — 샤드를 만든 뒤 Seal 이 끝나기 전에 지워진 Sample 은 스냅샷에만 있고, 그 사이 더해진 Sample 은 저장된 수에만 있을 수 있다.
 
 Seal 과정에서 생성되는 Snapshot 구조는 6장에서 설명한다.
 
@@ -191,7 +196,7 @@ Sealed Version은 직접 수정할 수 없다.
 기존 Version을 변경하려면 새로운 Draft Version을 생성(Fork)하여 작업한다.  
 새 Draft는 부모 Version의 Sample 구성을 그대로(또는 지정한 Sample만) 이어받으며, 이후 필요한 Sample과 Annotation만 변경한다.  
 이를 통해 이전 Version은 그대로 유지되며 새로운 Version만 변경된다.  
-Annotation 은 부모의 Version 전용 행과 그룹 표식을 함께 복사하고 공유 행은 복사하지 않는다(부모가 옛 형식이면 자식에 표식을 새로 넣는다, §5.2).  
+Annotation 과 Sample 필드는 부모의 Version 전용 행·그룹 표식·`meta`/태그/split 사본 가운데 자식에 링크된 Sample 의 것을 복사하고, 공유 행·공유 값은 복사하지 않는다(부모가 옛 형식이면 자식에 표식을 새로 넣는다, §5.2). 복사는 Fork 가 실제로 돌 때의 부모 값이다 — 작업 줄에서 대기한 Fork 는 그 사이 부모에 들어간 쓰기를 본다. 부모의 스키마 관측도 함께 물려받는다(§8.3).  
 Version 설명은 Fork 로 이어받지 않는다 — 설명은 그 Version 에 대한 메모이고 새 Draft 는 다른 Version 이다(Fork 요청에 새 설명을 줄 수는 있다).
  
 ### 4.5 버전 불변성
@@ -206,7 +211,7 @@ Seal된 Version은 변경되지 않는다.
 Draft Version 은 `editor` 이상의 사람 계정이 `?confirm=<버전>` 을 정확히 붙여 삭제할 수 있다(로봇 계정은 403). 그 Version 에 열린 CVAT 편집 세션(`creating`·`open`)이 있으면 409 다 — 지우면 아직 들이지 않은 편집이 사라지므로, 세션을 닫거나 지운 뒤 다시 부른다(서버 `0.1.26`+). **Sealed Version 은 기본적으로 삭제할 수 없다** — `confirm` 을 맞게 준 요청도 관리자가 아니면 409로 거부되며(`confirm` 이 없거나 틀리면 역할과 무관하게 400), Dataset 의 마지막 Version 이어서 Dataset 까지 함께 사라지는 경우에도 마찬가지다.  
 **단 관리자(`role=admin`인 사람 계정 — 설정 superuser 는 기동 시 `admin` 이 부여된다)는 Sealed Version 을 삭제할 수 있다** — `DELETE /datasets/{id}/versions/{v}` 에 쿼리 파라미터 둘, `?confirm=<버전>` 과 `?confirm_dataset_name=<데이터셋명>` 을 정확히(비어 있지 않게) 함께 줄 때만이다. 하나라도 틀리면 지우지 않는다. **되돌릴 수 없다.** `editor`·`viewer`·로봇은 지울 수 없다. 재현성 보호의 축은 여전히 Seal 이고(§10.3), 관리자에게만 복구(break-glass) 경로를 연 것이다.  
 마지막 Draft Version 이 삭제되고, 해당 Dataset에 남은 Version 이 없다면 Dataset 도 함께 삭제된다(관리자가 마지막 Sealed Version 을 위 절차로 지우는 경우도 같다).
-Dataset 을 버전째 한 번에 지우는 `DELETE /datasets/{id}?confirm_dataset_name=<데이터셋명>`(서버 `0.1.26`+)은 Version 마다 위 규칙으로 지운다. 지우기 전에 이름 → 역할·로봇 → Sealed Version(관리자가 아니면 409) → Seal 이 진행 중인 Version(409) → 열린 CVAT 세션(409)을 모두 보고, 걸리면 아무것도 지우지 않는다. Version 하나씩 지우므로 Dataset 전체로는 원자적이지 않다 — 도중에 멈추면 다시 불러 남은 Version 부터 지운다.  
+Dataset 을 버전째 한 번에 지우는 `DELETE /datasets/{id}?confirm_dataset_name=<데이터셋명>`(서버 `0.1.26`+)은 Version 마다 위 규칙으로 지운다. 지우기 전에 이름 → 역할·로봇 → Sealed Version(관리자가 아니면 409) → 준비 중인 Version(409 `version_preparing`) → Seal 이 진행 중인 Version(409) → 열린 CVAT 세션(409)을 모두 보고, 걸리면 아무것도 지우지 않는다. Version 하나씩 지우므로 Dataset 전체로는 원자적이지 않다 — 도중에 멈추면 다시 불러 남은 Version 부터 지운다.  
 이때 삭제 요청에 `delete_cas=true`를 명시적으로 지정한 경우에만, 더 이상 어디에서도 참조되지 않는 **Sample 원본 파일**(Asset)에 대해 CAS에 삭제 요청을 보내 CAS 내부 GC 로직에 의해 정리될 수 있도록 한다. `delete_cas`는 기본값이 `false`(보존)이므로, 별도로 지정하지 않으면 Asset 객체는 그대로 남는다. `delete_cas` 는 Asset 만 정하고 Seal 스냅샷에는 관여하지 않는다(아래).  
 **Seal 스냅샷 객체(샤드 NDJSON·Shard Manifest·Main Manifest)는 별도 표(`dataset_version_objects`)가 정한다**(서버 `0.1.24`+, [6.3](#63-manifest-구조)). Version 을 지우면 **`delete_cas` 와 무관하게** 그 표에 기록된 객체를 모두 지운다(서버 `0.1.31`+). 표에 Sealed 스냅샷 기록이 없는 Sealed Version 은 `0.1.23` 이하가 Seal 한 옛 형식으로 보고, 이름 기반 Manifest key 둘을 지운다. 단 같은 Dataset 의 다른 살아 있는 옛 형식 Sealed Version 이 같은 key 를 쓰면 그 key 는 남긴다.
 
@@ -220,7 +225,7 @@ nexus 가 지우는 것은 CAS 의 **key** 다. 물리 blob 은 그 내용을 �
 원본을 지울 때 그 썸네일(`thumb/<key>`)도 함께 지우는데, 에셋 role 과 무관하게 **원본 삭제가 성공했을 때만** 지운다(서버 `0.1.23`+). 삭제는 요청 연결이 끊겨도 DB 삭제와 CAS 정리를 끝까지 하고(서버 `0.1.23`+, Seal 과 같은 구조), 지우지 못한 객체 수는 지표 `nexus_cas_delete_failures_total` 로 보인다.
 
 ### 4.7 Clone (비동기 복제)
-Fork 가 같은 Dataset 안에서 새 Version 을 만드는 것이라면, Clone 은 (Dataset, Version) 을 **새 Dataset** 으로 통째 복제한다. `POST /datasets/{id}/versions/{version}/clone-jobs` 가 job 을 만들고 즉시 201 을 반환하며, 실제 복사는 백그라운드에서 진행된다 — 대규모 Dataset 을 동기로 복사하면 프록시 타임아웃에 걸리기 때문이다(CVAT 세션과 같은 구조). 진행 상태는 `GET /clone-jobs/{job_id}` 로 폴링하고(`copied_count`/`total_count`), `DELETE /clone-jobs/{job_id}` 로 협조적으로 취소한다(다음 청크 경계에서 멈춘다). 대상은 원본 Dataset 의 tags/description·그룹 종류 선언과 원본 Version 의 설명을 복사하고 항상 Draft 로 시작하며, Asset 참조(bucket/key/hash)는 재사용하므로 CAS 재업로드 없이 Sample·Sample Asset·Instance 행만 복제된다. 실패·취소, 그리고 재시작으로 중단된 job 모두 만들던 대상 Dataset 을 롤백한다. 중단된 job(진행이 10분 넘게 멈춘 job)의 정리는 주기 태스크가 하며(기동 직후 한 번, 이후 5분마다) 서버 기동을 기다리게 하지 않는다 — 대형 대상의 롤백이 startupProbe 예산을 먹지 않게 하기 위해서다. 롤백은 대상이 **job 이 만든 모양 그대로(Draft Version 하나, 또는 아직 Version 없음)일 때만** 한다 — 복사 중에도 대상은 보통의 Draft Dataset 이라, 그 사이 누가 Seal 했거나 Version 을 붙였으면 지우지 않고 남긴다(Sealed 보호를 우회하지 않기 위해서다). 롤백을 거부했거나 실패하면 그 사유를 job 에 기록한다. 복제 도중 원본 Sample 이 삭제되면 job 은 실패로 끝나고 대상을 롤백한다 — 원본 Sample 을 잠근 뒤 Asset 을 읽으므로, 삭제된 원본의 CAS 객체를 가리키는 대상이 만들어지지 않는다(서버 `0.1.23`+, 동기 `samples/import` 는 400). 서버 부하 방어를 위해 동시 실행 job 수에 전역 상한을 둔다(초과 시 409 가 아니라 429). 생성·취소는 `editor` 이상, 조회는 로그인한 사용자면 된다.
+Fork 가 같은 Dataset 안에서 새 Version 을 만드는 것이라면, Clone 은 (Dataset, Version) 을 **새 Dataset** 으로 통째 복제한다. `POST /datasets/{id}/versions/{version}/clone-jobs` 가 job 을 만들고 즉시 201 을 반환하며, 실제 복사는 백그라운드에서 진행된다 — 대규모 Dataset 을 동기로 복사하면 프록시 타임아웃에 걸리기 때문이다(CVAT 세션과 같은 구조). 진행 상태는 `GET /clone-jobs/{job_id}` 로 폴링하고(`copied_count`/`total_count`), `DELETE /clone-jobs/{job_id}` 로 협조적으로 취소한다(다음 청크 경계에서 멈춘다). 대상은 원본 Dataset 의 tags/description·그룹 종류 선언과 원본 Version 의 설명을 복사하고 항상 Draft 로 시작하며, Asset 참조(bucket/key/hash)는 재사용하므로 CAS 재업로드 없이 Sample·Sample Asset·Instance 행만 복제된다. 원본 Version 에서 보이는 `meta`·태그·split 과 Annotation 이 새 Sample 의 공유 값이 된다. 원본 데이터에 한 그룹의 컴포넌트 이름 하나가 두 타입으로 섞여 있으면 job 은 실패하고 대상을 롤백한다(§8.3). 실패·취소, 그리고 재시작으로 중단된 job 모두 만들던 대상 Dataset 을 롤백한다. 중단된 job(진행이 10분 넘게 멈춘 job)의 정리는 주기 태스크가 하며(기동 직후 한 번, 이후 5분마다) 서버 기동을 기다리게 하지 않는다 — 대형 대상의 롤백이 startupProbe 예산을 먹지 않게 하기 위해서다. 롤백은 대상이 **job 이 만든 모양 그대로(Draft Version 하나, 또는 아직 Version 없음)일 때만** 한다 — 복사 중에도 대상은 보통의 Draft Dataset 이라, 그 사이 누가 Seal 했거나 Version 을 붙였으면 지우지 않고 남긴다(Sealed 보호를 우회하지 않기 위해서다). 롤백을 거부했거나 실패하면 그 사유를 job 에 기록한다. 복제 도중 원본 Sample 이 삭제되면 job 은 실패로 끝나고 대상을 롤백한다 — 원본 Sample 을 잠근 뒤 Asset 을 읽으므로, 삭제된 원본의 CAS 객체를 가리키는 대상이 만들어지지 않는다(서버 `0.1.23`+, 동기 `samples/import` 는 400). 서버 부하 방어를 위해 동시 실행 job 수에 전역 상한을 둔다(초과 시 409 가 아니라 429). 생성·취소는 `editor` 이상, 조회는 로그인한 사용자면 된다.
 
 ### 4.8 Version 설명
 Version 마다 설명(`description`, 최대 10,000 자) 하나를 둔다(서버 `0.1.21`+). Version 을 만들 때, Seal 할 때(Seal 이 성공할 때만 기록된다), 그리고 `PATCH /datasets/{dataset_id}/versions/{version}` 으로 쓰고, `null`·빈 문자열은 지움이다. 설명은 메모다 — Manifest 와 그 해시에 들어가지 않으므로 **Sealed Version 에서도 고칠 수 있고** 재현성에 영향이 없다. 쓰기 권한은 다른 카탈로그 쓰기와 같이 `editor` 이상이다(로봇 포함). Fork 는 설명을 복사하지 않고 Clone 은 복사한다. Seal 과 Version PATCH 두 경로만 요청 본문 상한이 256 KiB 다(넘으면 413).
@@ -228,23 +233,23 @@ Version 마다 설명(`description`, 최대 10,000 자) 하나를 둔다(서버 
 ## 5. Annotation Versioning
 ### 5.1 개요
 Nexus는 Sample과 Annotation을 서로 다른 방식으로 Version 관리한다.  
-Sample은 Version 간에 공유되며, Annotation만 Version 별로 독립적으로 관리한다. 이를 위해 Annotation에는 Copy-on-Write(CoW) 방식을 적용하여, 변경이 발생한 Annotation만 새로운 Version에 저장한다.  
+Sample 과 그 멤버십·Asset 은 Version 간에 공유되며, Annotation 과 Sample 의 `meta`·태그·split 은 Version 별로 독립적으로 관리한다. 이를 위해 Copy-on-Write(CoW) 방식을 적용하여, 변경이 발생한 Annotation 그룹과 Sample 필드만 그 Version 에 저장한다(§5.4).  
 이러한 구조를 통해 Version 간 중복 저장을 최소화하면서도, 각 Version의 독립성과 재현성을 유지한다.
 
 ### 5.2 Copy-on-Write
 Ingest 로 적재된 Annotation 은 모든 Version 이 공유하는 공유(base) Instance(공유 행)이다. CoW 의 단위는 **(Sample, 그룹)** 이다(서버 `0.1.29`+). Version 에서 Sample 의 그룹 하나를 고치면 그 그룹만 그 Version 전용 Instance(버전 행)로 쓰고, 표식 표 `instance_overrides` 에 (Sample, Version, 그룹) 표식을 남긴다. 그 Version 에서는 표식이 있는 그룹만 버전 행이 공유 행을 가리고, 고치지 않은 그룹은 계속 공유 행을 읽는다.  
-Fork 시 부모 Version 의 버전 행과 표식이 새 Version 으로 함께 복사되고, 공유 행은 복사 없이 계속 공유된다. 수정되지 않은 Sample·그룹은 저장 공간을 더 쓰지 않는다. 부모가 옛 형식(표식 없이 버전 행만 있음)인 Sample 은 자식에 모든 그룹의 표식을 새로 넣어 그룹 단위로 만든다 — 자식이 읽는 내용은 부모와 같다(서버 `0.1.30`+).
+Fork 시 부모 Version 의 버전 행·표식·사본 가운데 자식에 링크된 Sample 의 것이 새 Version 으로 함께 복사되고, 공유 행은 복사 없이 계속 공유된다. 수정되지 않은 Sample·그룹은 저장 공간을 더 쓰지 않는다. 부모가 옛 형식(표식 없이 버전 행만 있음)인 Sample 은 자식에 모든 그룹의 표식을 새로 넣어 그룹 단위로 만든다 — 자식이 읽는 내용은 부모와 같다(서버 `0.1.30`+).
 
 쓰기에는 두 모드가 있다.
 
-- **그룹 모드** — 그 Sample 을 읽는 Version 이 둘 이상이거나 이 Version 에 그 Sample 의 버전 행·표식이 이미 있으면, 바뀐 그룹의 버전 행과 표식을 쓴다. 그룹을 비우면 버전 행 0 개 + 표식이 남아 「이 Version 에서 그 그룹은 비어 있음」을 표현한다(공유 행이 되살아나지 않는다).
-- **직접 모드** — 그 Sample 을 읽을 수 있는 Version 이 이 Draft 하나뿐이고 이 Draft 에 그 Sample 의 버전 행·표식이 아직 없으면, 버전 행을 만들지 않고 공유 행을 바로 고친다. 다른 Version 이 없으니 가릴 대상이 없기 때문이다. 「읽을 수 있는 Version」은 그 Sample 이 링크된 Version, 그 Sample 의 버전 행이 남은 Version, 그 Sample 의 표식이 남은 Version 을 합친 것이다 — 링크를 끊었어도(unlink) 그 Sample 을 고친 적이 있어 행·표식이 남은 Version 은 센다. 직접 모드에서 그룹을 비우면 공유 행이 지워진다. 직접 모드로 고친 Sample 은 적재 때의 Annotation 을 남기지 않으므로, 이후 다른 Version 에 링크해도 고친 값이 보인다.
+- **그룹 모드** — 그 Sample 이 링크된 Version 이 이 Version 하나가 아니거나, 이 Version 에 그 Sample 의 기록(버전 행·표식·`meta`/태그/split 사본)이 이미 있으면, 바뀐 그룹의 버전 행과 표식을 쓴다. 그룹을 비우면 버전 행 0 개 + 표식이 남아 「이 Version 에서 그 그룹은 비어 있음」을 표현한다(공유 행이 되살아나지 않는다).
+- **직접 모드** — 그 Sample 이 링크된 Version 이 이 Draft 하나뿐이고 이 Draft 에 그 Sample 의 기록이 아직 없으면, 버전 행을 만들지 않고 공유 행을 바로 고친다. 다른 Version 이 없으니 가릴 대상이 없기 때문이다. 링크가 끊긴 Version 에 남은 행·표식·사본은 아무도 읽지 않으므로 세지 않는다([5.2.1](#521-링크와-링크-해제)). 직접 모드에서 그룹을 비우면 공유 행이 지워진다. 직접 모드로 고친 Sample 은 적재 때의 Annotation 을 남기지 않으므로, 이후 다른 Version 에 링크해도 고친 값이 보인다. 같은 판정이 `meta`·태그·split 쓰기의 공유 값/사본 선택에도 쓰인다(§5.4).
 
 어느 모드든 **바뀐 그룹만 쓴다** — 쓰기 결과를 그룹마다 지금 값과 비교해(GT 의 `id`·`label`·`track_id`·`confidence`·컴포넌트를 보고 서버 내부 `instance_id` 는 보지 않는다. `confidence` 는 비트로 비교해 `-0.0` 과 `0.0` 을 다르게 본다) 다른 그룹만 쓰므로, 바뀌지 않은 그룹의 내부 `instance_id` 가 다시 발급되지 않는다. 쓰기 모드별 횟수는 지표 `nexus_annotation_instance_writes_total{mode}` 로 보인다.
 
 표식 표가 생기기 전에 쓰인 Sample(표식 없이 버전 행만 있는 옛 형식)은 그 Version 에서 버전 행만 읽는다(옛 규칙). 그런 Sample 은 처음 쓸 때, 그 Version 을 Fork 할 때(자식 쪽), 또는 버전 행 정리 때 모든 그룹에 표식을 넣어 그룹 단위로 바뀐다(읽는 내용은 같다).
 
-운영자가 실행하는 서브커맨드 `nexus-server compact-instances`(서버 `0.1.30`+, 기본 dry-run, 차트 README 「annotation 버전 행 정리(compact-instances)」)는 어느 Version 이 읽는 내용도 바꾸지 않는 범위에서 행을 줄인다 — 읽히지 않는 버전 행과 공유 행과 같은 버전 행은 지우고, 그 Sample 을 읽는 Version 이 링크된 하나뿐이면 버전 행을 공유 행으로 옮기며, 읽는 모든 Version 이 표식으로 덮은 공유 행은 지운다(공유 행을 지우는 이 두 단계는 끌 수 있다 — `--no-move` 는 옮기기만, `--keep-shared` 는 둘 다 끈다, 서버 `0.1.32`+). 정리 뒤에는 Version 조회의 내부 `instance_id` 가 바뀔 수 있고(내용은 같다), Version 을 지정하지 않은 `GET /instances` 의 행이 바뀌며, 정리된 Sample 을 Fork 없이 다른 Version 에 링크하면 적재 때 값이 아니라 옮긴 Version 의 값을 보고, 덮인 공유 행이 지워진 그룹은 비어 보인다(공유 행을 남기려면 `--keep-shared`). 되돌릴 수 없다(undo 기록으로만 손으로 복구한다).
+운영자가 실행하는 서브커맨드 `nexus-server compact-instances`(서버 `0.1.30`+, 기본 dry-run, 차트 README 「annotation 버전 행 정리(compact-instances)」)는 어느 Version 이 읽는 내용도 바꾸지 않는 범위에서 행을 줄인다 — 읽히지 않는 버전 행과 공유 행과 같은 버전 행은 지우고, 그 Sample 을 읽는 Version 이 링크된 하나뿐이면 버전 행을 공유 행으로 옮기며, 읽는 모든 Version 이 표식으로 덮은 공유 행은 지운다(공유 행을 지우는 이 두 단계는 끌 수 있다 — `--no-move` 는 옮기기만, `--keep-shared` 는 둘 다 끈다, 서버 `0.1.32`+). 그보다 먼저 링크가 끊긴 (Sample, Version) 의 버전 행·표식·`meta`/태그/split 사본(아무도 읽지 않는 잔여, [5.2.1](#521-링크와-링크-해제))을 지운다(`--keep-residue` 로 끈다). 정리 뒤에는 Version 조회의 내부 `instance_id` 가 바뀔 수 있고(내용은 같다), Version 을 지정하지 않은 `GET /instances` 의 행이 바뀌며, 어느 Version 에도 링크되지 않은 정리된 Sample 을 다시 링크하면 적재 때 값이 아니라 옮긴 Version 의 값을 보고, 덮인 공유 행이 지워진 그룹은 비어 보인다(공유 행을 남기려면 `--keep-shared`). 되돌릴 수 없다(undo 기록으로만 손으로 복구한다).
 
 운영자가 실행하는 서브커맨드 `nexus-server deleted-sample-index`(서버 `0.1.33`+, 기본 점검, 차트 README 「샘플 삭제 확인 인덱스(deleted-sample-index)」)는 포함 인덱스 `samples (sample_id) INCLUDE (is_deleted)` 를 `CREATE INDEX CONCURRENTLY` 로 만든다. 개수·목록 경로가 Sample 이 지워졌는지 보려고 `samples` 힙을 읽던 몫을 인덱스만 읽는 판정으로 바꾸는 것이고, 서버의 질의는 그대로라 인덱스가 있든 없든 결과는 같다.
 
@@ -268,6 +273,18 @@ Sample 1
       └── lane  (공유 행, A 와 같은 행)
 ```
 
+### 5.2.1 링크와 링크 해제
+**링크**(`POST /datasets/{dataset_id}/versions/{version}/samples`)는 `200` `{"linked", "skipped", "had_residue"}` 로 답한다(서버 `0.1.37`+).
+- 이미 대상에 링크된 Sample 은 건너뛰고(`skipped`) 그 편집을 보존한다. 덮어쓰려면 빼고 다시 넣는다.
+- 대상 말고 다른 Version 에 링크된 Sample 을 넣으려면 본문에 `from_version`(같은 Dataset 의 Version 이름)이 있어야 한다. 없으면 400 `from_version_required` 이고 `needs_origin` 을 싣는다 — Version 마다 값이 다를 수 있어 서버가 출처를 추측하지 않는다. 한 요청의 출처는 하나이고, 보낸 Sample 은 모두 `from_version` 의 멤버여야 한다(이미 대상에 링크된 Sample 은 예외).
+- 새로 들어간 Sample 은 `from_version` 에서 보이는 `meta`·태그·split·Annotation 을 함께 가져온다 — 그 Version 의 기록을 대상에 복사한다. Sealed Version 도 출처가 된다. 복사한 Annotation 의 컴포넌트 타입이 대상 Version 에서 직접 관측한 타입과 부딪치면 400 이고 아무것도 링크하지 않는다(물려받은 관측과 다르면 받는다, §8.3).
+- 어느 Version 에도 링크되지 않은 Sample 은 `from_version` 없이 넣고 공유 값을 읽는다.
+- 새로 들어간 Sample 의 실데이터는 대상 Version 의 스키마 관측에 더해진다(§8.3).
+
+**링크 해제**(`DELETE` 같은 경로)는 링크만 지운다. 응답은 `{"removed", "had_residue"}` 이고, `had_residue` 는 뺀 Sample 가운데 그 Version 에 기록이 있던 수다(그 편집은 사라진 것으로 본다). 열린 CVAT 세션(`creating`·`open`)이 잡은 Sample 이 있으면 409 `samples_in_open_session` 이고 아무것도 빼지 않는다. 해제는 그 Sample 들의 쓰기와 줄을 선다 — 겹친 쓰기는 해제보다 먼저 반영되거나(그 편집은 해제와 함께 사라진다) 해제 뒤에 거절되며, 성공으로 답한 편집이 아무도 읽지 않는 기록으로만 남는 일은 없다.
+
+**링크가 끊긴 (Sample, Version) 의 기록(버전 행·표식·사본)은 아무도 읽지 않는다.** 다시 링크하면 그 링크 트랜잭션이 잔여를 지우고(`had_residue`) `from_version` 의 값을 가져오므로 예전 편집은 되살아나지 않는다. 물리 회수는 `compact-instances` 의 잔여 단계가 한다(§5.2).
+
 ### 5.3 버전별 조회
 Annotation을 조회할 때는 그룹마다 현재 Version의 표식을 보고, 표식이 있으면 그 Version의 버전 행을, 없으면 공유 행을 읽는다.  
 이 과정에서 변경되지 않은 그룹은 여러 Version에서 공유하면서도, 각 Version은 독립적인 Annotation 상태를 유지할 수 있다.
@@ -282,13 +299,13 @@ flowchart TD
     B -->|아니오| D["그 그룹의 공유 행 사용"]
 ```
 
-Version 을 지정하지 않은 Instance 조회(`GET /instances`)는 이 해소를 거치지 않은 저장된 행 그대로다 — 직접 모드가 고친 공유 행이 보이고 표식은 나타나지 않는다. Version 에서 보이는 결과는 `?dataset_version_id=` 로 조회한다.
+Version 을 지정하지 않은 Instance 조회(`GET /instances`)는 이 해소를 거치지 않은 저장된 행 그대로다 — 직접 모드가 고친 공유 행과 함께 모든 Version 의 버전 행(링크가 끊긴 잔여 행 포함)이 `dataset_version_id` 와 함께 나오고 표식은 나타나지 않는다. Version 에서 보이는 결과는 `?dataset_version_id=` 로 조회한다.
 
 ### 5.3.1 Annotation 쓰기 — 통째 교체(PUT)와 부분 저장(PATCH)
 Annotation 쓰기에는 두 가지가 있다.
 
-- **통째 교체(`PUT .../samples/{sample_id}/annotations`)** — 보낸 그룹들로 이 Version 의 그 Sample Annotation 전체를 바꾼다. 보내지 않은 그룹은 사라지고, `meta` 를 보냈으면 그 값으로 통째로 바뀐다(보내지 않으면 그대로). 단 **그룹을 하나도 보내지 않으면 Instance 는 건드리지 않는다.**
-- **부분 저장(`PATCH` 같은 경로)** — 보낸 그룹만 통째로 바꾸고 나머지 그룹은 그대로 둔다. `meta` 는 top-level 키 단위로 합친다(값이 `null` 인 키는 지운다).
+- **통째 교체(`PUT .../samples/{sample_id}/annotations`)** — 보낸 그룹들로 이 Version 의 그 Sample Annotation 전체를 바꾼다. 보내지 않은 그룹은 사라지고, `meta` 를 보냈으면 이 Version 에서 보이는 `meta` 가 그 값으로 통째로 바뀐다(보내지 않으면 그대로, 다른 Version 도 링크한 Sample 은 이 Version 의 사본에 쓴다 — §5.4). 받은 `meta` 가 이 Version 의 값과 같으면 쓰지 않는다. 단 **그룹을 하나도 보내지 않으면 Instance 는 건드리지 않는다.**
+- **부분 저장(`PATCH` 같은 경로)** — 보낸 그룹만 통째로 바꾸고 나머지 그룹은 그대로 둔다. `meta` 는 이 Version 의 값에 top-level 키 단위로 합친다(값이 `null` 인 키는 지운다).
 
 CoW 가 (Sample, 그룹) 단위이므로(§5.2) 부분 저장은 보낸 그룹 중 바뀐 그룹만 쓰고, 보내지 않은 그룹은 옮겨 적지 않는다. 통째 교체는 보내지 않은 그룹을 비우는 것으로 보므로 그 그룹도 바뀐 그룹이 된다.
 
@@ -298,11 +315,15 @@ CoW 가 (Sample, 그룹) 단위이므로(§5.2) 부분 저장은 보낸 그룹 �
 
 한 Sample 에 대한 쓰기(PUT·PATCH·CVAT 반영)는 그 Sample 행을 잠그고 한 트랜잭션으로 적용되므로 차례로 반영된다. 두 곳에서 같은 Sample 의 서로 **다른** 그룹을 부분 저장해도 서로 지우지 않는다. 단 이 보장은 부분 저장끼리만이다 — PUT·CVAT 반영은 보낸 내용을 그 Sample 의 Annotation 전체로 보므로, 그 사이 다른 곳에서 바뀐 그룹을 자기가 읽은 값으로 되돌릴 수 있다.
 
-### 5.4 Sample은 CoW를 사용하지 않는다
-Copy-on-Write는 Annotation에만 적용된다.  
+### 5.4 Sample 멤버십과 Sample 필드
+Sample 멤버십(어느 Version 에 어떤 Sample 이 드는가)에는 CoW 를 쓰지 않는다.  
 Fork 시 새로운 Version의 Sample 멤버십이 생성되며, 각 멤버십은 동일한 Sample을 참조한다.   
 이러한 구조를 통해 특정 Version에 어떤 Sample이 포함되어 있는지를 단순한 조회만으로 확인할 수 있으며 Version별 Sample 구성도 독립적으로 관리할 수 있다.  
 이는 저장 공간의 일부 증가를 감수하더라도, Version 조회 성능과 데이터 모델의 단순성을 우선한 설계이다.
+
+Sample 의 `meta`·태그·split 은 Version 마다 격리된다(서버 `0.1.37`+). 공유 값은 `samples` 행에 있고, 한 Version 에서 고친 칸은 그 Version 의 사본(`version_sample_fields`, (Version, Sample) 한 행)에 쓴다. **사본은 칸마다 따로다** — 바꾸는 칸만 사본이 되고(태그만 고치면 태그 배열만, `meta` 를 고치면 그 시점의 `meta` 전체), 사본이 아닌 칸은 계속 공유 값을 읽는다. 사본이 된 칸은 그 시점 값으로 고정되고 키 단위로 전파되지 않는다. 쓸 곳은 Annotation 과 같은 판정으로 정한다(§5.2) — 그 Sample 이 링크된 Version 이 이 Version 하나뿐이고 기록이 없으면 공유 값을, 그 밖에는 사본을 고친다. 실효 값이 바뀌지 않는 쓰기는 사본을 만들지 않는다. 사본은 Version 을 지울 때까지 남는다. split 은 적재(Clone·Import 의 새 Sample 포함) 때 정하고 그 뒤 고치는 API 는 없다 — 그래서 split 사본은 생기지 않고 모든 Version 이 공유 값을 읽는다(사본 칸은 격리 구조에 맞춰 둔 것이다). 에셋(`sample_assets`)은 이 격리 밖이다(§3.5).
+
+버전 문맥의 읽기는 그 Version 의 값을 읽는다 — Explorer·개수·facet·Manifest·Seal 스냅샷·Version 경로의 Sample 조회·`GET /samples?dataset_id=&version=` 이 해당한다. **Version 을 지정하지 않은 Sample 읽기는 공유 값이다** — `GET /samples/{sample_id}`, `dataset_id`·`version` 을 함께 주지 않은 `GET /samples`(`dataset_id` 만 준 경우 포함)가 해당한다. Version 을 지정하지 않은 `GET /instances` 는 저장된 행 그대로다(§5.3).
 
 ### 5.5 Annotation 편집 — CVAT 연동
 Nexus는 Annotation을 직접 편집하는 도구를 제공하지 않고, 편집이 필요한 경우 외부 편집기인 CVAT과 **편집 세션(Annotation Session)** 단위로 연동한다.
@@ -431,9 +452,9 @@ CVAT Shape ID는 라벨 변경 후에도 유지되므로, 속성이 비어 있�
 세션 생성 요청의 `extra_labels` 에 태그 항목 `{"type":"tag","label","attribute","meta_key"}`(세션당 하나)을 주면, Sample `meta` 의 한 칸(`a` 또는 `a.b`)과 CVAT 프레임 태그의 글 속성이 짝이 된다(서버 `0.1.30`+).
 
 - 세션을 만들 때 그 칸의 문자열로 태그를 채우고, 업로드 뒤 CVAT 가 저장한 값을 다시 읽어 프레임마다 기준(`annotation_session_tag_baselines`)으로 둔다 — 보낸 값이 아니라 CVAT 가 정규화한 값(앞뒤 공백 제거)을 기준으로 삼아야 편집하지 않은 프레임이 변경으로 잡히지 않는다. 문자열이 아니거나 바깥이 객체가 아니거나 CVAT 상한 4,096 자를 넘는 칸은 채우지 않는다.
-- 회수는 CVAT 값이 기준과 다른 프레임만 `meta` 에 쓰고 기준을 옮긴다. 태그를 두고 글을 비우면 그 키를 지우고, 태그가 없는 프레임은 변경 없음으로 둔다(job 단위 지우기 한 번이 모든 글 칸을 지우지 않게). 세션 중 `meta` 와 CVAT 이 둘 다 바뀌었으면 CVAT 값을 쓰고 경고한다.
-- 세션 도중 Version 에서 빠지거나 삭제된 Sample 의 편집은 반영할 길이 없어 버리고 기준을 옮기며 경고한다(회수 시각을 막지 않는다). 그 밖에 반영하지 못한 편집이 남으면 회수 시각을 전진시키지 않는다(§5.5.6).
-- 쓰기는 Instance 쓰기를 거치지 않고 일괄 meta 쓰기와 같은 병합 식을 쓰며, 스키마 관측도 기록한다(§8.3).
+- 회수는 CVAT 값이 기준과 다른 프레임만 그 Version 의 `meta` 에 쓰고(다른 Version 도 링크한 Sample 은 사본, §5.4) 기준을 옮긴다. 응답의 `updated_meta_samples` 는 그 Version 의 `meta` 가 실제로 바뀐 Sample 수다. 태그를 두고 글을 비우면 그 키를 지우고, 태그가 없는 프레임은 변경 없음으로 둔다(job 단위 지우기 한 번이 모든 글 칸을 지우지 않게). 세션 중 `meta` 와 CVAT 이 둘 다 바뀌었으면 CVAT 값을 쓰고 경고한다.
+- 세션 도중 삭제된 Sample 의 편집은 반영할 길이 없어 버리고 기준을 옮기며 경고한다(회수 시각을 막지 않는다). 열린 세션이 잡은 Sample 은 Version 에서 뺄 수 없다(409 `samples_in_open_session`, [5.2.1](#521-링크와-링크-해제)). 그 밖에 반영하지 못한 편집이 남으면 회수 시각을 전진시키지 않는다(§5.5.6).
+- 쓰기는 Instance 쓰기를 거치지 않고 일괄 meta 쓰기와 같은 병합 식을 쓰며, 그 Version 의 스키마 관측도 기록한다(§8.3).
 
 ## 6. 스냅샷과 Manifest 구조
 Seal은 Draft 상태의 DatasetVersion을 변경할 수 없는 Snapshot으로 확정하는 과정이다.  
@@ -442,7 +463,7 @@ Nexus는 Snapshot을 여러 개의 Shard와 이를 연결하는 Manifest로 구�
 
 ### 6.1 Annotation Snapshot
 Seal이 수행되면 Nexus는 해당 DatasetVersion에서 유효한 Annotation을 계산하여 하나의 완전한 상태로 확정한다.  
-확정된 Annotation과 각 Sample의 그 시점 `meta` 사본은 NDJSON 형식의 Snapshot으로 생성되며, 대규모 Dataset을 효율적으로 처리할 수 있도록 여러 개의 Shard로 분할하여 저장한다.  
+확정된 Annotation과 각 Sample 의 그 시점에 그 Version 에서 보이는 `meta` 는 NDJSON 형식의 Snapshot으로 생성되며, 대규모 Dataset을 효율적으로 처리할 수 있도록 여러 개의 Shard로 분할하여 저장한다.  
 Snapshot은 DatasetVersion의 논리적 상태를 외부 저장소에 고정한 결과물이다.  
 따라서 Seal 이후에는 PostgreSQL의 Annotation 관계를 다시 해석하지 않고도 해당 Version의 데이터를 독립적으로 읽을 수 있다.
 
@@ -497,7 +518,7 @@ Shard Manifest 위치·해시"]
 Main Manifest는 Seal 시 CAS에 저장되며, Snapshot의 구성과 출처를 추적할 수 있도록 한다.  
 일반적인 조회에서는 Main Manifest를 매번 읽지 않는다. PostgreSQL의 DatasetVersion에는 Snapshot 조회에 필요한 시작점이 함께 저장되며, Nexus는 이를 기준으로 클라이언트에 조회 정보를 제공한다.  
 즉, Database는 Snapshot 데이터를 직접 저장하지 않고,  CAS에 저장된 Snapshot을 찾아가기 위한 메타데이터만 관리한다.  
-Main Manifest 가 필요한 클라이언트(Seal 시점의 Sample별 `tags`·`split` 을 읽는 경우)를 위해 Manifest 조회 응답은 Sealed Version 에 Main Manifest 의 위치와 해시(`main_manifest`)를 함께 싣는다(서버 `0.1.29`+). 옛 이름 기반 key 를 가리키는 경우는 같은 이름으로 다시 만든 Version 의 Seal 로 덮였을 수 있으므로 클라이언트가 받은 본문의 BLAKE3 를 해시와 대조한다.  
+Main Manifest 가 필요한 클라이언트(Seal 시점에 그 Version 에서 보이는 Sample별 `tags`·`split` 을 읽는 경우)를 위해 Manifest 조회 응답은 Sealed Version 에 Main Manifest 의 위치와 해시(`main_manifest`)를 함께 싣는다(서버 `0.1.29`+). 옛 이름 기반 key 를 가리키는 경우는 같은 이름으로 다시 만든 Version 의 Seal 로 덮였을 수 있으므로 클라이언트가 받은 본문의 BLAKE3 를 해시와 대조한다.  
 Main Manifest 는 같은 내용이면 같은 바이트가 되도록 순서를 고정한다 — Sample 은 (생성 시각, `sample_id`) 순, 한 Sample 의 Asset 은 역할(role) 이름순이다(서버 `0.1.21`+).
 
 Seal 이 CAS 에 쓰는 객체는 쓰기 전에 그 key 를 `dataset_version_objects` 표에 먼저 기록한다(서버 `0.1.24`+). 그래서 CAS 에 있는 스냅샷 객체는 언제나 이 표에 있고, Seal 이 도중에 실패하거나 끊겨도 남은 객체를 추적할 수 있다. Version 을 Sealed 로 바꾸는 마지막 트랜잭션에서 Manifest 가 가리키는 객체를 「최종」으로 표시하고, 최종이 아닌 잔여는 Seal 이 끝난 뒤 지운다. Version 삭제가 무엇을 지우는지도 이 표가 정한다([4.6](#46-삭제와-저장소-정리)).
@@ -577,11 +598,11 @@ id 로 Dataset 을 찾고 이름은 무시하며, 없는 id 는 404 이고 Datas
 
 ### 7.2 검색 
 등록된 Sample은 Explorer를 통해 검색하고 조회할 수 있다.  
-조회 결과는 요청한 DatasetVersion을 기준으로 구성되며, Version에 해당하는 Annotation 상태가 함께 제공된다.
+조회 결과는 요청한 DatasetVersion을 기준으로 구성되며, Version에 해당하는 Annotation 상태와 그 Version 의 `meta`·태그·split 이 함께 제공된다.
 
 ### 7.3 수정 
-Annotation 수정은 Draft Version에서만 가능하다.  
-수정된 Annotation은 Copy-on-Write 방식으로 관리되므로, 기존 Version에는 영향을 주지 않고 현재 Draft에만 변경 사항이 반영된다.  
+Annotation 과 `meta`·태그 수정은 Draft Version에서만 가능하다.  
+수정된 값은 Copy-on-Write 방식으로 관리되므로, 기존 Version에는 영향을 주지 않고 현재 Draft에만 변경 사항이 반영된다.  
 수정은 통째 교체(PUT)와 그룹 단위 부분 저장(PATCH) 두 가지다(§5.3.1).
 
 ### 7.4 Seal
@@ -613,7 +634,9 @@ DatasetVersion  Sample
    │   ┊         │
    │   ┊         ├──── Asset
    │   ┊         │
-   │   └╌╌╌╌╌╌╌╌╌┴──── Instance
+   │   ├╌╌╌╌╌╌╌╌╌┼──── Instance
+   │   ┊         │
+   │   └╌╌╌╌╌╌╌╌╌┴──── VersionSampleFields (Version 별 meta·태그·split 사본)
    │
    └──── DatasetVersionSample
 ```
@@ -627,9 +650,15 @@ DatasetVersion  Sample
 |sample_assets|Sample과 CAS Asset 연결|
 |instances|Annotation 데이터 — 공유 행과 Version 전용 행([5.2](#52-copy-on-write))|
 |instance_overrides|(Sample, Version, 그룹) 표식 — 그 Version 에서 그 그룹을 전용 행으로 읽는다([5.2](#52-copy-on-write))|
+|version_sample_fields|(Version, Sample) 의 `meta`·태그·split 사본 — 칸마다 사본 여부를 따로 둔다([5.4](#54-sample-멤버십과-sample-필드))|
 |dataset_group_kinds|Dataset 단위 그룹 종류 선언(`group`·`container`)|
 |dataset_version_samples|Version별 Sample 구성|
-|dataset_schema_*|Dataset에서 관측된 Annotation Schema|
+|version_schema_obs_labels·_components·_meta_fields|Version 단위로 관측된 Annotation Schema 와 meta 필드([8.3](#83-annotation-schema))|
+|version_schema_state|Version 관측의 상태(`observed`·`exact`, 행이 없으면 legacy)|
+|schema_jobs|스키마 재계산 작업|
+|dataset_schema_*|legacy Version 의 Dataset 단위 관측 — 읽기만 하고 새로 쓰지 않는다([8.3](#83-annotation-schema))|
+|version_jobs|Seal·Fork 작업 줄([4.3](#43-seal))|
+|version_job_samples|필터 Fork·저장된 필터 물질화의 대상 Sample|
 |subsets|저장된 검색 조건(View)|
 |dataset_favorites|사용자 즐겨찾기|
 |ingest_idempotency|등록 멱등 키 기록 — Dataset 범위의 키와 처음 만든 Sample(§7.1)|
@@ -643,14 +672,25 @@ DatasetVersion  Sample
 
 ### 8.2 Annotation Versioning
 Annotation은 instances 테이블에서 관리된다.  
-공유 Annotation과 Version별 Annotation을 하나의 데이터 모델로 관리하며(`dataset_version_id` 가 비어 있으면 공유 행), 이를 통해 Copy-on-Write 구조를 구현한다. 어느 그룹을 Version 전용 행으로 읽을지는 `instance_overrides` 의 (Sample, Version, 그룹) 표식이 정한다 — 표식이 있는 그룹은 그 Version 의 전용 행(0 개면 빈 그룹)을, 없는 그룹은 공유 행을 쓴다. Fork 는 부모의 전용 행과 표식을 함께 복사하므로(부모가 옛 형식이면 자식에 표식을 새로 넣는다, §5.2) 자식이 부모를 참조하지 않는다. Version 을 지우면 표식은 FK 로 함께 지워지고, Sample 을 지우면 같은 트랜잭션에서 지운다. `instance_overrides` 는 `samples` 에 FK 를 두지 않는다 — 가장 쓰기가 많은 표에 잠금을 더 얹지 않기 위해서다.
+공유 Annotation과 Version별 Annotation을 하나의 데이터 모델로 관리하며(`dataset_version_id` 가 비어 있으면 공유 행), 이를 통해 Copy-on-Write 구조를 구현한다. 어느 그룹을 Version 전용 행으로 읽을지는 `instance_overrides` 의 (Sample, Version, 그룹) 표식이 정한다 — 표식이 있는 그룹은 그 Version 의 전용 행(0 개면 빈 그룹)을, 없는 그룹은 공유 행을 쓴다. Fork 는 부모의 전용 행·표식·`meta`/태그/split 사본 가운데 **자식에 링크된 Sample 의 것만** 복사하므로(부모가 옛 형식이면 자식에 표식을 새로 넣는다, §5.2) 자식이 부모를 참조하지 않는다. Version 을 지우면 표식·사본·전용 행을 차례로 함께 지우고, Sample 을 지우면 표식과 사본(`version_sample_fields`)을 같은 트랜잭션에서 지운다. 두 표는 `samples` 에 FK 를 두지 않는다 — 가장 쓰기가 많은 표에 잠금을 더 얹지 않기 위해서다.
 
 ### 8.3 Annotation Schema
 Explorer에서 사용하는 Annotation Schema는 별도의 관측 테이블에 관리된다.  
-Dataset에 새로운 Label이나 Annotation Component가 추가되면 Schema를 함께 갱신하며, 이를 통해 Dataset 전체의 Annotation 구조를 빠르게 조회할 수 있다.
+Version 에 새로운 Label이나 Annotation Component가 들어오면 그 Version 의 관측을 함께 갱신하며, 이를 통해 그 Version 의 Annotation 구조를 빠르게 조회할 수 있다.
 Sample의 `meta` 필드도 같은 방식으로 관측한다. 어떤 필드가 어떤 타입으로 존재하는지를 데이터에서 정하므로, 미리 선언되지 않은 meta 키도 Explorer의 facet·필터 대상이 된다. 미리 선언된 필드의 타입은 관측이 원리적으로 알 수 없는 것(예: 문자열로 저장되는 날짜)을 담고 있으므로 선언이 우선한다. 다만 이름이 `[A-Za-z0-9_]`를 벗어난 meta 키는 관측 대상에서 제외한다 — 필드명이 질의에 그대로 들어가는 구조라 통과시킬 수 없고, 목록에 실어두면 "목록에는 있는데 선택하면 오류가 나는 항목"이 되기 때문이다. 그런 키도 값 자체는 저장되고 Sample 조회에는 그대로 보인다.
-관측하는 타입은 JSON 값의 종류(숫자·문자열·불리언·배열·객체)이고, 숫자는 소수부·지수가 있는 값이 한 번이라도 들어오면 실수로 함께 기록한다(서버 `0.1.24`+). 그래서 관측만 된 숫자 필드는 `int`(정수만)와 `float`로 갈리며, 누적만 되므로 한 번 `float`가 된 필드는 값이 다시 정수만 남아도 `float`다. 배열·객체만 관측된 필드는 facet 컨트롤을 그릴 수 없으므로 facet 대상 목록(`meta_schema.fields`)과 나눠 `meta_schema.other_fields`에 싣는다. meta 를 쓰는 경로(적재, Annotation PUT/PATCH, 일괄 meta 쓰기, 크기 보정, Clone/Import, 골격 정의 심기, CVAT 글 칸 회수)는 모두 이 관측을 기록한다.
-이 관측 테이블들은 삭제 없이 누적만 되며, Version 이 아니라 Dataset 범위이다.
+관측하는 타입은 JSON 값의 종류(숫자·문자열·불리언·배열·객체)이고, 숫자는 소수부·지수가 있는 값이 한 번이라도 들어오면 실수로 함께 기록한다(서버 `0.1.24`+). 그래서 관측만 된 숫자 필드는 `int`(정수만)와 `float`로 갈리며, Seal·재계산이 다시 맞추기 전까지는 더하기만 하므로 한 번 `float`가 된 필드는 값이 다시 정수만 남아도 `float`다. 배열·객체만 관측된 필드는 facet 컨트롤을 그릴 수 없으므로 facet 대상 목록(`meta_schema.fields`)과 나눠 `meta_schema.other_fields`에 싣는다. meta 를 쓰는 경로(적재, Annotation PUT/PATCH, 일괄 meta 쓰기, 크기 보정, Clone/Import, 골격 정의 심기, CVAT 글 칸 회수)는 모두 이 관측을 기록하고, 링크도 새로 들어간 Sample 의 실데이터를 관측한다.
+
+관측은 **Version 단위**다(서버 `0.1.37`+, `version_schema_obs_labels`·`_components`·`_meta_fields`). `/schema`·사이드바 값 목록·facet 의 관측 판정은 그 Version 의 데이터를 따르고, 응답의 `schema_state` 가 출처를 밝힌다.
+- `legacy` — 관측 표가 Version 단위가 되기 전에 있던 Version 이다. 종전의 Dataset 단위 표(`dataset_schema_*`)로 답한다. 그 Version 에 처음 쓰거나 그 Version 에 링크하면 Dataset 표의 행을 물려받은 관측으로 복사하고 `observed` 가 된다. 그 Version 을 부모로 Fork 하면 부모는 legacy 로 남고, 자식이 Dataset 표의 행을 물려받는다.
+- `observed` — 쓰기·링크가 관측을 더해 온 상태다. 빈 Version·적재로 만든 Version 은 그 Version 의 데이터에서 관측한 것만 보이고, Fork 로 만든 Version 은 아래처럼 부모의 관측을 물려받는다.
+- `exact` — Seal 이나 재계산이 그 Version 의 데이터로 관측을 통째로 맞춘 상태다(`computed_at`). Seal 은 스냅샷을 만들며 모은 그 Version 데이터의 집합으로 마지막 트랜잭션에서 관측을 통째로 바꾸므로(`computed_at` 은 그 읽기를 시작한 시각) 뺀 Sample·지운 데이터의 항목이 사라진다. Draft 는 그 뒤의 쓰기가 다시 더해도 `exact` 로 남으므로 `computed_at` 시점 기준이다(Draft 재계산은 도중 기록을 남기는 최선 노력이다).
+
+전체 Fork 는 부모의 관측을, 부분·필터 Fork 는 부모 관측 전체를 물려받은 관측으로 복사한다.
+
+한 Version 안에서 한 그룹의 컴포넌트 이름은 한 타입이다. 그 Version 에서 직접 관측한 타입과 다른 타입을 쓰거나 한 요청 안에서 한 이름에 두 타입을 쓰면 400 이다. 검사는 그 요청에서 바뀐 그룹에만 하고, 물려받은 관측과 다른 타입은 받고 관측을 새 타입으로 바꾼다. 동시에 처음 쓰는 쓰기나 기록이 실패해 빠진 이름은 통과하므로 최선 노력이다. meta 필드는 이 규칙 밖이다.
+
+재계산은 `POST /datasets/{dataset_id}/versions/{version}/schema/recompute` 다. 받으면 늘 202 로 답하고(준비 중·실패 Version 과 Seal 스냅샷이 없는 Sealed Version 은 409) 진행은 `GET /api/v1/schema-jobs/{job_id}` 로 본다(결과의 `conflicts` 가 한 이름의 두 타입을 알린다). 지정 삭제는 `DELETE .../schema/{labels|components|meta-fields}` 이고 데이터를 확인하지 않으며 Sealed Version 은 409 다. 재계산은 Seal·Fork 작업 줄과 따로 파드마다 하나씩 돈다(`schema_jobs`).
+
 그룹의 **종류**(인스턴스를 담는 `group` 인가, 임의 구조를 담는 `container` 인가)는 관측으로 정하지 않고 사람이 선언한다. 선언은 `dataset_group_kinds` 에 Dataset 단위로 저장하고(`GET|PATCH /datasets/{dataset_id}/group-kinds`, 서버 `0.1.29`+), Seal 스냅샷·GT 형식에는 넣지 않으며 Clone 이 함께 복사한다. 모양을 추론하지 않으므로 선언이 없는 그룹은 원시 그룹으로 읽힌다.
 
 ## 9. API, SDK 계층 구조
@@ -707,11 +747,11 @@ PostgreSQL / CAS
 ### 9.3 API 설계 원칙
 API는 다음과 같은 원칙을 따른다.
 - Batch 중심  
-대량 데이터 처리를 위해 Batch API를 제공하며, 적재 Batch 의 각 항목은 독립적으로 처리되어 일부 실패가 전체 작업에 영향을 주지 않도록 한다(일괄 meta 쓰기는 요청 단위로 전부 또는 없음이다 — [10.3](#103-version-불변성)).
+대량 데이터 처리를 위해 Batch API를 제공하며, 적재 Batch 의 각 항목은 독립적으로 처리되어 일부 실패가 전체 작업에 영향을 주지 않도록 한다(일괄 meta 쓰기·태그 `tags/items`·에셋 붙이기는 요청 단위로 전부 또는 없음이다 — 하나라도 거절되면 아무것도 쓰지 않고 400 `meta_write_rejected`·`asset_write_rejected` 에 거절 목록을 싣는다).
 - 전면 인증  
 조회를 포함한 모든 엔드포인트가 인증을 요구한다. 예외는 회원 가입·로그인·비밀번호 재설정 링크의 확인·사용·프로브 두 경로·OpenAPI 문서와 Swagger UI 셸뿐이다(문서 경로는 설정으로 끌 수 있다). 데이터 변경 권한은 인증 위에 계정 역할(`admin`/`editor`/`viewer`)로 결정한다. 담당자(`owner_user_id`)는 담당자 이관을 빼면 인가에 관여하지 않는다 — 목록 필터와 인수 대기 관리에 쓰이는 값이다.
 - 일관된 오류 모델  
-HTTP 상태 코드와 함께 구체적인 오류 정보를 제공한다. 같은 상태 코드에 뜻이 여럿인 경우는 본문에 기계가 읽는 `code` 를 함께 싣는다(`{"error": ..., "code": ...}` — 예: Seal 의 `already_sealed`·`seal_key_collision`·`seal_busy`·`seal_in_progress`(뒤의 둘은 `0.1.32` 까지), 버전 작업의 `version_preparing`·`job_not_cancellable`, 일괄 meta 쓰기의 `meta_write_rejected`·에셋 붙이기의 `asset_write_rejected`(둘 다 거절 목록 `rejected` 를 함께 싣는다), Draft 대량 읽기 거절의 `draft_bulk_read_disabled`, 세션 계획의 `plan_too_large`, 같은 세션 회수 겹침의 `import_in_progress`, 비밀번호 재설정 링크 실패의 `reset_link_invalid`). `code` 가 없는 오류는 필드를 싣지 않는다.
+HTTP 상태 코드와 함께 구체적인 오류 정보를 제공한다. 같은 상태 코드에 뜻이 여럿인 경우는 본문에 기계가 읽는 `code` 를 함께 싣는다(`{"error": ..., "code": ...}` — 예: Seal 의 `already_sealed`·`seal_key_collision`·`seal_busy`·`seal_in_progress`(`seal_busy` 는 `0.1.32` 까지, `seal_in_progress` 는 그 뒤로 드문 경합에만), 버전 작업의 `version_preparing`·`job_not_cancellable`·`job_cancelled`, 링크의 `from_version_required`(`needs_origin` 을 함께 싣는다)·링크 해제의 `samples_in_open_session`, 일괄 meta 쓰기의 `meta_write_rejected`·에셋 붙이기의 `asset_write_rejected`(둘 다 거절 목록 `rejected` 를 함께 싣는다), Draft 대량 읽기 거절의 `draft_bulk_read_disabled`, 세션 계획의 `plan_too_large`, 같은 세션 회수 겹침의 `import_in_progress`, 비밀번호 재설정 링크 실패의 `reset_link_invalid`). `code` 가 없는 오류는 필드를 싣지 않는다.
 - 서버 판 헤더  
 인증이 성공한 요청의 응답에는 서버 판 `X-Nexus-Version` 이 붙는다(서버 `0.1.29`+). 클라이언트가 응답한 서버의 판을 추정하지 않고 확정할 수 있게 하기 위해서이고, 인증 전에 끝난 응답(대부분의 401·인증 면제 경로)에는 판을 싣지 않는다.
 
@@ -753,7 +793,7 @@ Token 자체는 발급 후 만료까지 무효화할 수 없다. 만료 시점�
 |---|---|---|---|
 |`users.kind`|`human` / `robot`|불변|**삭제만** (로봇은 지우지 못한다)|
 
-**쓰기는 역할이 가른다.** Ingest, Sample 추가, Annotation 수정, Seal, 이름 변경, 태그, Fork, Subset 조작은 `editor` 이상이면 **다른 사람이 담당인 Dataset에도** 수행할 수 있다. `viewer`는 카탈로그에 쓸 수 없다(개인 즐겨찾기만 예외). 조회는 역할과 무관하게 인증만 통과하면 된다.
+**쓰기는 역할이 가른다.** Ingest, Sample 추가, Annotation 수정, Seal, 이름 변경, 태그(Version 경로로 쓴다 — 버전 없는 `/samples/{sample_id}/tags`·`/samples/tags` 는 410), Fork, Subset 조작, 스키마 재계산·지정 삭제는 `editor` 이상이면 **다른 사람이 담당인 Dataset에도** 수행할 수 있다. `viewer`는 카탈로그에 쓸 수 없다(개인 즐겨찾기만 예외). 조회는 역할과 무관하게 인증만 통과하면 된다.
 
 **로봇 계정의 권한에는 상한이 둘 있다.** 역할은 `editor`까지이고, dataset·Version·Sample 삭제는 되지 않는다 — CVAT 세션과 저장된 explorer 필터(subset)도 지울 수 없다(모든 삭제 경로가 같은 판정을 쓴다). 관리 엔드포인트가 `users.role = admin`으로도 열리므로 `admin` 로봇의 장수명 토큰은 그대로 관리 평면 전권이 되고, 사람 토큰이 최대 `jwt.ttlHours`인 데 비해 로봇 토큰은 최장 365일이라 그 값 하나로 sealed가 아닌 모든 dataset을 지울 수 있는 것은 장수명 자격증명에 붙일 권한이 아니다. 적재·수정·seal·이름 변경·fork는 사람과 같다.
 
@@ -782,22 +822,24 @@ Token 자체는 발급 후 만료까지 무효화할 수 없다. 만료 시점�
 
 ### 10.3 Version 불변성
 DatasetVersion의 변경 가능 여부는 권한과 별개로 Version 상태에 의해 결정된다.  
-Draft 상태에서는 Sample과 Annotation을 수정할 수 있지만, Seal 이후에는 그 Version 에 대한 Sample 추가·unlink·Annotation 수정이 409 로 차단된다(버전 삭제의 관리자 예외는 §4.6이고, Version 설명은 Sealed 에서도 고칠 수 있다 — §4.8). Sealed Version 에 하나라도 속한 Sample 은 Sample 자체의 삭제(`DELETE /samples/{sample_id}`)도 409 다. 지우도록 두면 Sealed Version 의 API 조회는 바뀌는데 CAS 스냅샷(SDK `to_df()` 가 읽는 것)은 그대로인 불일치가 생기기 때문이다.  
+Draft 상태에서는 Sample과 Annotation을 수정할 수 있지만, Seal 이후에는 그 Version 경로의 쓰기(Sample 추가·unlink·Annotation·`meta`·태그·크기 보정·골격 정의·스키마 지정 삭제)가 모두 409 로 차단된다(스키마 재계산·Subset 생성·수정은 받는다. 버전 삭제의 관리자 예외는 §4.6이고, Version 설명은 Sealed 에서도 고칠 수 있다 — §4.8). Sealed Version 에 하나라도 속한 Sample 은 Sample 자체의 삭제(`DELETE /samples/{sample_id}`)도 409 다. 지우도록 두면 Sealed Version 의 API 조회는 바뀌는데 CAS 스냅샷(SDK `to_df()` 가 읽는 것)은 그대로인 불일치가 생기기 때문이다.  
 즉, 역할은 누가 변경할 수 있는지를 결정하고, Version 상태는 변경이 가능한지를 결정한다. 두 정책은 서로 독립적으로 동작한다.
 
-**Seal이 고정하는 것은 Version의 구성과 Annotation, 그리고 그 시점 `meta`의 사본이다.** Seal은 Instance와 함께 각 Sample의 `meta`를 NDJSON 스냅샷에 기록해 CAS에 박제하고 해시로 고정한다. 그러나 DB의 `samples.meta`는 Sample 단위로 하나뿐이고 Version별로 분기되지 않는 살아 있는 값이라(Annotation만 CoW로 격리된다), API 조회(Explorer·Sample 조회)는 Sealed Version이어도 언제나 현재 값을 읽는다.
+**Seal이 고정하는 것은 Version의 구성과 Annotation, 그리고 그 Version 에서 보이는 `meta`·태그·split 이다.** `meta`·태그·split 은 Version 마다 격리된다([5.4](#54-sample-멤버십과-sample-필드)) — 한 Version 에서 고친 값은 그 Version 에만 남고, Sealed Version 을 포함한 다른 Version 의 API 조회는 바뀌지 않는다. Seal 은 그 값을 NDJSON 스냅샷과 Main Manifest 에 기록해 CAS에 박제하고 해시로 고정한다.
 
-**Seal 여부와 무관하게** `meta`를 고치는 경로가 둘 있다(Draft에서는 Annotation PUT/PATCH의 `meta`로도 고치며, `meta`는 Version 격리가 없어 그 값이 Sealed Version의 API 조회에도 보인다). 둘 다 **Sealed Version에 속한 Sample에도 적용되며 Seal 여부를 검사하지 않는다** — 잘못 기록된 `meta`는 얼려서 지킬 재현성이 아니라 결함이기 때문이다. **다만 이렇게 고친 `meta`는 API 조회에만 반영되고, 이미 Seal된 Version의 스냅샷(SDK `to_df()`가 읽는 것)에는 반영되지 않는다.** 학습 입력까지 고치려면 Fork한 뒤 다시 Seal한다.
+**Sealed Version 경로로 부르는 Sample·Annotation 쓰기는 모두 409 다** — Annotation, 일괄 meta 쓰기, 태그(단건·`tags/items`·by-filter), 이미지 크기 보정, 골격 정의 심기, 에셋 붙이기, Sample 추가·해제, 스키마 지정 삭제가 해당하고(Version 설명·Subset·스키마 재계산은 받는다), 준비 중·실패 Version 은 409 `version_preparing` 이다. 잘못 기록된 값을 고치려면 그 Sample 이 든 Draft Version 경로로 부른다. 그 값은 그 Draft 에만 반영되고, 이미 Seal 된 Version 의 조회와 스냅샷(SDK `to_df()`가 읽는 것)은 그대로다. 학습 입력까지 고치려면 Fork한 뒤 다시 Seal한다.
 
-**⑴ 이미지 크기 보정(`PATCH /samples/dimensions`)** — 기본은 빈칸 채우기다. 축별로 값이 없거나 `null`이거나 0 이하일 때만 쓰고, 기록된 축(숫자가 아닌 값 포함)은 건드리지 않는다. 두 축이 모두 기록돼 있으면 그 항목을 거부한다. 보정 대상인 `0`은 측정된 값이 아니라 구 SDK가 크기를 모를 때 자리를 채우려고 넣은 값이다. **요청 단위 `overwrite`를 주면 그 단조 규칙을 건너뛰고 기록된 값도 교체한다** — Ingest 당시의 **선언값 자체가 틀린** 경우가 있고, 그런 값은 「기록됨」이라 채우기 모드로는 구조적으로 닿지 않기 때문이다. 서버는 요청 값을 그대로 쓴다. 실측(CAS 객체 헤더 읽기)과 변경 목록 미리보기(`from` → `to`)는 SDK `ds.backfill_dims(overwrite=True, dry_run=True)`가 제공한다 — 채우기 모드의 안전망이 「정보를 지우는 경로가 없다」였다면 이 모드의 안전망은 실측값과 그 미리보기다.
+`meta` 를 고치는 경로 가운데 둘은 따로 적는다.
 
-**⑵ 골격 정의 심기(`PATCH .../samples/keypoint-info`)** — `meta.keypoint_info`를 컴포넌트 키 단위로 병합한다. CVAT skeleton이 읽는 정적 정의이고 Version별로 다를 것이 아니므로, 여기서도 Version은 대상을 고르는 데만 쓰인다.
+**⑴ 이미지 크기 보정(`PATCH /datasets/{dataset_id}/versions/{version}/samples/dimensions`)** — 그 Version 에 없거나 삭제된 Sample 은 그 항목만 `ok: false` 라 한 요청에 여러 Dataset 의 Sample 을 섞을 수 없다. 버전 없는 경로 `PATCH /samples/dimensions` 는 410 이다. 기본은 빈칸 채우기다. 축별로 값이 없거나 `null`이거나 0 이하일 때만 쓰고, 기록된 축(숫자가 아닌 값 포함)은 건드리지 않는다. 두 축이 모두 기록돼 있으면 그 항목을 거부한다. 보정 대상인 `0`은 측정된 값이 아니라 구 SDK가 크기를 모를 때 자리를 채우려고 넣은 값이다. **요청 단위 `overwrite`를 주면 그 단조 규칙을 건너뛰고 기록된 값도 교체한다** — Ingest 당시의 **선언값 자체가 틀린** 경우가 있고, 그런 값은 「기록됨」이라 채우기 모드로는 구조적으로 닿지 않기 때문이다. 서버는 요청 값을 그대로 쓴다. 실측(CAS 객체 헤더 읽기)과 변경 목록 미리보기(`from` → `to`)는 SDK `ds.backfill_dims(overwrite=True, dry_run=True)`가 제공한다 — 채우기 모드의 안전망이 「정보를 지우는 경로가 없다」였다면 이 모드의 안전망은 실측값과 그 미리보기다.
+
+**⑵ 골격 정의 심기(`PATCH .../samples/keypoint-info`)** — `meta.keypoint_info`를 컴포넌트 키 단위로 병합한다. 다른 쓰기와 같이 그 Version 에만 반영된다. `confirm` 은 필터에 걸린 수(`meta`가 객체가 아닌 Sample 포함)와 비교한다.
 
 두 경로 모두 `meta`가 JSON 객체가 아닌 행은 건드리지 않는다 — 빈 맵으로 취급해 덮으면 값을 고치는 것이 아니라 나머지 `meta`를 지우는 것이 된다.
 
-**일괄 meta 쓰기**(`PATCH .../samples/meta` — Sample 마다 다른 값, `PATCH .../samples/meta/by-filter` — 필터에 걸린 Sample 전부에 같은 값, 서버 `0.1.24`+)는 위 둘과 달리 **Sealed Version 경로로 부르면 409**다. 데이터 보호가 아니라 「Sealed Version 으로는 고치지 않는다」는 Annotation PATCH 의 규칙과 맞춘 것이다 — `meta`는 Version 격리가 없어 Draft Version 경로로 쓴 값은 같은 Sample 이 든 Sealed Version 의 API 조회에도 보이고, Seal 스냅샷은 바뀌지 않는다. 병합 규칙은 Annotation PATCH 의 `meta`와 같고(top-level 키 단위, 값 `null`은 삭제), Sample 마다 다른 값을 쓰는 경로는 한 트랜잭션이라 **하나라도 거절되면 아무것도 쓰지 않는다**(400 `meta_write_rejected`, 거절 사유는 Version 에 없는 Sample 과 `meta`가 JSON 객체가 아닌 Sample 둘).
+**일괄 meta 쓰기**(`PATCH .../samples/meta` — Sample 마다 다른 값, `PATCH .../samples/meta/by-filter` — 필터에 걸린 Sample 전부에 같은 값, 서버 `0.1.24`+)도 **Sealed Version 경로로 부르면 409**다(위 규칙). 병합 규칙은 Annotation PATCH 의 `meta`와 같고(top-level 키 단위, 값 `null`은 삭제), Sample 마다 다른 값을 쓰는 경로는 한 트랜잭션이라 **하나라도 거절되면 아무것도 쓰지 않는다**(400 `meta_write_rejected`, 거절 사유는 Version 에 없는 Sample 과 `meta`가 JSON 객체가 아닌 Sample 둘).
 
-**에셋 붙이기**(`PATCH .../samples/assets`, 서버 `0.1.29`+)도 Sealed Version 경로는 409 이고 요청 단위로 전부 또는 없음이다(400 `asset_write_rejected`). 여기에 하나가 더 있다 — **Sealed Version 에 든 Sample 의 기존 역할은 Draft 경로로도 바꾸지 않는다**(`sealed_role`). `meta` 와 달리 에셋은 Seal 스냅샷의 Main Manifest 에 위치·해시가 함께 기록되는데, Sealed Version 의 API 조회는 `sample_assets` 를 매번 읽으므로 바꾸게 두면 같은 Sealed Version 의 조회가 바뀌어 보이기 때문이다. 새 역할을 더하는 것은 된다.
+**에셋 붙이기**(`PATCH .../samples/assets`, 서버 `0.1.29`+)도 Sealed Version 경로는 409 이고 요청 단위로 전부 또는 없음이다(400 `asset_write_rejected`). 여기에 하나가 더 있다 — **Sealed Version 에 든 Sample 의 기존 역할은 Draft 경로로도 바꾸지 않는다**(`sealed_role`). `meta`·태그·split 과 달리 에셋은 Version 격리가 없어(§3.5), Seal 스냅샷의 Main Manifest 에 위치·해시가 함께 기록되는데도 Sealed Version 의 API 조회는 `sample_assets` 를 매번 읽으므로 바꾸게 두면 같은 Sealed Version 의 조회가 바뀌어 보이기 때문이다. 새 역할을 더하는 것은 된다.
 
 Annotation 편집 세션에도 같은 정책이 적용된다. Sealed Version은 편집 세션의 대상이 될 수 없으며, 세션이 열려 있는 동안 대상 Version이 Seal되면 이후 결과 회수가 차단된다.
 
@@ -842,7 +884,10 @@ Nexus는 단순한 기능 구현보다 일관된 데이터 모델과 운영 단�
 |Sample은 하나의 Dataset에만 속함	|여러 Dataset에서 Sample 공유|	데이터 소유권과 수정 책임을 단순하게 유지하기 위해|
 |Sample 멤버십은 CoW를 적용하지 않음	|멤버십도 CoW 적용	|저장 공간보다 조회 단순성과 예측 가능성을 우선하기 위해|
 |Annotation의 Version 격리(CoW)는 (Sample, 그룹) 단위이고 표식 표로 정함|	Sample 단위 격리|	Sample 단위면 그룹 하나만 고쳐도 그 Sample 의 모든 그룹을 Version 전용으로 옮겨 적어야 해서, 그룹 하나를 자주 고치는 데이터에서 저장량이 고치지 않은 그룹의 크기만큼 불어난다. 표식이 「이 Version 에서 이 그룹은 전용 행」을 명시하므로 빈 그룹도 표현된다. Snapshot·Manifest 형식은 그대로다|
-|그 Sample 을 읽는 Version 이 Draft 하나뿐이면 공유 행을 바로 고침|	언제나 Version 전용 행으로 씀|	가릴 다른 Version 이 없는데 전용 행을 만들면 저장량만 는다. 대가로 직접 고친 Sample 은 적재 때의 Annotation 으로 돌아갈 수 없다 — 다시 써야 하면 고치기 전에 Fork 한다|
+|`meta`·태그·split 을 Version 마다 칸 단위 사본으로 격리|	Sample 행 하나의 값을 모든 Version 이 공유|	한 Version 의 수정이 Sealed Version 의 API 조회까지 바꾸었다. 칸 단위라 태그만 고친 Sample 이 `meta` 전체를 복사하지 않는다|
+|다른 Version 에 든 Sample 의 링크는 출처(`from_version`)를 요구|	서버가 출처를 추측|	Version 마다 값이 다를 수 있어 어느 값을 가져올지 서버가 정할 수 없다|
+|스키마 관측을 Version 단위로 두고 Seal 이 정확히 교체|	Dataset 단위 누적|	지운 데이터의 항목이 남고 Version 마다 같은 답을 주었다|
+|그 Sample 이 링크된 Version 이 이 Draft 하나뿐이고 그 Version 에 기록이 없으면 공유 값을 바로 고침|	언제나 Version 전용 행·사본으로 씀|	가릴 다른 Version 이 없는데 전용 행·사본을 만들면 저장량만 는다. 대가로 직접 고친 Sample 은 적재 때의 Annotation·Sample 필드로 돌아갈 수 없다 — 다시 써야 하면 고치기 전에 Fork 한다|
 |교체가 옛 판과 함께 돌 수 없는 판은 Recreate 로 교체|	RollingUpdate + 쓰기 정지 안내|	옛 판이 새 형식을 잘못 읽고 Seal·Fork 하면 손상이 영구히 남는다. 자동화가 많은 환경에서 「교체 중 쓰기를 멈춘다」는 안내는 지켜지지 않을 여지가 크다|
 |Seal은 되돌릴 수 없는 단방향 작업(Unseal 없음)|Rollback 허용|	데이터 재현성을 최우선으로 보장하기 위해. 삭제는 관리자에게만 이중 확인 절차로 연다(§4.6)|
 |Snapshot 조회는 Database 정보를 우선 사용|	CAS Manifest를 매번 조회	|조회 경로를 단순하게 유지하고 불필요한 CAS 접근을 줄이기 위해|
