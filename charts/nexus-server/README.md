@@ -4,9 +4,9 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
 
 ## 문서
 
-- [아키텍처](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.31/charts/nexus-server/docs/architecture.md)
+- [아키텍처](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.32/charts/nexus-server/docs/architecture.md)
   — 도메인 모델, Version 생명주기, Annotation CoW, 스냅샷·Manifest 구조
-- [사용법](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.31/charts/nexus-server/docs/usage.md)
+- [사용법](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.32/charts/nexus-server/docs/usage.md)
   — 설치, Python SDK 연결, Dataset 적재·검색·seal 워크플로우, API 레퍼런스
 - [변경 이력](CHANGELOG.md)
   — 버전별 동작 변경·마이그레이션·설정 키. 각 항목은 해당 GitHub Release 본문과 동일하다
@@ -22,7 +22,7 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
   선택 키가 셋 더 있고, 쓰는 기능이 있을 때만 넣는다 — CVAT annotation 편집 세션의
   `NEXUS__CVAT__PASSWORD`, superuser의 `NEXUS__AUTH__SUPERUSER_PASSWORD`,
   지표의 `NEXUS__METRICS__TOKEN`(values 스위치가 없다 — 이 키가 곧 스위치다).
-  전체 목록은 [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.31/charts/nexus-server/examples/secret.example.yaml).
+  전체 목록은 [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.32/charts/nexus-server/examples/secret.example.yaml).
 - **CVAT은 선택** — 설정하지 않아도 서버는 정상 동작한다. 세션 생성·계획·결과 회수만 503이 되고 카탈로그·업로드·seal·조회는 영향이 없다.
 - **superuser도 선택** — 설정하지 않으면 관리자를 만들 부트스트랩 수단이 없다(`users.role = admin`은 백필하지 않는다). 다만 **CVAT과 달리 반쪽 설정은 조용히 꺼지지 않고 기동을 실패시킨다**(아래 참조).
 
@@ -56,7 +56,7 @@ kubectl create secret generic nexus-server -n <namespace> --dry-run=client -o ya
 kubectl apply -f sealed-nexus-server.yaml -n <namespace>
 ```
 
-평문 예시: [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.31/charts/nexus-server/examples/secret.example.yaml).
+평문 예시: [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.32/charts/nexus-server/examples/secret.example.yaml).
 Secret 이름은 `secret.existingSecret`(비우면 릴리즈 fullname, 기본 `nexus-server`)과 일치해야 한다.
 
 - `NEXUS__JWT__SECRET`은 직접 생성하는 임의의 비밀 키(로그인 JWT HS256 서명용)  
@@ -175,13 +175,13 @@ requests.post(f"{base}/api/v1/admin/datasets/transfer-owner",
 - **임시 비밀번호는 응답에 한 번만 실려 온다.** 서버 어디에도 저장되지 않으니 그 자리에서 전달하고, 받은 사람은 곧바로 `client.change_password(...)`로 바꾼다. 재설정해도 그 사람의 기존 토큰은 만료(`jwt.ttlHours`)까지 유효하다 — "잊어버림"을 푸는 도구지 "탈취 즉시 차단"이 아니다.
 - **재설정 링크는 임시 비밀번호 대신 쓰는 일회용 토큰이다.** 발급은 본문 `{"email", "expires_in_hours"}`(1~72, 필수)이고 `201` 응답에 `token` 평문이 한 번만 실린다. 사용자는 인증 없이 `POST /api/v1/auth/password-reset/inspect`(`{token}` → 이메일·만료 확인)와 `POST /api/v1/auth/password-reset/complete`(`{token, new_password}` → `204`, 로그인은 따로 한다)를 부른다. 판정 실패(없음·이미 씀·만료·대상 부적격)는 모두 `400` `reset_link_invalid` 하나이고 사유는 요청 로그의 `reset_error` 에만 남는다. 새 비밀번호가 규칙에 맞지 않으면 `code` 없는 `400` 이고 링크는 소모되지 않는다. 사용자당 살아 있는 링크는 하나이며, 다시 발급하거나 임시 비밀번호 재설정·본인 비밀번호 변경을 하면 이전 링크는 무효다. 링크를 사용자에게 전달하는 경로의 보안은 운영자 몫이다.
 - **계정 정지는 삭제가 아니다.** 이메일을 계속 점유하므로 그 주소로 재가입할 수 없고, `active: true`로 해제하면 그대로 돌아온다. 정지하면 로그인이 `403 forbidden`이 되고, **이미 발급된 토큰도 캐시 수명(`auth.revocationCacheTtlSecs`, 기본 5초) 안에 막힌다.**
-- **담당자 이전은 인가를 옮기지 않는다.** 이전 담당자도 계속 쓰고 지울 수 있다 — 역할이 `editor`이기 때문이다. 옮겨가는 것은 「다시 넘길 자격」 하나다. 담당자가 없는 dataset(`GET /datasets?unowned=true`)은 위험한 상태가 아니라 **인수 대기**이고, `editor` 이상이면 그대로 쓰고 지울 수 있다. 담당자가 있는 dataset을 넘기는 것은 담당자 본인이 한다([사용법 8.2](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.31/charts/nexus-server/docs/usage.md#82-담당자-이전)).
+- **담당자 이전은 인가를 옮기지 않는다.** 이전 담당자도 계속 쓰고 지울 수 있다 — 역할이 `editor`이기 때문이다. 옮겨가는 것은 「다시 넘길 자격」 하나다. 담당자가 없는 dataset(`GET /datasets?unowned=true`)은 위험한 상태가 아니라 **인수 대기**이고, `editor` 이상이면 그대로 쓰고 지울 수 있다. 담당자가 있는 dataset을 넘기는 것은 담당자 본인이 한다([사용법 8.2](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.32/charts/nexus-server/docs/usage.md#82-담당자-이전)).
 
 **로그인·가입·갱신·OIDC 교환의 `200` 응답은 모두 `{ token, user_id, email }`이다** — 로그인 화면이 실어 쓰는 토큰 필드는 `token`이다. 가입이 승인 대기(`auth.approvalRequired`)면 `202`이고 타입이 다르다.
 
 ### 로봇 계정 발급
 
-사람이 없는 워크로드(적재 잡·스케줄러·CI)용 계정이다. 쓰는 쪽은 [사용법 2.3](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.31/charts/nexus-server/docs/usage.md#23-로봇-토큰으로-연결)의 `nx.connect(robot_token=...)`로 붙는다.
+사람이 없는 워크로드(적재 잡·스케줄러·CI)용 계정이다. 쓰는 쪽은 [사용법 2.3](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.32/charts/nexus-server/docs/usage.md#23-로봇-토큰으로-연결)의 `nx.connect(robot_token=...)`로 붙는다.
 
 계정 생성(`POST /api/v1/admin/robots`, body `{"name": "...", "role": "editor", "display_name": "..."}`, `display_name`만 선택)의 이름은 소문자·숫자·하이픈 1~48자이고 하이픈으로 시작하거나 끝날 수 없다(`400`). **이름 검사가 `role` 검사보다 먼저 돈다** — 이름이 틀린 동안에는 `role` 오류를 볼 수 없다. 로봇의 `role`은 `editor`·`viewer`뿐이고 `admin`은 `400`이다 — `admin` 로봇의 장수명 토큰은 그대로 관리 평면 전권이 되기 때문이다. 경로의 `user_id`는 정수다(UUID를 넣으면 본문 검사 전에 `400`).
 
@@ -744,7 +744,79 @@ spec:
 
 **멈추기와 이어 돌리기.** 멈출 때는 `kubectl -n <ns> exec <pod> -- sh -c 'kill -TERM 1'` 로 신호를 보낸다(이미지에 `kill` 실행 파일이 없어 셸의 내장 명령을 쓴다) — pod 가 남아 `kubectl logs` 로 결과 JSON 의 `resume_at` 을 읽을 수 있다. Job 이나 pod 를 지우면 로그도 함께 사라진다(로그 수집기가 없을 때). 신호는 배치 사이(와 dry-run 재시도의 쉼·대기 중)에서만 보므로 `--sleep-ms` 휴식 중이면 휴식이 끝난 뒤, 시작 때 sealed 해시를 계산하는 중이면 그 계산이 끝난 뒤 멈춘다. 유예가 끝나 강제 종료돼 결과 JSON 이 없으면 마지막 `정리 진행` 줄의 `dataset_id` 와 `last_sample` 로 `--resume <dataset_id>:<last_sample>` 을 만든다. 작은 dataset 으로 먼저 확인할 때는 sealed 버전이 있는 것을 고른다 — 없으면 `verify_sealed.versions` 가 비고 대조가 일어나지 않는다. 배포 도구가 자동 sync 로 Job 을 다시 만들지 않게 하고, 로그(stdout 결과 JSON·stderr 진행 줄)를 Job 이 끝난 뒤에도 남게 한다. NetworkPolicy 가 라벨로 DB 접근을 가르면 그 라벨도 맞춘다.
 
+## 운영 인덱스(ops-indexes)
+
+`nexus-server ops-indexes` 는 기동 마이그레이션에 넣기에는 큰 표의 인덱스를 점검하고 `CREATE INDEX CONCURRENTLY` 로 만든다. 대상은 아래 둘이고 이 순서로 하나씩 돈다(이름은 예약이다 — 마이그레이션이 쓰지 않는다). HTTP 서버로 뜨지 않고 마이그레이션도 돌리지 않으며 DB(`database.url`)에만 접속한다.
+
+| 키 | 인덱스 | 효과 |
+|---|---|---|
+| `deleted-sample` | `idx_samples_id_deleted ON samples (sample_id) INCLUDE (is_deleted)` | 아래 「샘플 삭제 확인 인덱스(deleted-sample-index)」와 같은 인덱스 |
+| `instance-version` | `idx_instances_dataset_version ON instances (dataset_version_id, sample_id) WHERE dataset_version_id IS NOT NULL` | 버전 id 로만 고르는 문장 — fork 의 복제 후보 · 복제, 버전 삭제의 버전 행 DELETE 와 `instances` 외래키 검사, explorer 의 인스턴스 필터 — 이 표 크기가 아니라 그 버전의 행 수에 비례한다 |
+
+**서버 문장은 인덱스를 전제로 하지 않는다** — 인덱스가 생기면 플래너가 그때부터 쓰고 파드를 다시 띄울 필요가 없다. 없는 DB 의 동작은 그대로다(느릴 뿐이다). `instances` 에는 `dataset_version_id` 가 앞 열인 인덱스가 없어, 위 문장들이 `(sample_id, dataset_version_id)` 인덱스 전체를 읽는다. 표가 클수록 fork 와 버전 삭제가 그만큼 느려지는 것이 이 인덱스가 필요한 신호다. 서버는 기동 때 인덱스마다 상태 한 줄을 남긴다(`삭제 확인 인덱스 상태` · `버전 인덱스 상태`, `state=…` — 값은 `absent` · `invalid` · `valid` · `building` · `mismatched`).
+
+```bash
+nexus-server ops-indexes                                   # 점검(둘 다) — 상태·크기·진행 중 vacuum·가장 오래된 xmin·freeze 나이
+nexus-server ops-indexes --apply                           # 없거나 INVALID 인 것을 차례로 만든다
+nexus-server ops-indexes --apply --only instance-version   # 하나만(여러 번 줄 수 있다)
+```
+
+**만들기의 비용.** 표 전체를 두 번 읽는다. 그동안 적재·조회는 막히지 않는다. 시간은 heap 크기에 비례한다 — 로컬 측정은 heap 13 ~ 14 GB 에 27 ~ 45 초였고, 수백 GB 표는 수십 분, 디스크가 차갑거나 경합이 있으면 몇 시간이다. `instance-version` 은 버전 행(`dataset_version_id` 가 NULL 이 아닌 행)만 담으므로 크기는 버전 행 수로 정해진다(로컬 버전 행 27.5 만에 2.4 MB, 만든 뒤의 크기는 점검 출력에 나온다).
+
+**조건.**
+
+- **만드는 동안 그 DB 전체에서 vacuum 이 dead tuple 을 치우지 못한다** — 만들기가 스냅샷을 쥐어 xmin 지평선을 묶는다. 그래서 만들기와 INVALID 정리 단계는 `compact-instances` 의 잠금을 잡는다. `compact-instances --apply` 가 돌고 있으면 그 단계를 하지 않고(종료 2, `compaction_running`), 이 명령이 만드는 동안에는 `compact-instances --apply` 가 시작하지 않는다(종료 1). 이미 유효한 인덱스는 잠금 없이 끝난다. `deleted-sample-index` 와도 같은 잠금으로 서로 막는다(`lock_held`).
+- 앞선 트랜잭션이 끝나기를 기다리는 단계가 있다 — 주 서버의 긴 문장·REPEATABLE READ 트랜잭션(`pg_dump` 등)이 있으면 그 단계에서 선다. 점검 출력의 `oldest_xmin` 을 보고 시작한다. seal 의 메인 manifest 단계도 REPEATABLE READ 스냅샷을 쥔다(「seal 의 DB·cas 조건」).
+- **autovacuum 은 시작을 막지 않는다.** 대상 표의 표 잠금을 쥔 세션 가운데 autovacuum worker 는 빼고 센다. 만들기의 잠금 요청이 그 autovacuum 을 `deadlock_timeout` 뒤 취소하고(PostgreSQL 로그에 `canceling autovacuum task`, 그때까지의 진행은 버려진다), 그 autovacuum 은 만들기가 끝난 뒤 처음부터 다시 돈다. **wraparound 방지 autovacuum 은 취소되지 않는다** — 서버의 DB 사용자가 그 세션의 질의를 볼 수 있으면(superuser · `pg_read_all_stats` 등) 그 표시를 보고 시작하지 않고(`vacuum_in_progress`), 볼 수 없으면 보통 autovacuum 과 가르지 못해 시작한 뒤 그 뒤에서 기다린다(진행 줄에 잠금 대기가 찍힌다). 어느 쪽이든 점검 출력의 `freeze.relfrozenxid_age` 가 `freeze.autovacuum_freeze_max_age` 에 가까우면 VACUUM 을 먼저 마친 뒤 돌린다. 수동 VACUUM · ANALYZE · 다른 인덱스 작업이 그 표를 쥐고 있으면 시작하지 않는다(`vacuum_in_progress`).
+- `instance-version` 은 술어 있는 부분 인덱스라, 만드는 동안 같은 DB 의 다른 `CREATE INDEX CONCURRENTLY` · `REINDEX CONCURRENTLY` 가 이 만들기를 기다린다.
+- INVALID 정리의 `DROP INDEX CONCURRENTLY` 는 `lock_timeout` 3 초다. 대상 표를 쓰는 3 초 넘는 트랜잭션이 있으면 `table_lock_busy` 로 끝난다 — `instances` 는 seal 이 최대 약 2 분 쥐므로 `instances` 의 INVALID 정리는 한가한 때 돌린다. `deadlock_timeout` 이 3 초 이상이면 autovacuum 을 취소하기 전에 `table_lock_busy` 로 끝난다.
+- `--apply` 는 복제본이면 시작하지 않는다. 동시 실행을 세션 advisory lock 으로 막으므로 pgbouncer transaction 모드를 거치면 그 잠금이 성립하지 않는다. 서버 교체 중(롤링·Recreate)에는 돌리지 않는다. 여러 nexus 가 함께 쓰는 DB 에는 `--apply` 하지 않는다(그 DB 를 쓰는 다른 서버의 계획도 바뀐다).
+
+**순서.**
+
+1. 점검(`args: ["ops-indexes"]`) — 단계마다 상태·크기·진행 중 vacuum·`oldest_xmin`·`freeze`.
+2. 쓰기가 적은 시간에 `--apply`(하나씩 하려면 `--only`). `compact-instances --apply` 가 끝난 뒤에 돌린다.
+3. 기동 로그의 상태 줄 또는 다시 점검해 `valid` 를 확인한다.
+
+**결과와 종료 코드.** 결과는 stdout 의 JSON 하나 `{server_version, mode, steps: [{key, index, skipped, freeze, report}], elapsed_ms}` 이고 `report` 는 `deleted-sample-index` 의 결과와 같은 필드다. 진행 줄은 stderr 다. `--help` 가 사용법·운영 안내·종료 코드 표를 낸다.
+
+- 오류(종료 1)는 그 자리에서 전체를 끝낸다.
+- 기다리면 풀리는 사유(`lock_held` · `building` · `vacuum_in_progress` · `table_lock_busy` · `compaction_running`)나 신호로 멈추면 뒤 단계는 하지 않고 `skipped: true` 로 싣는다.
+- `mismatched` · `create_failed` · `not_valid_after_create` 는 그 단계만 실패로 적고 다음 단계로 간다.
+- 종료 코드는 단계 순서로 처음 0 이 아닌 값이다 — 0 정상(점검을 마침·만듦·이미 유효함), 1 결과 JSON 없이 끝남, 2 아무것도 하지 않았거나 만들지 못함, 4 신호로 만들기를 취소함. `reason` 의 뜻은 아래 「샘플 삭제 확인 인덱스」의 표와 같고, `compaction_running` 이 더해진다(`compact-instances --apply` 가 끝난 뒤 다시).
+
+SIGTERM 을 받으면 진행 중인 만들기를 취소하고 4 로 끝난다. 남은 INVALID 인덱스는 다음 `--apply` 가 정리한다. **CLI 가 신호를 보내기 전에 죽으면(kill -9 등) DB 의 만들기는 끝까지 돌 수 있다** — `pg_stat_progress_create_index` 로 보고 필요하면 `pg_cancel_backend` 로 멈춘다(그동안 다음 `--apply` 는 `lock_held`). 손으로 지울 때는 `DROP INDEX CONCURRENTLY` 를 쓴다(비동시 `DROP INDEX` 는 그 표에 AccessExclusiveLock).
+
+**Job 예시.** 설정은 DB 주소(`NEXUS__DATABASE__URL`, Secret)만 읽는다. 볼륨은 필요 없다.
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nexus-ops-indexes
+spec:
+  backoffLimit: 0            # 실패하면 사유(reason)를 보고 손으로 다시 돌린다
+  template:
+    spec:
+      restartPolicy: Never
+      terminationGracePeriodSeconds: 60   # 신호를 받으면 만들기를 취소하고 끝낸다
+      containers:
+        - name: index
+          image: <Deployment 와 같은 이미지(digest)>   # 이 명령이 없는 이전 이미지는 인자를 무시하고 서버로 떠 끝나지 않는다
+          args: ["ops-indexes", "--apply", "--only", "instance-version"]
+          env:
+            - name: NO_COLOR
+              value: "1"
+          envFrom:
+            - secretRef:
+                name: <nexus-server Secret>   # NEXUS__DATABASE__URL 을 담은 Secret
+```
+
+만들기는 표 크기에 따라 몇 시간 걸릴 수 있다. Job 에 `activeDeadlineSeconds` 를 걸면 그 시간에 신호를 받아 취소된다. 로그(stdout 결과 JSON·stderr 진행 줄)를 Job 이 끝난 뒤에도 남게 한다.
+
 ## 샘플 삭제 확인 인덱스(deleted-sample-index)
+
+`ops-indexes --only deleted-sample`(위 「운영 인덱스(ops-indexes)」)과 같은 인덱스를 만드는 종전 명령이다. 인자 · 결과 JSON · 종료 코드는 그대로이고 `compact-instances` 의 잠금은 보지 않는다(`compact-instances --apply` 와 겹치지 않게 하는 것은 운영자가 지킨다). 새로 만들 때는 `ops-indexes` 를 쓴다.
 
 `nexus-server deleted-sample-index` 는 포함 인덱스 `idx_samples_id_deleted ON samples (sample_id) INCLUDE (is_deleted)` 를 점검하고 만든다. 개수·목록 경로(facet 개수, explorer 개수와 일괄 쓰기의 `confirm` 비교, subset 해소, 버전 샘플 수, seal 의 샘플 수 기록, dataset·버전 통계)는 샘플마다 지워졌는지(`is_deleted`)를 보려고 `samples` 힙을 읽는데, 이 인덱스가 있으면 플래너가 인덱스만 읽어 판정한다. **서버의 문장은 바뀌지 않는다** — 인덱스가 생기면 그때부터 쓰이고 파드를 다시 띄울 필요가 없으며, 인덱스가 없어도 결과는 같다(느릴 뿐이다). HTTP 서버로 뜨지 않고 마이그레이션도 돌리지 않으며 DB(`database.url`)에만 접속한다. 서버는 기동 때 `삭제 확인 인덱스 상태 state="absent" index="idx_samples_id_deleted"` 모양의 한 줄을 남긴다(`state` 는 `absent`·`invalid`·`valid`·`building`·`mismatched`, 값에 따옴표가 붙는다).
 
@@ -756,7 +828,7 @@ spec:
 
 - **만드는 동안 그 DB 전체에서 vacuum 이 dead tuple 을 치우지 못한다** — 만들기가 스냅샷을 쥐어 xmin 지평선을 묶는다. `compact-instances --apply` 와 겹쳐 돌리지 않는다(그쪽이 지운 행이 그동안 남는다).
 - 앞선 트랜잭션이 끝나기를 기다리는 단계가 있다 — 주 서버의 긴 문장·REPEATABLE READ 트랜잭션(`pg_dump` 등)이 있으면 그 단계에서 선다. 복제본의 질의와 `hot_standby_feedback` 은 기다리게 하지 않는다. 점검 출력의 `oldest_xmin` 을 보고 시작한다.
-- `--apply` 는 복제본이면 시작하지 않는다. 동시 실행을 세션 advisory lock 으로 막으므로 pgbouncer transaction 모드를 거치면 그 잠금이 성립하지 않는다. `samples` 에 vacuum·ANALYZE 같은 표 잠금(`ShareUpdateExclusiveLock`)을 쥔 다른 세션이 있으면 시작하지 않는다 — anti-wraparound vacuum 은 기다리는 쪽이 있어도 물러나지 않아 만들기가 그 뒤에 몇 시간 설 수 있다. 이 판정은 권한에 따라 가려지는 진행 뷰가 아니라 잠금으로 한다.
+- `--apply` 는 복제본이면 시작하지 않는다. 동시 실행을 세션 advisory lock 으로 막으므로 pgbouncer transaction 모드를 거치면 그 잠금이 성립하지 않는다. `samples` 에 수동 VACUUM·ANALYZE 같은 표 잠금(`ShareUpdateExclusiveLock`)을 쥔 다른 세션이 있으면 시작하지 않는다. autovacuum worker 는 빼고 센다 — 만들기의 잠금 요청이 그 autovacuum 을 `deadlock_timeout` 뒤 취소한다(위 「운영 인덱스」의 조건과 같다). anti-wraparound autovacuum 은 취소되지 않는다 — 그 질의를 볼 수 있는 DB 사용자면 `vacuum_in_progress` 로 시작하지 않고, 볼 수 없으면 시작한 뒤 그 뒤에 몇 시간 설 수 있다. 이 명령의 점검 출력에는 freeze 나이가 없으므로 `ops-indexes` 점검의 `freeze` 로 본다. 이 판정은 권한에 따라 가려지는 진행 뷰가 아니라 잠금으로 한다.
 - 여러 nexus 가 함께 쓰는 DB 에는 `--apply` 하지 않는다(그 DB 를 쓰는 다른 서버의 계획도 바뀐다).
 
 **순서.**
@@ -771,8 +843,8 @@ spec:
 |---|---|---|
 | `lock_held` | 다른 실행이 진행 중 | 그 실행이 끝난 뒤 점검 |
 | `mismatched` | 같은 이름의 다른 정의(다른 표·열·정렬 방향·opclass 등) | 손대지 않는다 — 그 인덱스를 확인해 지운 뒤 다시 |
-| `building` | INVALID 인덱스가 있고 다른 세션이 `samples` 에 표 잠금을 쥠(누가 만드는 중이거나 vacuum·ANALYZE 중) | 끝난 뒤 다시 |
-| `vacuum_in_progress` | 다른 세션이 `samples` 에 표 잠금을 쥠(vacuum·ANALYZE 등) | 끝난 뒤 다시 |
+| `building` | INVALID 인덱스가 있고 다른 세션이 `samples` 에 표 잠금을 쥠(누가 만드는 중이거나 수동 vacuum·ANALYZE 중, autovacuum 은 빼고 센다) | 끝난 뒤 다시 |
+| `vacuum_in_progress` | 다른 세션이 `samples` 에 표 잠금을 쥠(수동 vacuum·ANALYZE·다른 인덱스 작업 등, autovacuum 은 빼고 센다) | 끝난 뒤 다시 |
 | `table_lock_busy` | 실패해 남은 INVALID 인덱스를 3 초 안에 지우지 못함 — `samples` 를 쓰는 3 초 넘는 문장·트랜잭션이 있다 | 한가한 때 다시(인덱스는 INVALID 그대로 남아 다시 해도 안전하다) |
 | `create_failed` | 만들기 실패 | stderr 의 오류를 보고 다시 — 남은 INVALID 는 다음 `--apply` 가 정리 |
 | `not_valid_after_create` | 만든 뒤에도 유효하지 않음 | 점검 출력 확인 |
@@ -836,7 +908,7 @@ seal 은 메인 manifest(샘플마다 에셋 참조를 적은 객체)를 `REPEAT
 - **메인 manifest 는 `Content-Length` 없는 chunked PUT 이다**(cas `0.1.4`·`0.1.8`·`0.1.12`·`0.1.15`·`0.1.16`·`0.1.35` 가 바이트 그대로 받는 것을 확인했다). nexus 와 cas 사이에 프록시가 있으면 chunked 요청 본문을 받아야 하고, 요청 본문을 모아 두었다 보내는 프록시면 응답을 기다리는 시간이 그만큼 길어진다(서버는 본문을 다 보낸 뒤 `300 초 + 1 초/MiB` 까지 기다린다).
 - **cas 호출에는 서버의 시한이 있다**(설정 키가 아니다). 연결 10 초, HEAD · DELETE · 버킷 만들기 · 목록 · GET 응답 헤더 150 초, 메인 manifest 의 HEAD 30 초, 본문을 다 가진 PUT(샤드 등) `300 초 + 1 초/MiB`, GET 본문은 조각 사이 60 초다. 150 초는 cas 의 요청 상한(cas 차트 `config.requestTimeoutSecs`, 기본 120 초)보다 길게 잡은 값이라, cas 가 살아 있으면 cas 의 응답(408 · 503)이 먼저 온다 — 그 값을 150 초 이상으로 올리거나 `0`(끔)으로 둔 cas 에서는 이 시한이 먼저 걸린다. 시한에 걸린 호출은 다른 cas 오류와 같다 — 요청 안에서 기다린 호출은 `502 cas error: …`, seal 은 실패하고 버전은 draft 로 남으며, 샘플·버전 삭제의 cas 정리(커밋 뒤)는 삭제를 성공시키고 `nexus_cas_delete_failures_total` 을 올린다. PUT 은 `300 초 + 객체 크기(MiB) × 1 초` 안에 끝나지 않으면 끊긴다(1 GiB 면 평균 약 0.77 MiB/s 보다 느릴 때). 메인 manifest 의 PUT 은 이 시한이 아니라 이 절 첫 항목의 시한을 쓴다.
 - **DB 역할의 `idle_in_transaction_session_timeout` 은 5 분 이상이거나 `0` 이어야 한다.** 스냅샷 커넥션은 `FETCH` 사이·기록·cas 확인 동안 `idle in transaction` 이고, 끊기면 그 seal 이 실패한다(잠금 커넥션은 끊겨도 seal 이 끝까지 가는 것과 다르다). 스냅샷 트랜잭션의 문장(`DECLARE`·`FETCH`·`MOVE`)에는 서버가 `statement_timeout` 300 초를 건다 — 첫 `FETCH` 가 버전 전체를 정렬하므로 큰 버전에서 수 초~수십 초 걸린다.
-- **스냅샷이 열린 동안** `samples`·`dataset_version_samples`·`sample_assets`·`version_sample_fields` 에 AccessShareLock 을 쥐고 DB 전체의 vacuum 지평선을 붙든다. 그 시간은 두 패스 + cas 로 보내는 시간이다(로컬 측정 150 만 샘플 12.8 초, cas 가 느리면 그만큼 길다). 그동안 `deleted-sample-index --apply`(`CREATE INDEX CONCURRENTLY`)는 기다리고, 그 표를 바꾸는 마이그레이션이 든 판으로 올리면 기동이 seal 이 끝날 때까지 늦는다. seal 의 마지막 트랜잭션은 그 버전의 스키마 관측 표(`version_schema_state`·`version_schema_obs_*`)를 교체하므로, 그 표를 바꾸는 마이그레이션이 든 판으로 올릴 때도 같다.
+- **스냅샷이 열린 동안** `samples`·`dataset_version_samples`·`sample_assets`·`version_sample_fields` 에 AccessShareLock 을 쥐고 DB 전체의 vacuum 지평선을 붙든다. 그 시간은 두 패스 + cas 로 보내는 시간이다(로컬 측정 150 만 샘플 12.8 초, cas 가 느리면 그만큼 길다). 그동안 `ops-indexes --apply`·`deleted-sample-index --apply`(`CREATE INDEX CONCURRENTLY`)는 기다리고, 그 표를 바꾸는 마이그레이션이 든 판으로 올리면 기동이 seal 이 끝날 때까지 늦는다. seal 의 마지막 트랜잭션은 그 버전의 스키마 관측 표(`version_schema_state`·`version_schema_obs_*`)를 교체하므로, 그 표를 바꾸는 마이그레이션이 든 판으로 올릴 때도 같다.
 - **seal 도중의 쓰기는 한 샤드 안에서 섞일 수 있다.** 샤드 하나의 샘플·annotation 을 묶음마다 다른 문장으로 읽기 때문이다. seal 하는 버전에 쓰지 않는 것이 전제다(서버가 막지는 않는다).
 - **커넥션.** 메인 manifest 단계의 seal 은 잠금·스냅샷 둘을 쥔 채 객체 기록용 셋째를 꺼낸다. `seal.maxConcurrent` 가 2 이상이고 `database.maxConnections` 가 그 3 배보다 작으면 seal 들이 셋째를 서로 기다리다 기록 시한(약 30 초) 뒤 실패할 수 있어 기동 로그에 경고가 남는다.
 

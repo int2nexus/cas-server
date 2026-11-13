@@ -81,6 +81,88 @@ nexus-server 는 마이그레이션이 바이너리에 임베드되어 **기동 
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.3.32
+
+image: `int2jieun/nexus-server:0.1.37` → `int2jieun/nexus-server:0.1.38`
+digest: `sha256:874e53a127ba0b169d6481310dd54e8460073603f2a54cd58fc8b7451e8b993e`
+
+**동작 변경** — 여섯입니다. 1 은 새 운영 명령, 2 · 3 은 문장의 계획, 4 는 CVAT 세션, 5 · 6 은 버전 작업 줄과 운영 명령의 잠금입니다.
+그 밖의 호출은 `0.1.37` 과 같습니다.
+
+1. **운영 인덱스 명령 `nexus-server ops-indexes`.** 큰 표의 인덱스를 운영자가 고른 시각에 `CREATE INDEX CONCURRENTLY` 로 점검하고
+   만듭니다. 기본은 점검이고 `--apply` 가 만듭니다. 대상은 둘이고 이 순서로 하나씩 돕니다(`--only <키>` 로 고릅니다).
+
+   ```
+   deleted-sample    idx_samples_id_deleted          ON samples (sample_id) INCLUDE (is_deleted)
+   instance-version  idx_instances_dataset_version   ON instances (dataset_version_id, sample_id) WHERE dataset_version_id IS NOT NULL
+   ```
+
+   - `deleted-sample` 은 `deleted-sample-index` 명령이 만들던 것과 같은 인덱스입니다. 그 명령은 인자 · 결과 JSON · 종료 코드가 그대로
+     남습니다.
+   - `instance-version` 은 새 인덱스입니다. `instances` 에는 `dataset_version_id` 가 앞 열인 인덱스가 없어, 버전 id 로만 고르는 문장 —
+     fork 의 복제 후보 · 복제, 버전 삭제의 버전 행 DELETE 와 `instances` 외래키 검사, explorer 의 인스턴스 필터 — 이 `(sample_id,
+     dataset_version_id)` 인덱스 전체를 읽었습니다(PostgreSQL 18 의 skip scan 이지만 앞 열 값이 많아 전체 읽기와 같습니다). 인덱스가
+     생기면 이 문장들이 표 크기가 아니라 그 버전의 행 수에 비례합니다.
+   - **서버 문장은 인덱스를 전제로 하지 않습니다.** 인덱스가 생기면 플래너가 쓰고 파드를 다시 띄울 필요가 없습니다. 만들지 않은 DB 에서
+     위 문장들의 결과와 계획은 `0.1.37` 과 같습니다(2 의 fork 복제 문장 둘은 예외 — 결과는 같고 계획만 바뀝니다).
+   - 기동 로그에 인덱스마다 상태 한 줄이 남습니다(`삭제 확인 인덱스 상태` · `버전 인덱스 상태`, `state=…`).
+   - 절차 · 조건 · 종료 코드 · Job 예시는 README 「운영 인덱스(ops-indexes)」입니다.
+2. **fork 의 복제 문장 둘.** 한 문장이 「샘플 목록이 있으면 그 샘플만, 없으면 전부」를 함께 받던 모양이라, prepared statement 가 generic
+   plan 으로 넘어가면 샘플 목록을 인덱스 조건으로 쓰지 못하고 원본 버전의 행 전부를 읽었습니다. 복제 묶음 문장은 늘 목록이 있어 그
+   갈래를 걷었고, 복제 후보 문장은 목록이 있을 때와 없을 때를 다른 문장으로 나눴습니다. 결과는 같고, 1 의 인덱스와 무관합니다. 로컬
+   합성 DB 에서 묶음 4,000 행의 generic plan 이 1,265 ms 에서 1.8 ms 였습니다.
+3. **facet 개수(`POST …/facets/counts`).** 개수를 세는 트랜잭션에서 JIT 을 끕니다. 태그 개수는 샘플마다 태그를 하나로 줄인 뒤 셉니다
+   (`count(DISTINCT 샘플)` 대신 `count(*)` — 한 샘플의 태그 배열에 같은 태그가 둘 있어도 종전처럼 한 장입니다). 개수는 종전과 같습니다.
+   샘플 약 54 만 개를 링크한 로컬 버전에서 태그 개수의 집계 문장이 1.20 초에서 0.83 초였습니다(JIT 컴파일 약 0.26 초와 중복 제거
+   정렬이 디스크로 넘친 몫). 3 초 한도(`exact=true` 는 50 초)는 그대로입니다.
+4. **CVAT 세션을 연 사람의 이메일.**
+   - 세션 목록(`GET /annotation-sessions`, `GET /datasets/{id}/versions/{v}/annotation-sessions`)과 단건(`GET /annotation-sessions/{id}`)
+     응답에 `created_by_email` 이 더해집니다. **만든 본인과 관리자(`role=admin` 또는 superuser)에게만 싣고**, 그 밖의 사람에게는 키가
+     없습니다(`null` 이 아닙니다). 계정이 지워졌어도 없습니다. 버전 작업의 `requested_by_email` 과 같은 규칙입니다.
+   - 이 이미지에서 여는 세션의 CVAT project 설명이 `nexus session <session_id> (dataset <dataset_id>, version <version>, opened by <이메일>)`
+     입니다. 앞부분은 종전과 같습니다. **이 이메일은 그 project 를 볼 수 있는 CVAT 사용자 모두에게 보입니다.** 만들 때 한 번 쓰므로 계정
+     이메일이 나중에 바뀌어도 그대로이고, 이메일을 읽지 못하면 `, opened by …` 없이 엽니다. 이미 열린 세션의 설명은 바뀌지 않습니다.
+5. **버전 작업 줄의 일꾼이 줄을 먼저 봅니다.** 파드의 일꾼은 집을 작업을 찾기 전에 자리(`seal.maxConcurrent`)를 먼저 잡았습니다. 그
+   조회 사이에 seal · 새 버전 만들기 요청이 들어오면 줄이 비었는데도 자리가 없다고 보고 `202`(대기)로 답했습니다 — 작업은 곧 일꾼이
+   집어 끝나지만, 바로 끝났어야 할 요청이 대기 응답을 받았습니다. 이제 줄이 비었으면 자리를 잡지 않으므로 그 요청은 `200`(seal) ·
+   `201`(새 버전)입니다. 줄에 대기가 있을 때의 동작은 같습니다.
+6. **운영 명령의 잠금.**
+   - `ops-indexes --apply` 의 만들기 · 실패해 남은 INVALID 정리 단계는 `compact-instances` 의 잠금을 잡습니다. `compact-instances --apply`
+     가 돌고 있으면 그 단계를 하지 않고 종료 2 · `reason: compaction_running` 이고, `ops-indexes` 가 만드는 동안에는
+     `compact-instances --apply` 가 종료 1 입니다(그 오류 문구에 `ops-indexes` 가 실립니다). 이미 유효한 인덱스는 잠금 없이 끝납니다.
+     `deleted-sample-index` 와 `ops-indexes` 는 같은 잠금으로 서로 막습니다(`lock_held`).
+   - `deleted-sample-index` · `ops-indexes` 의 「대상 표에 표 잠금을 쥔 다른 세션」 판정에서 **autovacuum worker 를 뺍니다.**
+     `0.1.37` 까지는 보통 autovacuum 이 그 표를 훑는 동안에도 `vacuum_in_progress` 로 시작하지 않았습니다. 이제 시작하고, 만들기의 잠금
+     요청이 그 autovacuum 을 `deadlock_timeout` 뒤 취소합니다(PostgreSQL 로그에 `canceling autovacuum task`, 그 autovacuum 은 만들기가 끝난
+     뒤 처음부터 다시 돕니다). wraparound 방지 autovacuum 은 취소되지 않습니다. 서버의 DB 사용자가 그 세션의 질의를 볼 수 있으면(superuser ·
+     `pg_read_all_stats` 등) 그 표시를 보고 종전처럼 `vacuum_in_progress` 로 시작하지 않고, 볼 수 없으면 보통 autovacuum 과 가르지 못해
+     시작한 뒤 그 뒤에서 기다립니다(진행 줄에 잠금 대기가 찍힙니다). 어느 쪽이든 점검 출력의 `freeze.relfrozenxid_age` 가
+     `freeze.autovacuum_freeze_max_age` 에 가까우면 VACUUM 을 먼저 마칩니다. 수동 VACUUM · ANALYZE · 다른
+     인덱스 작업은 종전처럼 `vacuum_in_progress` 입니다.
+
+**마이그레이션** — 없음. 롤백 안전(이미지 `0.1.37` 로 되돌리면 2 ~ 6 이 이전으로 돌아갑니다. `0.1.37` 이미지는 `ops-indexes` 인자를 모르고 무시해
+**보통 서버로 기동하고 끝나지 않으므로** 되돌린 동안 그 Job 을 돌리지 않습니다. 1 로 만든 인덱스는 남고 `0.1.37` 의 플래너도 그것을 쓸 수 있습니다 — 지우려면 `DROP INDEX CONCURRENTLY idx_instances_dataset_version`. 4 로 연
+세션의 CVAT project 설명은 CVAT 에 남은 그대로입니다).
+**호환성** — `0.1.37` 파드와 섞여 돌아도 됩니다(스키마가 같습니다). 교체는 RollingUpdate 로 합니다 — `0.3.31` 때 `strategy.type` 을
+`Recreate` 로 둔 채면 교체 동안 서비스가 끊기므로 `0.3.31` 운영 조치 7 처럼 되돌린 뒤 올립니다. 교체 동안 옛 파드가 연 세션에는
+`opened by` 가 붙지 않고, 옛 파드의 응답에는 `created_by_email` 이 없습니다.
+**설정 키** — 없음
+**운영 조치** — 없음(필수 아님). `instances` 가 큰 DB 에서 fork · 버전 삭제가 느리면 이 이미지로 올린 뒤 README 「운영 인덱스(ops-indexes)」의
+순서로 `instance-version` 을 만듭니다. Job 의 이미지는 이 이미지여야 합니다 — 이전 이미지에 `ops-indexes` 를 주면 인자를 무시하고
+보통 서버로 기동해 끝나지 않습니다. 만드는 동안 DB 전체의 vacuum 지평선이 묶이므로 쓰기가 적은 시간에 돌립니다.
+**문서 정정** — 셋입니다.
+1. `0.3.31` 동작 변경 10 의 「그 버전에 처음 쓰거나(…) … `observed` 가 됩니다」와 운영 조치 6 의 「쓰기를 받은 버전은 `observed` 가
+   정상입니다」는 실제보다 넓게 적혀 있었습니다. legacy 버전이 `observed` 가 되는 것은 그 버전에 **관측(그룹 · 라벨 · 컴포넌트 · meta
+   필드)을 기록하는 쓰기**가 있을 때와, 링크 · 샘플 가져오기의 대상이 될 때, 재계산 · 지정 삭제를 할 때입니다. 아래 쓰기는 legacy 를
+   그대로 둡니다 — 태그 쓰기(단건 · `…/samples/tags/items` · by-filter), meta 키를 지우기만 하는(값이 모두 `null`) meta 쓰기, 값이 이미
+   같아 아무것도 쓰지 않은 meta 쓰기 · 크기 보정, 저장된 값과 같은 annotation `PUT` · `PATCH`, 에셋 붙이기, 버전에서 빼기, 샘플 삭제.
+   legacy 로 남아도 `/schema` 의 답은 같습니다(dataset 단위 관측으로 답하고, 그 표에는 새로 쓰지 않으며, `/schema` 에는 태그가 들지
+   않습니다). `0.3.31` 패키지와 릴리스 본문의 문구는 바뀌지 않으므로 이 항목이 정정입니다.
+2. docs/usage.md 의 facet 개수 「제한 시간(기본 3초, `exact=true` 50초) 안에 못 셌다」는 한도가 요청 전체에 걸리는 것처럼 읽혔습니다.
+   한도는 개수를 세는 집계 문장 하나에 걸립니다 — 그 앞에서 다른 필드의 annotation 필터에 걸린 샘플을 고르는 단계와 DB 커넥션을
+   기다리는 시간(최대 30 초)은 한도 밖이라, 응답이 3 초보다 훨씬 늦게 와도 `computed: true` 일 수 있습니다. 문구를 그렇게 고쳤습니다.
+3. OpenAPI 에 필터 일괄 태그(`POST` · `DELETE /datasets/{id}/versions/{v}/samples/tags`)의 `403` · `404` · `409` 응답을 실었습니다. 동작은 같습니다.
+
 ## 0.3.31
 
 image: `int2jieun/nexus-server:0.1.36` → `int2jieun/nexus-server:0.1.37`
@@ -260,7 +342,7 @@ digest: `sha256:e8ef4c61380c97f4d8683f5a09ae824de872aee4e528501459fc4a575df72f7e
   `autovacuum_analyze_scale_factor = 0.01`) — 대량 사본 쓰기 직후 통계가 비어 계획이 나빠지지 않게 합니다.
 - **예상 소요시간** — 행 수와 무관하게 표 생성만입니다(수 초 이내, 샘플 150 만 DB 에서 56 ms).
 - **롤백** — 사본·관측이 생긴 뒤에는 데이터를 잃습니다. 절차와 SQL 은 차트 README
-  [되돌리기 › 039 가 적용된 DB](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.31/charts/nexus-server/README.md#039-가-적용된-db) 이고, **파드를 0 개로 내린 뒤** SQL 을 돌리고 이전 판 리비전으로
+  [되돌리기 › 039 가 적용된 DB](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.32/charts/nexus-server/README.md#039-가-적용된-db) 이고, **파드를 0 개로 내린 뒤** SQL 을 돌리고 이전 판 리비전으로
   `helm rollback` 합니다(파드를 0 개로 내리므로 rollback 전에 Recreate 로 바꿀 필요는 없습니다. helm 4 면 rollback 뒤 README 되돌리기 4 대로 RollingUpdate 로
   되돌립니다). 파드가 떠 있는 채 SQL 을 돌리면 그 파드가 재시작하며
   039 를 다시 적용합니다. `0.1.33` ~ `0.1.36` 으로 되돌릴 때는 039 만 걷습니다. 잃는 것과 미리 떠 둘 것(사본 표 내보내기)은 그 절에

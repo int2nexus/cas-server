@@ -251,7 +251,9 @@ Fork 시 부모 Version 의 버전 행·표식·사본 가운데 자식에 링�
 
 운영자가 실행하는 서브커맨드 `nexus-server compact-instances`(서버 `0.1.30`+, 기본 dry-run, 차트 README 「annotation 버전 행 정리(compact-instances)」)는 어느 Version 이 읽는 내용도 바꾸지 않는 범위에서 행을 줄인다 — 읽히지 않는 버전 행과 공유 행과 같은 버전 행은 지우고, 그 Sample 을 읽는 Version 이 링크된 하나뿐이면 버전 행을 공유 행으로 옮기며, 읽는 모든 Version 이 표식으로 덮은 공유 행은 지운다(공유 행을 지우는 이 두 단계는 끌 수 있다 — `--no-move` 는 옮기기만, `--keep-shared` 는 둘 다 끈다, 서버 `0.1.32`+). 그보다 먼저 링크가 끊긴 (Sample, Version) 의 버전 행·표식·`meta`/태그/split 사본(아무도 읽지 않는 잔여, [5.2.1](#521-링크와-링크-해제))을 지운다(`--keep-residue` 로 끈다). 정리 뒤에는 Version 조회의 내부 `instance_id` 가 바뀔 수 있고(내용은 같다), Version 을 지정하지 않은 `GET /instances` 의 행이 바뀌며, 어느 Version 에도 링크되지 않은 정리된 Sample 을 다시 링크하면 적재 때 값이 아니라 옮긴 Version 의 값을 보고, 덮인 공유 행이 지워진 그룹은 비어 보인다(공유 행을 남기려면 `--keep-shared`). 되돌릴 수 없다(undo 기록으로만 손으로 복구한다).
 
-운영자가 실행하는 서브커맨드 `nexus-server deleted-sample-index`(서버 `0.1.33`+, 기본 점검, 차트 README 「샘플 삭제 확인 인덱스(deleted-sample-index)」)는 포함 인덱스 `samples (sample_id) INCLUDE (is_deleted)` 를 `CREATE INDEX CONCURRENTLY` 로 만든다. 개수·목록 경로가 Sample 이 지워졌는지 보려고 `samples` 힙을 읽던 몫을 인덱스만 읽는 판정으로 바꾸는 것이고, 서버의 질의는 그대로라 인덱스가 있든 없든 결과는 같다.
+운영자가 실행하는 서브커맨드 `nexus-server ops-indexes`(서버 `0.1.38`+, 기본 점검, 차트 README 「운영 인덱스(ops-indexes)」)는 큰 표의 인덱스 둘을 `CREATE INDEX CONCURRENTLY` 로 만든다 — 아래 포함 인덱스와, Version id 로만 고르는 annotation 문장(Fork 의 복제, Version 삭제, Explorer 의 인스턴스 필터)이 표 크기가 아니라 그 Version 의 행 수에 비례하게 하는 `instances (dataset_version_id, sample_id) WHERE dataset_version_id IS NOT NULL` 이다. 서버의 질의는 인덱스를 전제로 하지 않아 인덱스가 있든 없든 결과는 같다.
+
+운영자가 실행하는 서브커맨드 `nexus-server deleted-sample-index`(서버 `0.1.33`+, 기본 점검, 차트 README 「샘플 삭제 확인 인덱스(deleted-sample-index)」, 같은 인덱스를 `ops-indexes` 도 만든다)는 포함 인덱스 `samples (sample_id) INCLUDE (is_deleted)` 를 `CREATE INDEX CONCURRENTLY` 로 만든다. 개수·목록 경로가 Sample 이 지워졌는지 보려고 `samples` 힙을 읽던 몫을 인덱스만 읽는 판정으로 바꾸는 것이고, 서버의 질의는 그대로라 인덱스가 있든 없든 결과는 같다.
 
 ```
 Version A

@@ -578,7 +578,7 @@ client.facet_counts(ds.dataset_id, ds.version, "det_gt.label", {"tags": ["train"
 
 - **단위는 샘플이다.** `Car (8,500)`은 박스 8,500개가 아니라 Car가 든 8,500**장**이다 — 누르면 나올 결과 수를 예고하는 숫자이기 때문이다. 같은 자리의 `GET .../histogram`은 인스턴스 수를 주고 필터도 받지 않으므로 **두 숫자가 다른 것이 정상이다.**
 - **그 필드 자신의 필터만 뺀다.** `label=car`를 고른 채 label 목록을 펴면 car 말고 전부 0이 되어 목록이 쓸모없어지기 때문이다. 다른 필드의 필터는 반영한다.
-- **`computed: false`를 「0건」으로 그리면 안 된다.** 제한 시간(기본 3초, `exact=true` 50초) 안에 못 셌다는 뜻이라 숫자 없이 목록만 그린다. `true`일 때만 목록에 없는 값이 0건이다.
+- **`computed: false`를 「0건」으로 그리면 안 된다.** 제한 시간(기본 3초, `exact=true` 50초) 안에 못 셌다는 뜻이라 숫자 없이 목록만 그린다. `true`일 때만 목록에 없는 값이 0건이다. 제한 시간은 개수를 세는 집계 문장 하나에 걸린다 — 그 앞에서 다른 필드의 annotation 필터에 걸린 샘플을 고르는 단계와 DB 커넥션을 기다리는 시간(최대 30초)은 한도 밖이라, 응답이 3초보다 훨씬 늦게 와도 `computed: true` 일 수 있다.
 - 개수가 붙는 field는 다섯이다 — `tags`·`meta.<enum|bool|string>`·`group_key`·`<group>.label`·`<group>.component.type`. 나머지는 400이다(range·datetime은 histogram이 이미 분포를 준다).
 - 목록(`GET .../facets`)과 나뉘어 있으므로 사이드바는 개수를 기다리지 않는다.
 - 값 종류는 **500**에서 잘리고 그때 `truncated: true`다(개수가 큰 쪽이 남는다).
@@ -1249,6 +1249,8 @@ ds.annotation_sessions()                            # 이 dataset·version의 �
 목록은 한 번에 최대 50건만 돌려준다(`limit=`으로 200까지). 자동으로 다음 페이지를 받지 않으므로 세션이 많으면 `status=`·`dataset_id=`로 좁힌다.
 
 목록으로 만든 객체는 `has_unimported_changes`가 항상 `None`이다(세션마다 CVAT 조회가 필요해서). 필요하면 `s.refresh()` 후 읽는다.
+
+**세션을 연 사람.** 세션 API 응답(`GET /annotation-sessions` 목록·단건)의 `created_by` 는 계정 id 이고, `created_by_email` 은 **만든 본인과 관리자에게만** 실린다(그 밖에는 키가 없다, 서버 이미지 `0.1.38`+). SDK 의 세션 객체에는 이 둘의 속성이 없다 — HTTP 응답에서 읽는다. CVAT 쪽에서는 project 설명이 `nexus session <session_id> (dataset <dataset_id>, version <version>, opened by <이메일>)` 이다 — 그 project 를 볼 수 있는 CVAT 사용자 모두에게 보인다. CVAT 에 남은 project 의 `session_id` 로 `nx.annotation_session(id)` 를 부르면 nexus 쪽 상태가 나오고, `NexusError(404)` 면 nexus 에 기록이 없는 project 다.
 **`None`은 '없음'이 아니라 '모름'이다.**
 
 ### 6.7 알아둘 것
