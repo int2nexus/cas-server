@@ -203,7 +203,7 @@ auth 를 켠 배포에서 root 는 필수 부트스트랩 신원이라, 비활�
 
 #### 어떤 API 가 어느 액션으로 판정되는가
 
-넷은 자기 이름의 액션이 없습니다(굵게). **인가를 건너뛰는 것이 아니라 다른 액션으로
+다섯은 자기 이름의 액션이 없습니다(굵게). **인가를 건너뛰는 것이 아니라 다른 액션으로
 판정되며, 그 판정은 요청 처리보다 먼저 일어납니다.**
 
 | API | 요청 | 판정 액션 |
@@ -212,6 +212,7 @@ auth 를 켠 배포에서 root 는 필수 부트스트랩 신원이라, 비활�
 | `CreateBucket` | `PUT /{bucket}` | `CreateBucket` |
 | **`PutBucketVersioning`** | `PUT /{bucket}?versioning` | `CreateBucket` |
 | `DeleteBucket` | `DELETE /{bucket}` | `DeleteBucket` |
+| **`HeadBucket`** | `HEAD /{bucket}` | `ListObjects` |
 | `ListObjects(V2)` · `ListObjectVersions` | `GET /{bucket}` | `ListObjects` |
 | **`ListMultipartUploads`** | `GET /{bucket}?uploads` | `ListObjects` |
 | `GetObject` | `GET /{bucket}/{key}` | `GetObject` |
@@ -273,7 +274,7 @@ auth 를 켠 배포에서 root 는 필수 부트스트랩 신원이라, 비활�
   아래 키가 실립니다. 목록을 확실히 막으시려면 그 `deny` 의 `prefix` 를 `*` 로 두십시오.
   AWS 의 `StringNotLike` 에 해당하는 표현이 이 정책 모델에는 없습니다.
 - **정책의 `prefix` 가 빈 문자열이면 `*` 와 같게 봅니다.**
-- `?uploads`(미완료 멀티파트 목록)와 `?versions` 도 같은 판정을 받습니다.
+- `?uploads`(미완료 멀티파트 목록)·`?versions` 와 `HEAD /{bucket}`(`HeadBucket`)도 같은 판정을 받습니다 — `prefix` 를 좁힌 키는 `?prefix=` 없는 `head_bucket` 이 `403` 입니다.
 - **`prefix` 를 좁힌 키로 `/_ui` 를 여시면 버킷 탭의 최상위가 빈 것으로 보입니다.** 콘솔이
   루트를 빈 `prefix=` 로 부르는데 그것이 버킷 전체 나열이라 거절되기 때문입니다. 그 키로
   콘솔을 쓰시려면 정책 `prefix` 가 `*` 여야 합니다.
@@ -286,11 +287,11 @@ auth 를 켠 배포에서 root 는 필수 부트스트랩 신원이라, 비활�
 
 ### 사전 설정
 
-서버 설정의 `root_access_key_id` / `root_secret_key`로 지정한 값을 사용합니다.
+차트의 `secrets.rootAccessKeyId` / `secrets.rootSecretKey` 로 지정한 값을 사용합니다.
 
 ```bash
-aws configure set aws_access_key_id     <root_access_key_id>
-aws configure set aws_secret_access_key <root_secret_key>
+aws configure set aws_access_key_id     <secrets.rootAccessKeyId>
+aws configure set aws_secret_access_key <secrets.rootSecretKey>
 aws configure set region                cas-default
 
 CAS="http://cas-server:80"
@@ -308,8 +309,8 @@ import boto3
 s3 = boto3.client(
     "s3",
     endpoint_url="http://cas-server:80",
-    aws_access_key_id="<root_access_key_id>",
-    aws_secret_access_key="<root_secret_key>",
+    aws_access_key_id="<secrets.rootAccessKeyId>",
+    aws_secret_access_key="<secrets.rootSecretKey>",
     region_name="cas-default",   # 임의 값 가능. 생략하면 boto3 기본값이 쓰이고 그것도 동작합니다
 )
 ```
@@ -820,6 +821,7 @@ try:
     )
 except Exception:
     # 4. 실패 시 취소
+    # Complete 가 오류로 끝났어도 객체가 커밋됐을 수 있습니다 — abort 가 404 NoSuchUpload 면 head_object 로 확인하십시오
     s3.abort_multipart_upload(
         Bucket="my-bucket", Key="large.bin", UploadId=upload_id
     )
@@ -1048,7 +1050,7 @@ curl -s --aws-sigv4 "aws:amz:cas-default:s3" --user "$KEY_ID:$SECRET" \
 가려집니다.
 
 **세 토큰(`adminToken` · `metricsToken` · `gcToken`)이 파드에 실렸는지를 여기서
-확인합니다.** 기동 로그가 같은 것을 알려 주지만 그쪽은 한 번 지나가면 끝이고, 이 경로는
+확인합니다.** 기동 로그가 같은 것을 알려 주지만 로그는 한 번 지나가면 끝이고, 이 경로는
 언제든 다시 볼 수 있습니다. **「봉인했다」와 「파드에 실렸다」가 다른 사건인 구성**
 (`secrets.useExternalSecret: true` 처럼 Secret 갱신이 파드를 재시작시키지 않는 경우)에서는
 이 값이 뒤엣것을 답합니다 — 차트 렌더 결과가 아니라 프로세스가 실제로 읽은 값이기
@@ -1076,8 +1078,9 @@ GC가 미완료 멀티파트 업로드를 만료로 보는 기준은 `config.mul
 24시간이면 GC 주기까지 더해 확인에 한 주가 걸립니다. **시험 환경에서** 이 값을 몇 분으로
 줄이면 즉시 판정할 수 있습니다.
 
-> **운영에서는 줄이지 마십시오.** 진행 중인 업로드의 파트가 조립 전에 회수되면 그 업로드가
-> `5xx`로 실패합니다. 큰 파일을 올리는 클라이언트가 먼저 깨집니다.
+> **운영에서는 줄이지 마십시오.** 진행 중인 업로드가 만료로 회수되면 그 뒤의 `UploadPart`·
+> `CompleteMultipartUpload` 가 `404 NoSuchUpload` 로 실패합니다(회수 도중에 닿은 Complete 는
+> `400 InvalidPart`). 큰 파일을 올리는 클라이언트가 먼저 깨집니다.
 
 ### 웹 콘솔 끄기
 

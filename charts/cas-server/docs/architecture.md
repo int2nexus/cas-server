@@ -257,8 +257,8 @@ NAS(Network Attached Storage)의 마운트 경로를 직접 사용하는 방식�
 
 MinIO, Ceph RGW 등 S3 호환 오브젝트 스토리지를 백엔드로 사용합니다.
 
-- 내부 TLS 없는 환경(내부망)에서는 HTTP 접속(`allow_http: true`)을 설정할 수 있습니다.
-- 키 프리픽스(`key_prefix`)를 지정하면 하나의 S3 버킷 안에서 네임스페이스를 분리할 수 있습니다.
+- 내부 TLS 없는 환경(내부망)에서는 HTTP 접속(`storage.s3.allowHttp: true`)을 설정할 수 있습니다.
+- 키 프리픽스(`storage.s3.keyPrefix`)를 지정하면 하나의 S3 버킷 안에서 네임스페이스를 분리할 수 있습니다.
 
 ### 4.3 다중 백엔드 운용
 
@@ -289,7 +289,7 @@ S3-main  ...                                     ←── 3번째 업로드
 |------|------|
 | 특정 NAS 연결 끊김 | 해당 NAS 관련 요청만 `503 ServiceUnavailable` 반환, 나머지 백엔드는 정상 동작 |
 | 해당 NAS에만 있는 블롭 다운로드 요청 | `503 ServiceUnavailable` 반환 |
-| S3 백엔드 응답 불가 | **블롭 존재 조회가 실패하는 경로는 `503 ServiceUnavailable` 입니다**(이미지 `0.1.31` 이상) — 쓰기(PUT·멀티파트 완료)와 `CopyObject` 의 소스 재확인입니다. 그 밖의 경로에서 오브젝트 스토리지가 돌려준 오류는 여전히 `500 InternalError` 로 나갑니다. `0.1.30` 이하는 전부 `500` 이었습니다. 다른 S3 백엔드는 정상 동작합니다 |
+| S3 백엔드 응답 불가 | **블롭 존재 조회가 실패하는 경로는 `503 ServiceUnavailable` 입니다**(이미지 `0.1.31` 이상) — 쓰기(PUT·멀티파트 완료)와 `CopyObject` 의 소스 재확인입니다. 이미지 `0.1.37` 이상에서 GET 은 S3 응답 헤더가 `config.s3ReadIdleTimeoutSecs`(`extraEnv` 의 `AWS_TIMEOUT` 이 더 크면 그 값) 안에 오지 않으면 `503 ServiceUnavailable` 입니다. 이미 `200` 헤더를 낸 CompleteMultipartUpload 가 조립 중 실패하면 `503` 이 아니라 `200` 본문의 `<Error>InternalError` 로 끝납니다 — 백엔드가 멈추면 `config.s3ReadIdleTimeoutSecs` 뒤에, 진행이 보이지 않는 마지막 단계와 커밋 단계는 그 5 배와 `config.s3RequestTimeoutSecs` 중 큰 값(기본 300 초) 뒤에 끊습니다(README 「큰 업로드와 시한」). 그 밖의 경로에서 오브젝트 스토리지가 돌려준 오류는 `500 InternalError` 로 나갑니다. 다른 S3 백엔드는 정상 동작합니다 |
 | 신규 업로드 | **그 해시의 `blobs` 행이 이미 있으면 기록된 백엔드**입니다(이미지 `0.1.31` 이상). 행이 없는 새 해시일 때만 아래로 고릅니다 — **NAS**: 정상 백엔드 중 가용 공간 최대인 곳. **S3**: 등록 순서 round-robin. 버킷이 특정 백엔드에 핀돼 있으면 그쪽 |
 
 ---
@@ -491,6 +491,10 @@ S3 표준에 없는 CAS 전용 헤더가 업로드 응답에 추가됩니다.
 `boto3` 라면 `list_objects` 가 아니라 `list_objects_v2` 를, AWS CLI 라면
 `s3api list-objects-v2` 를 쓰십시오(`aws s3 ls`·`aws s3 sync` 는 V2 를 씁니다).
 
+**없는 버킷의 목록은 `404 NoSuchBucket` 이 아니라 빈 목록 `200` 입니다.** 버킷은 첫 쓰기 때
+만들어지므로 목록을 먼저 부르는 클라이언트를 깨지 않기 위해서입니다. 버킷이 있는지는
+`HEAD /{버킷}`(`404`/`200`)으로 확인하십시오.
+
 **모르는 쿼리 파라미터는 거절하지 않고 무시합니다.** 그래서 아래 둘은 **오류 없이 다른
 결과**를 돌려줍니다.
 
@@ -541,10 +545,14 @@ CronJob 은 그대로 동작합니다.
 - 관리 평면의 `401` — 본문이 `Unauthorized` 문자열입니다. `/_internal/metrics`, GC 의 토큰
   경로, 그리고 `/_admin/*`(SigV4 가 아닌 요청이 bearer 게이트로 가는데 그 평면이 받는
   bearer 토큰이 없어 같은 형태로 닫힙니다)
-- `408` — 요청 시한 초과. 본문이 비어 있습니다
+- `408` — 요청 시한 초과. 본문이 비어 있습니다(경고 로그 한 줄과 `cas_request_timeout_total` 은 남습니다)
 - `413` — 업로드 크기 상한 초과. 본문이 `length limit exceeded` 문자열입니다
 - `410` — `/_api/gc/orphan-count`. 본문이 JSON 입니다
 - STS(`POST /`) 오류 — XML 이지만 S3 의 `<Error>` 가 아니라 `<ErrorResponse>` 형태입니다
+
+**멀티파트 Complete 는 `200` 이어도 실패일 수 있습니다.** 본문은 XML 이지만
+`<CompleteMultipartUploadResult>` 가 아니라 `<Error>`(`InternalError`·`SlowDown`)로 끝날 수
+있습니다. 상태 코드만 보지 말고 본문을 읽어야 합니다.
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -557,8 +565,10 @@ CronJob 은 그대로 동작합니다.
 | HTTP 상태 | 에러 코드 | 원인 및 대응 |
 |-----------|-----------|--------------|
 | 400 | `InvalidArgument` | 요청 파라미터 오류 |
-| 400 | `InvalidDigest` | `x-cas-hash` 로 넘긴 해시와 실제 본문이 다름. **서버가 본문을 저장하는 경로에서만 납니다** — 그 해시의 블롭이 이미 있으면 본문을 읽지 않으므로 이 오류도 나지 않습니다(3.1) |
-| 400 | `InvalidPart` | 멀티파트 파트 번호·구성 오류 |
+| 400 | `InvalidDigest` | `x-cas-hash` 로 넘긴 해시와 실제 본문이 다름. **서버가 본문을 저장하는 경로에서만 납니다** — 그 해시의 블롭이 이미 있으면 본문을 읽지 않으므로 이 오류도 나지 않습니다(3.1). 단 `x-cas-hash` 가 64 자 hex 가 아니면 블롭 유무와 무관하게 본문을 읽기 전에 이 오류로 답합니다(이미지 `0.1.37` 이상) |
+| 400 | `InvalidPart` | 멀티파트 Complete 의 파트 목록에 없는 파트가 있거나 ETag 가 저장된 것과 다름. 헤더를 내기 전에 검증합니다. 파트가 저장소에 없어 실패한 조립의 재시도도 5 분 동안 이 코드입니다(README 「큰 업로드와 시한」) |
+| 400 | `InvalidPartOrder` | Complete 의 파트 번호가 오름차순이 아님 |
+| 400 | `MalformedXML` | Complete 의 파트 목록이 비었거나 `Part` 에 `PartNumber` 가 없음 |
 | 400 | `AuthorizationHeaderMalformed` | Authorization 헤더/presigned 쿼리 형식 오류 — 서명을 계산할 수조차 없음. `service` 가 `s3` 가 아닌 경우도 여기입니다 |
 | 400 | `InvalidRequest` | 헤더 서명인데 `x-amz-content-sha256` 이 없거나 값이 비었음 (이미지 `0.1.31` 이상). presigned 는 규격상 그 헤더가 없는 것이 정상이라 해당 없습니다 |
 | 400 | `IncompleteBody` | `aws-chunked` 요청의 본문이 `x-amz-decoded-content-length` 로 선언한 길이보다 짧음 |
@@ -570,11 +580,11 @@ CronJob 은 그대로 동작합니다.
 | 403 | `InvalidAccessKeyId` | 그런 액세스 키가 없음 (비활성·유효기간 만료 포함) |
 | 403 | `SignatureDoesNotMatch` | 서명 불일치 — 시크릿 값을 확인 |
 | 403 | `RequestTimeTooSkewed` | 요청 시각이 서버 시각과 15분 이상 차이 (헤더 인증 경로에만 해당) |
-| 404 | `NoSuchBucket` | 버킷 없음 |
+| 404 | `NoSuchBucket` | 버킷 없음. `HEAD /{버킷}` 은 본문 없는 `404` 입니다(이미지 `0.1.37` 이상). 목록 `GET` 은 없는 버킷에도 빈 `200` 입니다(5.4) |
 | 404 | `NoSuchKey` | 오브젝트 없음. 인증을 통과한 요청이 등록되지 않은 `/_api/*` 경로를 부른 경우도 이 코드입니다 |
-| 404 | `NoSuchUpload` | 멀티파트 업로드 ID 없음 |
+| 404 | `NoSuchUpload` | 멀티파트 업로드 ID 없음. 경로의 버킷·키가 그 업로드의 것과 다른 경우, 그리고 조립이 성공한 업로드에 대한 Abort 도 이 코드입니다 (Complete·Abort 모두) |
 | 405 | `MethodNotAllowed` | 삭제 마커인 버전을 GET/HEAD |
-| 408 | — | `config.requestTimeoutSecs`(기본 120초) 초과. **이 시점에도 DB 쪽 쿼리는 계속 돕니다** |
+| 408 | — | `config.requestTimeoutSecs`(기본 120초, 무진행 시한) 또는 `config.requestMaxSecs`(기본 3600초, 절대 상한) 초과. 정의는 README 「큰 업로드와 시한」. 본문이 끝난 뒤 처리(저장, 해시 없는 PUT 의 복사)도 시한 안에 끝나야 하며 넘으면 `408`·저장 없음이니 다시 보내십시오. HTTP 접근 로그의 응답 줄은 남지 않지만 경고 로그 `요청 시한 초과` 한 줄과 `cas_request_timeout_total{reason}` 은 남습니다. **이 시점에도 DB 쪽 쿼리는 계속 돕니다** |
 | 409 | `BucketNotEmpty` | 비어 있지 않은 버킷 삭제 시도 |
 | 409 | `Conflict` | 같은 `(issuer, subject)` 의 STS 신원 매핑이 이미 있음. 매니페스트를 재적용하는 구성이면 이 코드를 정상으로 다루십시오 |
 | 409 | `GcAlreadyRunning` | GC 가 이미 실행 중. 이미지 `0.1.26` 이상에서는 **다른 파드가 락을 쥐고 있어 이 호출이 아무것도 시작하지 못한 경우**도 이 코드입니다 (그 미만은 `202` 였습니다) |
@@ -585,10 +595,14 @@ CronJob 은 그대로 동작합니다.
 | 503 | `ServiceUnavailable` | 스토리지 백엔드 접근 불가 — 운영팀 확인 필요 (내부 오류 타입명은 `BackendUnavailable`) |
 | 503 | `SlowDown` | 업로드 상한(건수 또는 바이트 예산) 초과. `Retry-After` 동반 |
 | 503 | `SlowDown` | DB 커넥션 풀 획득 타임아웃 (이미지 `0.1.18` 이상. 그 이하는 `500`) |
+| 503 | `SlowDown` | 멀티파트: 조립이 도는 업로드의 Abort(최대 5초 기다린 뒤), 또는 Abort 가 기다리는 중이거나 종료 중인 서버에 온 Complete. Complete 는 헤더를 이미 낸 뒤면 `200` 본문의 `<Error>` 로 옵니다 |
 
-`503` 은 세 가지 뜻을 갖습니다. 구분은 지표로 합니다 — 업로드 상한은
-`cas_upload_rejected_total`, 풀 고갈은 `cas_db_pool_acquire_timeouts_total` 이 오릅니다.
-`BackendUnavailable` 은 둘 다 오르지 않습니다.
+`503` 은 네 가지 뜻을 갖습니다. 구분은 지표로 합니다 — 업로드 상한은
+`cas_upload_rejected_total`, 풀 고갈은 `cas_db_pool_acquire_timeouts_total`, 멀티파트의
+Complete 는 헤더를 낸 뒤 `<Error>SlowDown`(조립 중 DB 풀 고갈)만 `cas_mpu_complete_total{result="SlowDown"}`
+으로 셉니다. 헤더 전에 업로드 허가가 없어 난 Complete `503` 은 `cas_upload_rejected_total`
+이 오르고, Abort 가 기다리거나 종료 중이어서 난 헤더 전 `503` 은 어느 지표에도 잡히지 않습니다.
+조립 중에 난 `BackendUnavailable` 은 `result="ServiceUnavailable"` 로 세며(응답 본문의 코드는 `InternalError`), 헤더 전의 `BackendUnavailable` 과 Abort 쪽 `SlowDown` 은 위 지표에 잡히지 않습니다.
 
 #### 인증 실패의 진단
 

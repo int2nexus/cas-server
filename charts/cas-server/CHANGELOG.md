@@ -84,6 +84,32 @@ cas-server 는 기동 시 `sqlx::migrate!` 로 `migrations/` 를 적용합니다
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.1.44
+
+image: `int2jieun/cas-server:0.1.37`
+digest: `sha256:3966a6e526496b90ef91d882fa41b0ec450f39f58c215b463a7bec07474c462b`
+
+**동작 변경** — S3 모드의 큰 객체 `GET` 이 도중에 끊기지 않습니다. 이전에는 S3 요청마다 30 초 전체 시한이 걸렸고, 이제 본문은 `config.s3ReadIdleTimeoutSecs`(기본 60 초) 동안 바이트가 오지 않을 때만 끊습니다
+**동작 변경** — 요청 시한이 바뀌었습니다. `config.requestTimeoutSecs` 는 본문을 받는 요청이면 마지막 본문 바이트부터 재고(큰 단일 PUT 이 본문 수신 중에 끊기지 않습니다), 요청 시작부터 응답 헤더까지의 절대 상한 `config.requestMaxSecs`(기본 `3600`)가 새로 생겼습니다. 응답 본문을 `config.requestTimeoutSecs` 이상 전혀 가져가지 않으면 그 응답을 오류로 끝냅니다(느리게라도 읽으면 끊지 않습니다). `408` 은 새 지표 `cas_request_timeout_total{reason}` 으로 셉니다. [README 「큰 업로드와 시한」](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.44/charts/cas-server/README.md#큰-업로드와-시한)
+**동작 변경** — `CompleteMultipartUpload` 가 S3 처럼 검증 뒤 바로 `200` 을 보내고, 조립하는 동안 공백을 보내다가 `<CompleteMultipartUploadResult>` 또는 `<Error>`(`InternalError`·`SlowDown`)로 끝납니다. **상태 코드만 보고 본문을 읽지 않는 클라이언트는 실패를 성공으로 오인합니다**(AWS SDK·CLI 는 본문을 읽습니다). 이 실패는 HTTP 지표·요청 로그에 `200` 으로 남고 새 지표 `cas_mpu_complete_total{result!="ok"}` 로 보입니다. 끊긴 Complete 를 같은 내용으로 다시 보내면 진행 중인 조립에 합류하고, 성공 뒤 15 분 안이면 같은 결과를 받습니다. [README 「큰 업로드와 시한」](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.44/charts/cas-server/README.md#큰-업로드와-시한)
+**동작 변경** — Complete 검증이 S3 와 같아졌습니다. 경로의 bucket·key 가 업로드와 다르면 `404 NoSuchUpload`, 없는 파트·ETag 불일치는 `400 InvalidPart`, 순서가 어긋나거나 중복된 파트는 `400 InvalidPartOrder`, 빈 목록·`PartNumber` 없는 `<Part>` 는 `400 MalformedXML` 입니다. 이전에는 key·ETag 불일치와 순서·중복을 무시하거나 정렬해 완료했고, 없는 파트는 `500` 이었습니다. 파트가 저장소에서 사라져 실패한 조립은 5 분 동안 같은 파트 목록의 Complete 재시도에 `400 InvalidPart` 로 답합니다(백엔드가 하나이거나 버킷이 핀된 경우)
+**동작 변경** — S3 모드에서 Complete 가 조립하는 도중 같은 번호의 파트를 다시 올리면 객체가 내용과 다른 해시 키로 저장될 수 있던 결함을 고쳤습니다(`0.1.36` 이하). 이제 그런 Complete 는 `<Error>InternalError` 로 끝나고 재시도가 새 파트로 다시 조립합니다
+**동작 변경** — 멈춘 조립에 상한이 생겼습니다. 저장소에서 `config.s3ReadIdleTimeoutSecs` 동안 진행이 없거나 커밋 단계가 기본 300 초를 넘으면 Complete 는 `<Error>InternalError` 로 끝납니다(SDK 가 재시도합니다)
+**동작 변경** — Complete 는 조립하는 동안 `config.maxConcurrentUploads` 한 자리와 「가장 큰 파트 + 16 MiB(객체 크기의 1/9000 이 더 크면 그 값)」의 업로드 예산을 차지합니다(이전에는 고정 5 MiB). 차 있으면 `503 SlowDown` 이니 재시도하십시오. [README 「주요 values」](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.44/charts/cas-server/README.md#주요-values)
+**동작 변경** — 조립 중의 `AbortMultipartUpload` 는 최대 5 초 기다린 뒤 답합니다(조립이 성공했으면 `404 NoSuchUpload`, 실패했으면 `204`, 아직이면 `503 SlowDown` 이고 아무것도 지우지 않습니다). Abort 의 bucket·key 가 업로드와 다르면 `404 NoSuchUpload` 입니다. 성공한 Complete 뒤에는 파트 정리가 끝날 때까지 그 업로드가 `ListMultipartUploads` 에 남고, 성공 뒤 15 분 동안 그 업로드의 `UploadPart` 는 `404 NoSuchUpload` 입니다
+**동작 변경** — 종료(SIGTERM) 뒤 진행 중인 요청과 조립을 55 초까지 기다리고, 남은 연결을 끊고 종료합니다(`terminationGracePeriodSeconds` 60 안). 신호 뒤에는 새 연결을 받지 않고, 새 조립을 시작하는 Complete 는 `503 SlowDown` 입니다
+**동작 변경** — 없는 버킷의 `HEAD /{bucket}` 이 `404` 입니다(이전에는 `200`). `x-cas-hash` 가 64 자 hex 가 아니면 본문을 읽기 전에 `400 InvalidDigest` 입니다
+**동작 변경** — `metadataConfiguration`·`metadataInventoryTable`·`metadataJournalTable` 서브리소스가 붙은 오브젝트 `PUT`·`DELETE` 와 버킷 `DELETE` 를 `501 NotImplemented` 로 거절합니다. **`0.1.36` 이하는 이 요청을 서브리소스 없는 요청으로 처리해 객체를 덮어쓰거나 객체·빈 버킷을 지웠습니다**
+**동작 변경** — S3 모드에서 파트 크기가 2 의 거듭제곱 KiB(AWS CLI·boto3 기본 8 MiB)인 파트 객체에 사용자 메타데이터 `x-amz-meta-cas-*` 가 붙습니다(저장소가 거절하면 빼고 다시 올립니다). 새 지표 `cas_mpu_hash_combine_total` 은 관찰용이며 저장되는 데이터·ETag·응답은 바뀌지 않습니다
+**운영 조치** — `extraEnv` 에 `AWS_TIMEOUT` 을 넣어 두었다면 빼십시오. 큰 `GET` 이 끊기던 원인이 없어져 더 필요하지 않고, 남겨 두면 작은 S3 요청과 응답 헤더 대기에만 쓰입니다. 시한을 바꾸려면 `config.s3RequestTimeoutSecs`·`config.s3ReadIdleTimeoutSecs` 로 정하십시오. [README 「주요 values」](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.44/charts/cas-server/README.md#주요-values)
+**운영 조치** — `config.requestTimeoutSecs` 를 `0` 이나 `3600` 초과로 두었다면, 이제 `config.requestMaxSecs`(기본 `3600`)에서 끊기므로 그 값도 정하십시오
+**운영 조치** — Complete 실패 경보에 `cas_mpu_complete_total{result!="ok"}` 를 더하십시오. 헤더 뒤 실패는 HTTP 상태로 보이지 않고, 헤더 전 오류(`400`·`404`·`503`)는 지금처럼 HTTP 상태로만 보입니다
+**운영 조치** — `storage.mode: s3` 이면 오브젝트 스토리지 버킷에 `AbortIncompleteMultipartUpload` lifecycle 규칙을 두십시오. 종료 기한(신호 뒤 55 초)에 끊기거나 파드가 강제 종료된 쓰기가 남긴 미완료 멀티파트는 그 규칙만 치웁니다. [README 「오브젝트 스토리지 lifecycle 규칙」](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.44/charts/cas-server/README.md#오브젝트-스토리지-lifecycle-규칙-s3-모드)
+**주의** — Complete 성공 뒤 파트 정리 중에 파드가 재시작했거나 정리가 실패하면, 같은 Complete 재시도가 `<Error>InternalError` 다음 `400 InvalidPart` 로 멈출 수 있습니다. 객체는 이미 커밋되어 온전하니 `HeadObject` 로 확인하십시오. [README 「큰 업로드와 시한」](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.44/charts/cas-server/README.md#큰-업로드와-시한)
+**마이그레이션** — 없음. **롤백 하한은 `0.1.28` 그대로입니다**
+**설정 키** — `config.requestMaxSecs`(기본 `3600`), `config.s3ReadIdleTimeoutSecs`(기본 `60`), `config.s3RequestTimeoutSecs`(기본 `30`) 추가. 셋 다 `0` = 끔이지만 운영에서 끄지 마십시오. `0.1.36` 이하 이미지는 이 키를 무시합니다
+**호환성** — 차트 `0.1.42`(이미지 `0.1.35`) 이하에서 올리면 [0.1.43](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.44/charts/cas-server/CHANGELOG.md#0143) 의 변경도 함께 받습니다. 이미지 `0.1.36` 으로 되돌리면 위 메타데이터 서브리소스 쓰기가, `0.1.36` 미만으로 되돌리면 파괴적인 서브리소스 쓰기가 모두 다시 열립니다
+
 ## 0.1.43
 
 image: `int2jieun/cas-server:0.1.36`
@@ -92,7 +118,7 @@ digest: `sha256:9d1d1231a0f88aa02263288b22ee252487c9f441cb1d354f2eec8da2b05f9644
 **동작 변경** — 객체 `PUT`·`DELETE` 와 버킷 `DELETE` 에 지원하지 않는 S3 서브리소스가 붙은 요청은 `501 NotImplemented` 이고 아무것도 바꾸지 않습니다 — `PutObjectTagging`·`PutObjectAcl`·`PutObjectRetention`·`PutObjectLegalHold`·`DeleteObjectTagging`·`DeleteBucketLifecycle`·`DeleteBucketPolicy`·`DeleteBucketTagging`·`DeleteBucketCors` 등과, 쿼리로 보낸 `x-amz-copy-source`. **이전 이미지는 이 요청들에 `200`·`204` 로 응답하면서 객체를 요청 본문으로 덮어쓰거나, 객체 또는 빈 버킷을 지웠습니다**
 **운영 조치** — 위 API 를 부른 적이 있으면 그 객체와 버킷이 온전한지 확인하십시오
 **주의** — `501` 은 HTTP 지표에서 5xx 로 셉니다
-**주의** — 버킷 `PUT` 의 서브리소스(`PutBucketPolicy`·`PutBucketLifecycleConfiguration` 등)는 이 이미지에서도 아무것도 설정하지 않고 `200` 입니다. `UploadPartCopy` 는 지원하지 않습니다 — 원본을 복사하지 않고 빈 파트를 저장하므로, 그 파트로 완료하면 0 바이트 객체가 됩니다. 둘 다 [아키텍처 5.4](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.43/charts/cas-server/docs/architecture.md) 에 적었습니다
+**주의** — 버킷 `PUT` 의 서브리소스(`PutBucketPolicy`·`PutBucketLifecycleConfiguration` 등)는 이 이미지에서도 아무것도 설정하지 않고 `200` 입니다. `UploadPartCopy` 는 지원하지 않습니다 — 원본을 복사하지 않고 빈 파트를 저장하므로, 그 파트로 완료하면 0 바이트 객체가 됩니다. 둘 다 [아키텍처 5.4](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.44/charts/cas-server/docs/architecture.md) 에 적었습니다
 **마이그레이션** — 없음. **롤백 하한은 `0.1.28` 그대로입니다**
 **설정 키** — 없음
 

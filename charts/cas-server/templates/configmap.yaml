@@ -19,7 +19,12 @@ data:
     db_max_connections      = {{ .Values.config.dbMaxConnections }}
     db_min_connections      = {{ .Values.config.dbMinConnections }}
     db_acquire_timeout_secs = {{ .Values.config.dbAcquireTimeoutSecs }}
-    request_timeout_secs    = {{ .Values.config.requestTimeoutSecs }}
+    request_timeout_secs    = {{ required "config.requestTimeoutSecs 가 null 입니다. 값을 주거나 키를 지우십시오(지우면 차트 기본값 120 이 적용됩니다). null 이면 빈 값이 렌더돼 TOML 파싱이 실패하고 파드가 기동하지 못합니다." .Values.config.requestTimeoutSecs | int64 }}
+    {{- /* 아래 셋은 cas-server 이미지 0.1.37 이상에서만 동작한다 — 그 이하 이미지는
+           모르는 키로 보고 무시한다. */}}
+    request_max_secs        = {{ required "config.requestMaxSecs 가 null 입니다. 값을 주거나 키를 지우십시오(지우면 차트 기본값 3600 이 적용됩니다). null 이면 빈 값이 렌더돼 TOML 파싱이 실패하고 파드가 기동하지 못합니다." .Values.config.requestMaxSecs | int64 }}
+    s3_read_idle_timeout_secs = {{ required "config.s3ReadIdleTimeoutSecs 가 null 입니다. 값을 주거나 키를 지우십시오(지우면 차트 기본값 60 이 적용됩니다). null 이면 빈 값이 렌더돼 TOML 파싱이 실패하고 파드가 기동하지 못합니다." .Values.config.s3ReadIdleTimeoutSecs | int64 }}
+    s3_request_timeout_secs = {{ required "config.s3RequestTimeoutSecs 가 null 입니다. 값을 주거나 키를 지우십시오(지우면 차트 기본값 30 이 적용됩니다). null 이면 빈 값이 렌더돼 TOML 파싱이 실패하고 파드가 기동하지 못합니다." .Values.config.s3RequestTimeoutSecs | int64 }}
     presigned_redirect_secs = {{ .Values.config.presignedRedirectSecs }}
 
     # 업로드 상한. cas-server 이미지 0.1.16 이상에서만 동작한다(차트 버전 아님).

@@ -5,9 +5,9 @@ HTTP API를 제공한다.
 
 ## 문서
 
-- [아키텍처](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.43/charts/cas-server/docs/architecture.md)
+- [아키텍처](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.44/charts/cas-server/docs/architecture.md)
   — 스토리지 모델(CAS·dedup·GC), 백엔드 구성, S3 호환 API 명세, 에러 코드
-- [사용법](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.43/charts/cas-server/docs/usage.md)
+- [사용법](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.44/charts/cas-server/docs/usage.md)
   — 배포 절차, 웹 UI 키 관리, AWS CLI/boto3 예제, 내부 API
 - [변경 이력](CHANGELOG.md)
   — 버전별 동작 변경·마이그레이션·설정 키. 각 항목은 해당 GitHub Release 본문과 동일하다
@@ -48,8 +48,8 @@ kubectl apply -f sealed-secret.yaml -n <namespace>
 `auth-metrics-token`은 Secret 키로는 선택이다 — 없어도 파드는 기동한다. 다만 **auth 를 켠
 배포에서 그 값이 없으면 스크레이프가 `401`** 이다. 용도는 [메트릭 스크레이프](#메트릭-스크레이프) 참고.
 
-`secrets.secretMasterKey`를 비우면 NoAuth 모드(인증 없음, 내부망 전용)로 동작한다. 상세 절차와 값 교체
-방법은 [`examples/sealed-secret.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.43/charts/cas-server/examples/sealed-secret.yaml) 참고.
+`useExternalSecret: true`(기본값)면 Secret 의 `auth-secret-master-key` 를, `false` 면 `secrets.secretMasterKey` 를 비우면 NoAuth 모드(인증 없음, 내부망 전용)로 동작한다. 상세 절차와 값 교체
+방법은 [`examples/sealed-secret.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.44/charts/cas-server/examples/sealed-secret.yaml) 참고.
 
 ## 설치
 
@@ -57,7 +57,7 @@ kubectl apply -f sealed-secret.yaml -n <namespace>
 helm install cas-server int2nexus/cas-server -n <namespace> -f values-prod.yaml
 ```
 
-`values-prod.yaml`은 직접 작성하거나 [`examples/values-prod.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.43/charts/cas-server/examples/values-prod.yaml)을
+`values-prod.yaml`은 직접 작성하거나 [`examples/values-prod.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.44/charts/cas-server/examples/values-prod.yaml)을
 내려받아 값을 채운 뒤 사용하세요(이 레포를 clone했다면 `charts/cas-server/examples/values-prod.yaml`).
 
 ### S3 / MinIO 모드 values 예시
@@ -101,7 +101,7 @@ storage:
 예외 셋을 알아 두십시오.
 
 - **`/_api/*` 중 인가를 보지 않는 것은 `HEAD /_api/blobs/{hash}` 와 `/_api/whoami`
-  둘뿐입니다.** 앞은 업로드 전 중복 확인 경로라(아래 「블롭 dedup 사전 확인」), 뒤는 주체
+  둘뿐입니다.** 앞은 업로드 전 중복 확인 경로라([사용법](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.44/charts/cas-server/docs/usage.md) 의 「블롭 dedup 사전 확인」), 뒤는 주체
   자신의 권한을 비추는 것이라 그렇습니다. `HEAD` 와 같은 경로의 `GET` 은 `ListBuckets` 를
   요구합니다 — 응답의 `references` 가 그 내용을 참조하는 모든 버킷·키를 싣기 때문입니다.
   `/_api/*` 전체에 인가가 걸리는 것은 **이미지 `0.1.28` 이상**입니다. 그 이하에서는 유효한
@@ -142,15 +142,18 @@ storage:
 | `externalDatabase.host` | `""` | PostgreSQL 서비스명 |
 | `externalDatabase.port` | `5432` | PostgreSQL 포트 |
 | `secrets.useExternalSecret` | `true` | sealed-secret으로 Secret을 미리 주입했는지 여부 |
-| `secrets.secretMasterKey` | (없음) | 설정 시 SigV4 인증 활성화, 비우면 NoAuth |
+| `secrets.secretMasterKey` | (없음) | 설정 시 SigV4 인증 활성화, 비우면 NoAuth. `useExternalSecret: true`(기본)이면 이 값 대신 Secret 의 `auth-secret-master-key` 가 쓰입니다 |
 | `auth.metricsToken` | `""` | `GET /_internal/metrics` 전용 **읽기 전용** 토큰. **이 경로를 여는 유일한 수단입니다** — 비우면 auth 를 켠 배포에서 `401` 입니다 (아래 참고). `useExternalSecret: true`(기본)이면 이 값 대신 Secret 의 `auth-metrics-token` 이 쓰입니다 |
 | `secrets.rootAccessKeyId` · `secrets.rootSecretKey` | (없음) | root 키. **`secretMasterKey` 를 설정하면 필수** — 없으면 서버가 기동하지 않습니다 |
 | `secrets.gcToken` | `""` | GC 전용 토큰. GC CronJob 이 이것을 씁니다 (아래 참고). `useExternalSecret: true`(기본)이면 이 값 대신 Secret 의 `auth-gc-token` 이 쓰입니다 |
 | `ingress.enabled` | `false` | Ingress 활성화 |
 | `config.maxUploadSizeBytes` | `10737418240` | 최대 업로드 크기 (10 GiB) |
 | `config.maxUploadBytesInFlight` | `3221225472` | 동시 업로드 바디의 총 상주 바이트 상한 (3 GiB). 초과분은 `503 SlowDown`. **`0` = 무제한.** `resources.limits.memory` × 0.5 를 기준으로 함께 조정할 것 |
-| `config.maxConcurrentUploads` | `96` | 동시 업로드 건수 상한. 위 바이트 예산의 보조 장치. **`dbMaxConnections`와의 대소 관계는 판정 보류** — `values.yaml` 주석 참고 |
-| `config.requestTimeoutSecs` | `120` | 요청 처리 타임아웃. 느린 S3 백엔드까지 포함한 요청 경로의 유일한 wall-clock 상한 |
+| `config.maxConcurrentUploads` | `96` | 동시 업로드 건수 상한. 위 바이트 예산의 보조 장치. **`config.dbMaxConnections`와의 대소 관계는 판정 보류** — `values.yaml` 주석 참고 |
+| `config.requestTimeoutSecs` | `120` | 요청 처리 시한(초). 정의와 초과 시 동작은 [큰 업로드와 시한](#큰-업로드와-시한). `0` = 끔 |
+| `config.requestMaxSecs` | `3600` | 요청 시작부터 응답 헤더까지의 절대 상한(초). 흐르는 본문도 이 시간에 끊습니다 ([큰 업로드와 시한](#큰-업로드와-시한)). `0` = 끔. 이미지 `0.1.37` 이상 |
+| `config.s3ReadIdleTimeoutSecs` | `60` | S3 백엔드 본문 읽기(객체 GET, 멀티파트 조립의 파트 읽기)의 **무진행 시한**. 이 시간 동안 바이트가 안 오면 끊고, 전체 시간에는 상한이 없습니다. 멀티파트 조립의 진행 감시도 이 값을 씁니다 — **로컬 백엔드 포함** ([큰 업로드와 시한](#큰-업로드와-시한)). `0` = 끔(둘 다) — **운영에서 0 으로 두지 마십시오**: 조립은 요청 시한 밖에서 돌아, 멈춘 백엔드를 끊어 줄 다른 상한이 없습니다. 이미지 `0.1.37` 이상 |
+| `config.s3RequestTimeoutSecs` | `30` | S3 의 HEAD·DELETE·LIST 와 5 MiB 이하 단일 PUT 의 전체 시한. 그 밖의 요청(더 큰 PUT·파트 PUT·멀티파트 개시와 쓰기·복사)은 이 시한 밖이고 요청 시한([큰 업로드와 시한](#큰-업로드와-시한))과 조립 진행 감시가 묶습니다. `0` = 끔 — **운영에서 0 으로 두지 마십시오**: HEAD·DELETE·LIST 에 시한이 없어 응답 없는 백엔드에서 GC 의 목록·삭제가 멈출 수 있습니다. `extraEnv` 의 `AWS_TIMEOUT` 이 있으면 이 시한은 `max(AWS_TIMEOUT, 이 값)` 이 되고, S3 GET(객체 GET 과 조립의 파트 읽기)의 응답 헤더 대기도 `max(AWS_TIMEOUT, config.s3ReadIdleTimeoutSecs)` 가 됩니다 — 본문 전송에는 걸리지 않고, `0` 인 키는 끈 채로 두며, 해석할 수 없는 값은 기동 경고와 함께 무시합니다. 그 밖의 S3 클라이언트 `AWS_*` 설정(`AWS_CONNECT_TIMEOUT`·`AWS_PROXY_URL`·`AWS_ALLOW_INVALID_CERTIFICATES` 등)은 그대로 읽히고, `AWS_CONNECT_TIMEOUT` 이 없으면 연결 시한은 5 초입니다. 이미지 `0.1.37` 이상 |
 | `config.statsStatementTimeoutSecs` | `30` | 집계 조회 전용 풀의 쿼리 상한. 이 풀은 커넥션 1개로 요청 경로와 격리된다 (대상 목록은 아래 참고) |
 | `config.statsWorkMemMb` | `0` | 집계 풀의 `work_mem` (MiB). `0` = 서버 값 사용. **PostgreSQL 쪽 메모리**를 쓰므로 PG 사이징 확인 후 조정할 것 |
 | `config.dbMinConnections` | `2` | 항상 유지할 유휴 커넥션. `0`이면 뜸한 뒤 첫 요청이 접속 핸드셰이크 비용을 문다(실측 68ms → 0.5ms) |
@@ -167,7 +170,7 @@ storage:
 | `gc.enabled` | `true` | GC CronJob 활성화. 초기 마이그레이션 중에는 `false` 권장. **이미지 `0.1.17` 이하에서는 끄면 메모리 회수 경로도 사라진다** (아래 참고) |
 | `gc.phases` | `"multipart,orphan,purge,sweep"` | 이 CronJob 이 돌릴 GC 단계. 쉼표 구분. **기본값은 넷 다라 CronJob 하나가 전부 돈다.** `""` 로 두면 서버 기본값(`sweep` 을 뺀 셋)이 적용된다 — `sweep` 을 `fullSweep` 으로 뗄 때 쓰는 값이다. `sweep` 만 데이터 크기를 따라간다 (아래 참고). **`orphan` 을 빼면 렌더가 거부한다** |
 | `gc.fullSweep.enabled` | `false` | 전량 스캔(`sweep`)만 도는 두 번째 CronJob. **켜지 않으면 렌더가 거부한다**(`gc.phases` 에 `sweep` 을 직접 넣은 경우는 제외). `schedule` 은 UTC 이고 기본값을 그대로 쓰지 말 것 |
-| `config.multipartTtlSecs` | `86400` | GC 가 미완료 멀티파트를 만료로 보는 기준(초). **운영에서 줄이지 말 것** — 진행 중인 업로드가 `5xx` 로 실패한다 |
+| `config.multipartTtlSecs` | `86400` | GC 가 미완료 멀티파트를 만료로 보는 기준(초). **운영에서 줄이지 말 것** — 진행 중인 업로드의 UploadPart·Complete 가 `404 NoSuchUpload` 로 실패한다 |
 | `config.consoleEnabled` | `true` | `/_ui` 와 콘솔용 `/_api/*` 마운트 여부. `false` 여도 `/_api/gc/*` 는 남으므로 GC CronJob 은 그대로 동작한다 |
 | `config.integrityCheck` | `log` | 클라이언트가 선언한 체크섬을 받은 바이트와 대조(이미지 `0.1.29` 이상). `off`·`log`·`enforce`. **기본값은 세고 기록만 하고 업로드를 거절하지 않는다.** `enforce` 로 올리기 전에 `cas_integrity_mismatch_total` 이 0 인지 확인할 것 — 오탐이 곧 업로드 실패다. 아래 참고 |
 | `config.logFormat` | `text` | 로그 형식(이미지 `0.1.33` 이상). `text`·`json`. 아래 「로그」 참고 |
@@ -180,6 +183,13 @@ storage:
 걸린다고 믿는 상태로 방어 없이 운영하게 됩니다.
 `limits.memory` 를 변경할 때 바이트 예산을 함께 조정하지 않으면, 상한이 걸리기 전에
 OOMKilled 되거나(예산 > 한도) 방어선이 실효 없이 낮게 남습니다(예산 << 한도).
+
+`CompleteMultipartUpload` 는 이미지 `0.1.37` 이상에서 조립하는 동안 `config.maxConcurrentUploads` 의 한 자리와,
+**가장 큰 파트 크기에 16 MiB 를 더한 만큼**(가장 큰 파트 × 파트 수가 약 140 GiB 를 넘으면 16 MiB 대신 그 값/9000)의
+바이트 예산을 예약하며, 그 값은 `config.maxUploadBytesInFlight` 로 잘립니다. 예약량(파트+16 MiB)이
+예산에 닿는 업로드는 그래서 직렬화됩니다 — 그런 조립이 도는 동안 다른 PUT·UploadPart 는
+`503 SlowDown` 을 받고, 그 Complete 도 다른 업로드가 하나도 진행 중이지 않을 때까지
+`503 SlowDown` 을 받을 수 있습니다. 클라이언트는 재시도하십시오.
 
 전체 설정값은 [values.yaml](values.yaml)을 참고하세요.
 
@@ -220,7 +230,7 @@ kubectl rollout restart -n <namespace> deploy/<fullname>   # 릴리스명이 아
 함께 들어가므로 별도 재시작이 필요 없습니다.
 
 차트는 `ServiceMonitor`를 포함하지 않습니다 — 모니터링 스택 구성이 배포마다 다르고, 차트가
-만든 오브젝트가 그쪽 셀렉터에 맞지 않으면 **아무것도 수집되지 않는데 오브젝트는 존재하는**
+만든 오브젝트가 모니터링 스택의 셀렉터에 맞지 않으면 **아무것도 수집되지 않는데 오브젝트는 존재하는**
 상태가 되기 때문입니다. 대신 두 형태의 설정 예시를 아래에 둡니다.
 
 ### 노출되는 지표
@@ -228,7 +238,7 @@ kubectl rollout restart -n <namespace> deploy/<fullname>   # 릴리스명이 아
 | 지표 | 타입 | 단위 | 어느 풀·무엇 |
 |---|---|---|---|
 | `cas_upload_in_flight` | gauge | 건수 | 동시 업로드 |
-| `cas_upload_in_flight_bytes` | gauge | 바이트 | 인플라이트 업로드가 **예약한** 바이트. 본문 길이를 아는 요청은 그 값이지만 **길이를 모르는 요청과 멀티파트 조립은 건당 5 MiB 고정으로 계상**됩니다. `aws-chunked` 요청의 본문 길이는 `x-amz-decoded-content-length` 에서 읽습니다(이미지 `0.1.27` 이상. 그 미만은 `Content-Length` 만 봤습니다 — 그 헤더가 없는 요청은 길이를 모르는 것으로 다뤘습니다). 실제 상주와 두 방향으로 어긋납니다 — 크기를 모르는 요청의 실제 상주는 스트리밍 경로 상한(파트 하나) 이내이고, dedup 히트는 메타 커밋 전에 해제되어 과대 계상됩니다. `maxUploadBytesInFlight` 의 판정 기준은 이 값이지 실측 RSS 가 아닙니다 |
+| `cas_upload_in_flight_bytes` | gauge | 바이트 | 인플라이트 업로드가 **예약한** 바이트. 본문 길이를 아는 요청은 그 값이지만 **길이를 모르는 요청은 건당 5 MiB 고정으로 계상**되고, 멀티파트 조립은 그 업로드의 가장 큰 파트 크기에 16 MiB 를 더한 값(예산으로 잘림)으로 계상됩니다(이미지 `0.1.37` 이상 — [주요 values](#주요-values) 아래 `CompleteMultipartUpload` 문단). `aws-chunked` 요청의 본문 길이는 `x-amz-decoded-content-length` 에서 읽습니다(이미지 `0.1.27` 이상. 그 미만은 `Content-Length` 만 봤습니다 — 그 헤더가 없는 요청은 길이를 모르는 것으로 다뤘습니다). 실제 상주와 두 방향으로 어긋납니다 — 크기를 모르는 요청의 실제 상주는 스트리밍 경로 상한(파트 하나) 이내이고, dedup 히트는 메타 커밋 전에 해제되어 과대 계상됩니다. `maxUploadBytesInFlight` 의 판정 기준은 이 값이지 실측 RSS 가 아닙니다 |
 | `cas_upload_limit` | gauge | 건수 | `maxConcurrentUploads` (`0`=무제한). **바이트 예산의 상한 게이지는 없습니다** |
 | `cas_upload_rejected_total` | counter | 건수 | 건수·바이트 거절을 **함께** 셉니다. 구분하려면 위 두 게이지를 함께 보십시오 |
 | `cas_blob_lock_map_entries` | gauge | 건수 | 진행 중인 쓰기가 걸린 **고유 해시 수**(대기자 포함). 이미지 `0.1.18` 이상에서 **유휴 시 `0`** |
@@ -252,6 +262,11 @@ kubectl rollout restart -n <namespace> deploy/<fullname>   # 릴리스명이 아
 | `cas_sts_reject_total{reason}` | counter | 건수 | STS 거절. `reason` 은 `invalid_token` · `expired_token` · `no_mapping` · `template_unusable` · `idp_unavailable` · `validation`. 〃 |
 | `cas_integrity_mismatch_total{source}` | counter | 건수 | 선언 체크섬과 받은 바이트가 다른 건수. `source` 는 `content_sha256` · `trailer_checksum`(바이트가 어긋남) · `trailer_protocol`(`x-amz-trailer` 선언을 어김). **`config.integrityCheck` 가 `off` 가 아닌 배포에만 나옵니다** (이미지 `0.1.29` 이상). `log` 에서 이 값이 곧 `enforce` 의 예상 거절 건수입니다 — 요청당 한 번만 셉니다 |
 | `cas_integrity_unchecked_total{algo,form}` | counter | 건수 | 체크섬이 왔는데 **대조하지 못한** 건수. `algo` 는 `sha1` · `other` 등 닫힌 집합이고 `form` 은 `trailer` · `header` 입니다. **여기 잡히는 것은 거절되지 않습니다** — 거절되는 것은 위의 `cas_integrity_mismatch_total` 입니다. 0 이 아니면 그만큼이 무검사로 통과하고 있습니다 |
+| `cas_mpu_complete_total{result}` | counter | 건수 | 멀티파트 Complete 의 조립 결과. `result` 는 `ok` 또는 실패한 S3 오류 코드(`InternalError` · `SlowDown` · `ServiceUnavailable` · `InvalidPart` · `InvalidDigest` 등 열린 집합 — 실패 경보는 `result!="ok"` 로 거십시오)이며, 클라이언트가 받는 `<Error>` 본문의 코드는 `InternalError` 또는 `SlowDown` 뿐이라 라벨과 다를 수 있습니다. **`200` 본문의 `<Error>` 는 HTTP 지표에 성공으로 잡히므로 실패는 이 지표로 봅니다.** 헤더 전 오류(`400`·`404`·`503`)와 Abort 쪽 `SlowDown` 은 세지 않습니다. 헤더 뒤 실패는 요청 로그의 응답 줄에도 헤더 시점의 `200` 으로 남습니다([아키텍처 6장](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.44/charts/cas-server/docs/architecture.md#6-에러-코드-및-대응)) (이미지 `0.1.37` 이상) |
+| `cas_mpu_complete_seconds` | histogram | 초 | 조립에 걸린 시간 (〃) |
+| `cas_mpu_complete_running` | gauge | 건수 | 진행 중인 조립 작업 수. 클라이언트가 끊겨도 조립은 끝날 때까지 셉니다 (〃) |
+| `cas_mpu_hash_combine_total{result}` | counter | 건수 | 조립 해시를 파트별 계산값으로 합친 결과와 실제 조립 결과의 대조. **대조만 하고 저장에는 쓰지 않습니다.** `match` · `mismatch` · `ineligible`(합칠 수 없는 파트 구성 — 파트가 둘 이상이고, 마지막을 뺀 파트가 모두 같은 2 의 거듭제곱 KiB 크기이며, 마지막 파트가 그 크기 이하여야 합니다. AWS CLI·boto3 기본 8 MiB 는 해당하고 5 MiB 는 아닙니다. 저장소가 파트 메타데이터를 거절한 경우도 여기입니다). 이 대조를 위해 S3 모드의 파트 객체에는 사용자 메타데이터 `x-amz-meta-cas-cv`·`x-amz-meta-cas-cv-offset`·`x-amz-meta-cas-part-hash` 가 붙고, 로컬 모드는 파트 옆에 `part_N.cv` 파일이 생깁니다. `mismatch` 는 `0` 이어야 합니다 — 오르면 경고 로그 `조립 해시 합치기 불일치` 의 `upload_id` 와 함께 알려 주십시오 (이미지 `0.1.37` 이상) |
+| `cas_request_timeout_total{reason}` | counter | 건수 | `408` 건수. `reason` 은 `idle`(무진행 시한 `config.requestTimeoutSecs`) · `max`(절대 상한 `config.requestMaxSecs`). 정의는 [큰 업로드와 시한](#큰-업로드와-시한) (이미지 `0.1.37` 이상) |
 
 ### 지표가 나타나는 시점 — `absent()` 알림을 걸기 전에
 
@@ -274,6 +289,10 @@ kubectl rollout restart -n <namespace> deploy/<fullname>   # 릴리스명이 아
 | `cas_gc_candidates` · `cas_gc_candidate_bytes` | 첫 GC 실행 뒤 | **걸지 마십시오** — 같은 이유 |
 | `cas_sts_issue_total` · `cas_sts_reject_total` | STS 를 켠 배포에서 기동 직후 | 켠 배포에만 걸으십시오. `auth.oidc.issuers` 가 비었거나 auth 를 켜지 않으면 **시리즈가 없습니다** |
 | `cas_integrity_mismatch_total{source}` | `config.integrityCheck` 가 `off` 가 아니고 이미지 `0.1.29` 이상이면 기동 직후 | 걸어도 됩니다. **시리즈의 부재가 「대조가 꺼져 있다」이므로 `absent()` 로 그것을 잡습니다** |
+| `cas_mpu_complete_total{result}` | 이미지 `0.1.37` 이상이면 기동 직후 `ok` · `InternalError` · `SlowDown` 만 `0` 으로(그 밖의 `result` 는 처음 일어난 뒤) | 걸어도 됩니다 |
+| `cas_mpu_complete_seconds` | 첫 조립이 끝난 뒤 | **걸지 마십시오** — 조립이 없던 파드에는 없습니다 |
+| `cas_mpu_complete_running` · `cas_mpu_hash_combine_total{result}` | 이미지 `0.1.37` 이상이면 기동 직후 `0` 으로(`result` 셋 모두) | 걸어도 됩니다 |
+| `cas_request_timeout_total{reason}` | 이미지 `0.1.37` 이상이면 기동 직후 `idle` · `max` 가 `0` 으로 | 걸어도 됩니다 |
 | `cas_integrity_unchecked_total{algo,form}` | 못 세는 체크섬이 처음 왔을 때 | `rate()` 로 걸어도 됩니다. 부재는 「그런 요청이 없었다」이지 꺼진 것이 아닙니다 |
 
 카운터와 달리 **`cas_gc_last_*` 게이지는 `0` 으로 등록하지 않습니다.** `cas_gc_last_status`
@@ -314,8 +333,8 @@ kubectl rollout restart -n <namespace> deploy/<fullname>   # 릴리스명이 아
 이상입니다. 콘솔이 이 카드를 `≥` 로 표시하는 이유가 그것이고, GC 대기분이 live 오브젝트보다
 많으면 값이 음수가 되므로 `N/A` 로 냅니다.
 
-모수가 맞는 값(live 오브젝트가 참조하는 고유 blob 만)은 `?sizes=true` 가 필요하고, 그쪽은
-`object_versions` × `blobs` 조인이라 데이터가 커지면 `statsStatementTimeoutSecs` 에 걸릴 수
+모수가 맞는 값(live 오브젝트가 참조하는 고유 blob 만)은 `?sizes=true` 가 필요하고, 이 조회는
+`object_versions` × `blobs` 조인이라 데이터가 커지면 `config.statsStatementTimeoutSecs` 에 걸릴 수
 있습니다(아래 "집계 조회 격리" 절).
 
 **풀별 분리는 없습니다** — `cas_db_pool_connections` 로는 집계 격리가 동작하는지 판정할 수
@@ -360,12 +379,12 @@ cas_authz_deny_total{action}         인증은 통과했고 정책이 막았다
 | `{reason="signed_invalid", cause=X}` | `cas_authn_fail_total{plane="s3", reason=X}` — `cause` 와 `reason` 이 같은 값입니다 |
 | `{reason="signed_valid"}` | **전용 시리즈가 없습니다.** 가장 가까운 값은 객체 경로의 성공 응답 수 — `axum_http_requests_total{endpoint="/{bucket}/{*key}", method=~"GET\|HEAD", status=~"2.."}` 입니다(presigned 포함). **같은 값은 아닙니다** — 아래를 보십시오 |
 
-⚠ **`signed_valid` 이 그대로 성공으로 넘어오지는 않습니다.** 익명 경로는 정책을 건너뛰므로,
+**주의:** **`signed_valid` 이 그대로 성공으로 넘어오지는 않습니다.** 익명 경로는 정책을 건너뛰므로,
 그 키에 `GetObject` 가 없어도 `signed_valid` 로 세어집니다. 내리면 그 요청들은
 `cas_authz_deny_total` 의 `403` 이 됩니다 — 내린 뒤 성공 수가 `signed_valid` 보다 작다면
 먼저 그 카운터를 보십시오.
 
-⚠ **`anonymousGet: true` 인 동안에는 객체 `GET`·`HEAD` 가 `missing_payload_hash` 로
+**주의:** **`anonymousGet: true` 인 동안에는 객체 `GET`·`HEAD` 가 `missing_payload_hash` 로
 거절되지 않습니다.** 그 경로는 인증 결과와 무관하게 통과하므로 그 헤더를 빼먹은
 요청도 200 이고, `cas_anonymous_get_total{reason="signed_invalid", cause="missing_payload_hash"}`
 에만 남습니다. 내리면 그때부터 `400` 입니다.
@@ -501,7 +520,7 @@ GC는 네 단계이고 `sweep` 만 `blobs` 전체를 훑습니다. 나머지 셋
 
 | 단계 | 무엇을 | 비용 |
 |---|---|---|
-| `multipart` | 만료된 미완료 멀티파트의 파트 회수 | 인덱스 |
+| `multipart` | 만료된 미완료 멀티파트의 파트 회수. 이미지 `0.1.37` 이상은 `tmp/` 아래 24 시간 지난 업로드 스테이징 파일·객체도 지웁니다(네이티브 멀티파트는 못 봅니다) | 인덱스 + `tmp/` 목록 |
 | `orphan` | 회수 후보 큐를 확인해 blob 물리 삭제 | O(삭제·덮어쓰기 건수) |
 | `purge` | 보존 기간 지난 삭제 레코드 정리 | 인덱스 |
 | `sweep` | `blobs` 전량 안티조인 | **O(테이블 크기)** |
@@ -562,7 +581,7 @@ DB 도 타지 않습니다. 그 이전 이미지에서는 `blobs` 전량을 안�
 
 주기는 데이터 크기가 아니라 **회수 대상이 쌓이는 속도**로 정하십시오. 스캔 비용은 회수할
 blob 이 0건이든 수천 건이든 같습니다. 판단 기준과 미루는 비용 계산은
-[docs/usage.md](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.43/charts/cas-server/docs/usage.md) 의 "주기를 정하는 기준" 을 참고하십시오.
+[docs/usage.md](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.44/charts/cas-server/docs/usage.md) 의 "주기를 정하는 기준" 을 참고하십시오.
 
 `gc.phases` 는 이미지 `0.1.20` 이상이 해석합니다. **`sweep` 은 `0.1.25` 이상**이라,
 `0.1.20`~`0.1.24` 에 보내면 서버가 `400` 으로 거절하고 그 Job 이 실패합니다.
@@ -859,10 +878,10 @@ curl -X DELETE "$BASE/_admin/access-keys/$SESSION_KEY_ID" -H "$SIGV4"
 이 오류만 반복됩니다.
 
 지표 둘이 함께 늡니다 — `cas_sts_issue_total{result}`(`issued`·`reused`)와
-`cas_sts_reject_total{reason}`. **`auth.oidc.issuers` 가 비면 등록되지 않으므로**
+`cas_sts_reject_total{reason}`. **`auth.oidc.issuers` 가 비었거나 auth 를 켜지 않으면 등록되지 않으므로**
 `absent()` 알림을 거실 때 그 조건을 함께 보십시오.
 
-⚠ **컷오버 게이트를 `issued` 로 만들지 마십시오.** 같은 `(issuer, subject)` 에 살아 있는
+**주의:** **컷오버 게이트를 `issued` 로 만들지 마십시오.** 같은 `(issuer, subject)` 에 살아 있는
 세션이 있으면 서버가 그것을 그대로 돌려주고 `result="reused"` 로 셉니다 — 워크로드가 정상
 동작 중인데도 `issued` 는 움직이지 않습니다. **성공 신호는 `issued + reused` 입니다.**
 
@@ -913,7 +932,7 @@ sum(increase(cas_sts_issue_total{result="issued"}[15m]))   # 정상을 실패로
    이 요청이 도는 읽기 전용 쿼리 둘 중 하나가 orphan 후보 COUNT인데, `blobs` ×
    `object_versions` 안티조인 전수 집계라 데이터가 커지면 디스크로 스필합니다 —
    아래 「집계 조회 격리」의 352.8 GB 스필과 같은 형태의 쿼리입니다.
-   `statsStatementTimeoutSecs`는 이 쿼리를 덮지 않습니다. 같은 SQL이지만 GC 풀에서
+   `config.statsStatementTimeoutSecs`는 이 쿼리를 덮지 않습니다. 같은 SQL이지만 GC 풀에서
    돌기 때문입니다.
 
    **그런데 그 상한인 `config.gcStatementTimeoutSecs`는 이미지 `0.1.18` 이상에서만
@@ -960,7 +979,7 @@ time curl -sS -X POST -H "Authorization: Bearer $TOKEN" \
 ```
 
 **주기를 정하기 전에 이 소요 시간을 재세요.** 두 가지가 합쳐진 값입니다 — 읽기 전용
-쿼리 두 개(그쪽 규모에서 얼마나 걸리는지는 재 봐야 압니다)와 락 테이블 순회입니다.
+쿼리 두 개(운영 규모에서 얼마나 걸리는지는 재 봐야 압니다)와 락 테이블 순회입니다.
 무거우면 6시간 주기로도 하루 330 MiB 상승이 약 83 MiB 톱니로 줄어듭니다.
 
 회수 건수는 cas-server 파드 로그에 남습니다 —
@@ -1005,7 +1024,7 @@ kubectl get deploy "$REL" -n "$NS" \
 서버가 본문을 BLAKE3 로 대조합니다(불일치 시 `InvalidDigest`). 이미 있는 해시면 본문을
 읽지 않고 즉시 완료하므로 대조가 일어나지 않습니다.
 
-⚠ **그 건너뜀은 둘이 동시에 참일 때만 일어납니다.**
+**주의:** **그 건너뜀은 둘이 동시에 참일 때만 일어납니다.**
 
 ```
 ⑴ 요청이 x-cas-hash 로 BLAKE3 를 선언했다
@@ -1053,8 +1072,10 @@ kubectl get deploy "$REL" -n "$NS" \
 기본값에서도 비용은 듭니다.** TLS 에서는 트레일러 축으로 가며, `x-amz-trailer` 가 선언한
 다이제스트만 굴립니다 — **그 헤더가 없으면 무엇이 올지 몰라 넷을 전부 굴립니다.** 업로드가 CPU 에 붙어 있으면 `off` 로 끌 수 있습니다.
 
-**지표는 검사가 켜진 배포에만 등록됩니다**(`off` 가 아닐 때). 시리즈의 부재가 「대조가
-꺼져 있다」를 뜻하므로 `absent()` 로 걸 수 있습니다.
+**`cas_integrity_mismatch_total` 은 검사가 켜진 배포에만 등록됩니다**(`off` 가 아닐 때).
+시리즈의 부재가 「대조가 꺼져 있다」를 뜻하므로 `absent()` 로 걸 수 있습니다.
+`cas_integrity_unchecked_total` 은 대조하지 못한 체크섬이 처음 올 때 생기므로 `absent()` 를
+걸지 마십시오.
 
 ## 집계 조회 격리 (이미지 `0.1.18` 이상)
 
@@ -1071,7 +1092,7 @@ kubectl get deploy "$REL" -n "$NS" \
 
 그보다 큰 레벨은 **잘리고, 응답에 그 사실이 실리지 않습니다.** `prefixes` 는 페이지를 나누지
 않는 계약이라(폴더는 매 페이지 전량, 파일만 `after` 로 이어 받음) 「더 있음」을 적을 자리가
-없기 때문입니다. **두 상한 모두 서버가 경고 로그를 남기므로 그쪽으로 확인하십시오.** 두 줄 다 `bucket` 과
+없기 때문입니다. **두 상한 모두 서버가 경고 로그를 남기므로 로그로 확인하십시오.** 두 줄 다 `bucket` 과
 `prefix` 를 필드로 남기므로 어느 레벨인지 바로 나옵니다. 둘 다 넘으면 걸음 상한 줄 하나만
 나옵니다.
 
@@ -1107,9 +1128,9 @@ kubectl logs -n <namespace> deploy/<fullname> | grep '개수 상한'
 | 장치 | 값 | 역할 |
 |---|---|---|
 | 커넥션 1개 | 고정 | 동시성 상한. 대시보드를 몇 번 새로고침해도 DB에 도는 집계는 항상 1건 |
-| `statsStatementTimeoutSecs` | `30` | PostgreSQL 이 실제로 문장을 취소하게 하는 유일한 수단 |
+| `config.statsStatementTimeoutSecs` | `30` | PostgreSQL 이 실제로 문장을 취소하게 하는 유일한 수단 |
 | `max_parallel_workers_per_gather = 0` | 고정 | `work_mem` 은 워커마다 따로 쓴다 — 워커가 붙으면 스필이 배가된다 |
-| `statsWorkMemMb` | `0` | 올리면 해시 조인 배치 수가 줄어 스필이 준다. **PG 쪽 메모리**를 쓴다 |
+| `config.statsWorkMemMb` | `0` | 올리면 해시 조인 배치 수가 줄어 스필이 준다. **PG 쪽 메모리**를 쓴다 |
 | 캐시 60초 + single-flight | `/_api/stats` 만 | 동시 요청이 쿼리를 하나만 띄운다 |
 
 **조회가 실패하면 `/_api/stats` 는 지난 값을 그대로 내보냅니다.** 나이 제한이 없으므로
@@ -1121,25 +1142,25 @@ kubectl logs -n <namespace> deploy/<fullname> | grep '개수 상한'
 `null` 을 200 으로 돌려주면 화면이 그것을 "중복이 없다"로 읽습니다. 쿨다운도 비용 등급별로
 갈라져 있어, 용량 계산이 실패해도 기본 조회는 그대로 응답합니다.
 
-**왜 타임아웃만으로는 부족한가.** 취소된 쿼리의 커넥션은 sqlx 가 닫지 않고 유휴 풀로
+**타임아웃만으로는 부족합니다.** 취소된 쿼리의 커넥션은 sqlx 가 닫지 않고 유휴 풀로
 반납합니다. 다음 획득자가 그 커넥션을 뽑으면 버려진 문장이 끝날 때까지 막힙니다 —
 즉 타임아웃된 집계 요청 하나가 풀 커넥션 하나를 오염시킵니다. `/_internal/health` 가
 요청 풀을 쓰기 때문에, 격리가 없으면 **인증 없는 GET 한 건이 파드를 Service 엔드포인트에서
 밀어낼 수 있습니다.**
 
-파드당 PostgreSQL 커넥션은 **최대** `dbMaxConnections + gcDbMaxConnections + 1` 입니다.
+파드당 PostgreSQL 커넥션은 **최대** `config.dbMaxConnections + config.gcDbMaxConnections + 1` 입니다.
 기본값 기준 `20 + 2 + 1 = 23`. 상시 점유가 아니라 상한입니다 — 기동 직후 실제로 열리는
-것은 4개(요청 풀의 `dbMinConnections: 2` + 각 풀 1개)이고, 유휴가 이어지면 2개까지
+것은 4개(요청 풀의 `config.dbMinConnections: 2` + 각 풀 1개)이고, 유휴가 이어지면 2개까지
 내려갑니다. PostgreSQL `max_connections` 사이징은 이 상한으로 잡으십시오.
 
-차트 기본값은 서버 기본값과 다릅니다 — `dbMaxConnections` 는 차트 20 / 서버 10,
-`dbAcquireTimeoutSecs` 는 차트 10 / 서버 30 입니다. 차트 밖에서 같은 부등식을 쓰면
+차트 기본값은 서버 기본값과 다릅니다 — `config.dbMaxConnections` 는 차트 20 / 서버 10,
+`config.dbAcquireTimeoutSecs` 는 차트 10 / 서버 30 입니다. 차트 밖에서 같은 부등식을 쓰면
 `10 + 2 + 1 = 13` 이 됩니다.
 
 지켜야 할 부등식:
 
 ```
-replicaCount × (dbMaxConnections + gcDbMaxConnections + 1) < PG max_connections
+replicaCount × (config.dbMaxConnections + config.gcDbMaxConnections + 1) < PG max_connections
 ```
 
 ## 삭제와 되돌림 창
@@ -1168,6 +1189,74 @@ DB 를 직접 고쳐야 하므로, 필요하면 GC 를 먼저 멈추고(`gc.enab
 쓰지 않으므로(항상 최신을 읽습니다) 켜도 사용자에게 이전 버전이 보이지 않는 반면,
 `object_versions` 행 누적은 그대로 옵니다.
 
+## 큰 업로드와 시한
+
+`config.requestTimeoutSecs` 는 **요청 시작과 마지막으로 받은 본문 바이트 중 늦은 쪽**부터
+응답 헤더까지 잽니다(로컬·S3 백엔드 공통). 본문이 계속 흐르면 전체가 시한보다 길어도 끊지
+않고, 클라이언트가 본문 도중 멈추면 마지막 바이트 + 시한에 `408` 입니다.
+
+그와 별개로 `config.requestMaxSecs` 가 요청 시작부터 응답 헤더까지의 **절대 상한**입니다.
+둘 중 먼저 닿는 쪽이 `408` 이고, 본문이 계속 흐르는 요청도 이 상한에서 끊깁니다. 따라서
+모든 시한을 끄려면 `config.requestTimeoutSecs` 와 `config.requestMaxSecs` 를 둘 다 `0` 으로
+두어야 합니다. 시한을 넘긴 `408` 은 매번 경고 로그 한 줄(`요청 시한 초과`: method·path·
+경과·마지막 본문 이후 시간·사유)을 남기고 `cas_request_timeout_total{reason}`(`idle` = 위
+무진행 시한, `max` = 절대 상한)을 올립니다.
+
+`config.requestTimeoutSecs` 를 `3600` 넘게 올려 둔 배포는 `config.requestMaxSecs` 도 함께
+올려야 합니다. 아니면 실효 상한이 `3600` 초입니다(10 GiB 를 3600 초 안에 받으려면 약
+3 MB/s 이상).
+
+본문을 다 받은 뒤의 처리(저장, 해시 없는 PUT 의 복사)도 그 시한 안에 끝나야 합니다. 넘으면
+`408` 이고 **저장됐는지 보장하지 않으니(대개는 저장되지 않습니다) 클라이언트가 다시 보내야
+합니다.** HTTP 접근 로그의 응답 줄은 남지 않습니다. S3 백엔드에서 본문이 큰 해시 없는 단일
+PUT 은 이 시간(tmp → 최종 복사)이 본문 크기에 비례해 길어져
+`config.maxUploadSizeBytes` 근처에서 시한을 넘을 수 있습니다. `config.requestTimeoutSecs` 를
+올리거나, 그 크기대는 멀티파트로 보내십시오.
+
+S3 백엔드에서 해시 없는 단일 PUT 의 tmp → 최종 복사처럼 `config.s3RequestTimeoutSecs` 밖의
+요청([주요 values](#주요-values))은 위 시한만 받습니다.
+
+응답 헤더 뒤에는 시한이 없습니다. 다만 클라이언트가 응답 본문(객체 `GET` 등)을 읽지 않고
+멈추면, 소켓 버퍼가 찬 뒤 `config.requestTimeoutSecs` 이상 지나 서버가 그 응답을 오류로 끝내고(연결은 클라이언트가 다시 읽을 때 닫힙니다) 경고 로그
+`응답 본문을 가져가지 않아 끊는다` 를 남깁니다(이미지 `0.1.37` 이상, `0` = 끔). 느리게라도
+읽는 클라이언트는 끊지 않습니다.
+
+CompleteMultipartUpload 는 검증 뒤 바로 `200` 을 보내고 조립하는 동안 10 초마다 공백을 보냅니다.
+성공과 실패는 **본문**(`<CompleteMultipartUploadResult>` 또는 `<Error>`)에 있으므로 상태 코드만
+보는 클라이언트는 실패를 성공으로 읽습니다. 실패는 `cas_mpu_complete_total{result!="ok"}` 로
+보십시오 — `result` 는 열린 집합입니다.
+
+조립은 요청 시한 밖에서 돕니다. 상한은 진행 감시입니다 — 조립이 `config.s3ReadIdleTimeoutSecs`
+동안 저장소에 읽거나 쓴 바이트가 없으면 끊고 `<Error>InternalError` 로 끝납니다(로컬·S3 공통,
+`0` = 끔). 진행이 보이지 않는 마지막 단계(S3 의 최종 `CompleteMultipartUpload`, 로컬의
+fsync·rename)는 `config.s3ReadIdleTimeoutSecs` 의 5 배와 `config.s3RequestTimeoutSecs` 중 큰
+값(기본 300 초)까지 기다립니다. 그 뒤의 커밋 단계(DB 기록)도 같은 값으로 묶여, DB 가 응답하지
+않으면 그 시간 뒤 `<Error>InternalError` 로 끝나고 SDK 가 재시도합니다(`config.s3ReadIdleTimeoutSecs`
+가 `0` 이어도 그것을 `60` 으로 쳐서 겁니다). 진행 중인 조립 수는 `cas_mpu_complete_running` 입니다.
+커밋이 끝나면 결과를 바로 보내고, 파트 정리는 그 뒤 따로 돕니다(최대 15 분). 정리가 끝나기
+전이나 실패한 뒤에는 그 업로드가 `ListMultipartUploads` 에 보이고, 남은 것은 GC 가
+`config.multipartTtlSecs` 뒤에 치웁니다.
+
+파트가 저장소에 없어 실패한 조립은 5 분 동안 보관되어, 같은 파트 목록의 Complete 재시도는
+헤더 전에 `400 InvalidPart` 를 받습니다 — SDK 가 같은 실패를 되풀이하지 않게 하기 위해서입니다.
+백엔드가 하나이거나 버킷이 백엔드에 핀된 경우만이고, 그 밖의 실패는 보관하지 않아 재시도가
+새로 조립합니다. 보관 중에도 `AbortMultipartUpload` 는 바로 `204` 입니다. 그 업로드에 파트를
+다시 올리면(`UploadPart` 성공) 보관이 지워져 다음 Complete 는 새로 조립합니다(S3 와 같습니다).
+방금 올린 파트를 잠시 `404` 로 답할 수 있는 저장소(읽기·목록이 최종 일관)는 그대로는 지원하지 않습니다 — 5 분 안의 재시도도 `400 InvalidPart` 이므로 클라이언트가 그 파트를 다시 올려야 합니다.
+
+조립 결과의 보관(성공 15 분, 위 실패 5 분)은 파드 메모리라 **파드가 재시작하면 사라집니다.**
+실패한 업로드의 재시도는 그 뒤 새로 조립합니다. 성공한 업로드의 같은 Complete 를 15 분 안에,
+재시작 없이 다시 보내면 같은 결과를 받습니다. 재시작 뒤나 15 분 뒤에는 파트 정리가 어디까지
+갔느냐에 따라 다릅니다.
+
+- 정리가 끝났으면 `404 NoSuchUpload` 입니다(S3 와 같습니다). 보통은 이 경우입니다.
+- 알려진 제약 — 정리 중에 파드가 재시작했거나 정리가 실패·시한 초과(15 분)로 파트를 일부만
+  지웠으면, 먼저 `<Error>InternalError` 를 받고 SDK 의 재시도가 헤더 전 `400 InvalidPart` 를
+  받아 멈춥니다(위 실패 보관). **객체는 이미 커밋되어 온전합니다** — `HeadObject` 로 확인하십시오.
+- 알려진 제약 — 파트가 모두 남아 있었으면 그 내용이 다시 커밋됩니다. 버저닝 버킷은 새 버전이 생기고, 버저닝이 꺼진 버킷은 그 사이 같은 키에 쓴 더 새로운 객체를 덮어씁니다.
+
+Complete 가 조립하는 동안 버킷 버저닝을 켜거나 끄면, 응답 헤더의 `x-amz-version-id` 가 실제로 커밋된 버전과 다를 수 있습니다(알려진 제약).
+
 ## 오브젝트 스토리지 lifecycle 규칙 (S3 모드)
 
 GC 가 회수하지 못하고 새는 객체가 세 자리에 있습니다. 스토리지 쪽 lifecycle 규칙이 그
@@ -1177,7 +1266,8 @@ GC 가 회수하지 못하고 새는 객체가 세 자리에 있습니다. 스�
 
 `storage.s3.keyPrefix` 를 비워 두면 **서버가 `cas/` 를 씁니다** — 버킷 루트에 쓰는 선택지는
 없습니다. 즉 차트 기본값 그대로면 실제 키는 `cas/objects/…` 입니다. 규칙을 `parts/` 에 걸면
-아무것도 매치하지 않습니다. 기동 로그 첫 줄의 설정 출력에서 실제 값을 확인하십시오.
+아무것도 매치하지 않습니다. 기동 로그 첫 줄 「적용된 설정」의 `key_prefix` 를 확인하십시오 —
+`None`(json 은 `null`)이면 `cas/` 입니다.
 
 아래 표의 `{prefix}` 는 그 실효 프리픽스입니다(기본값이면 `cas/`).
 
@@ -1211,6 +1301,11 @@ GC 가 회수하지 못하고 새는 객체가 세 자리에 있습니다. 스�
 치우는 것뿐이고, 그것은 `AbortIncompleteMultipartUpload` 가 합니다 — 이 규칙은 완성된 객체를
 건드리지 않습니다.
 
+**네이티브 멀티파트는 GC 가 치우지 못합니다.** 서버는 취소된 쓰기의 멀티파트를 그 자리에서
+abort 하지만, 종료 기한(신호 뒤 55 초)에 끊기거나 파드가 강제 종료된 쓰기·조립의 것은 남을 수 있습니다.
+`objects/`·`tmp/` 의 `AbortIncompleteMultipartUpload` 가 그것을 치우는 유일한 수단입니다.
+`tmp/` 의 평범한 객체는 이미지 `0.1.37` 이상에서 GC 도 지웁니다([GC 단계](#gc-단계와-두-cronjob)).
+
 ### TTL 을 7일로 두는 이유
 
 서버는 만료된 미완료 업로드의 파트를 GC 가 정리합니다. 기준은
@@ -1218,9 +1313,11 @@ GC 가 회수하지 못하고 새는 객체가 세 자리에 있습니다. 스�
 바꿀 수 있습니다. 그 이하는 24시간 고정입니다.
 
 lifecycle 은 **그 정리가 실패했을 때의 백스톱**이므로 그 값보다 넉넉해야 합니다.
-`multipartTtlSecs` 를 올리셨다면 여기 TTL 도 함께 올리십시오. 너무 짧게
-잡으면 진행 중인 업로드의 파트가 조립 전에 사라져 **쓰기가 5xx 로 실패합니다** — 읽기에서
-데이터가 비는 형태가 아니라 쓰기 실패로 드러나므로 즉시 눈에 띕니다.
+`config.multipartTtlSecs` 를 올리셨다면 여기 TTL 도 함께 올리십시오. 너무 짧게 잡으면
+진행 중인 업로드의 파트가 조립 전에 사라져 **Complete 가 실패합니다** — `200` 뒤 본문
+`<Error>InternalError` 로 끝나고, 같은 파트 목록의 재시도는 5 분 동안 `400 InvalidPart`
+입니다(위 「큰 업로드와 시한」). 읽기에서 데이터가 비는 형태가 아니라 쓰기 실패로 드러나며,
+`cas_mpu_complete_total{result!="ok"}` 로 보입니다.
 
 ### 회수되는지 확인하는 방법
 
@@ -1411,11 +1508,11 @@ response    status · latency
 | `livenessProbe` | `GET /_internal/live` | 프로세스 응답성만. **의존성을 보지 않음** |
 | `readinessProbe` | `GET /_internal/health` | **DB에 닿는지** + 백엔드 가용성. 닿지 못하면 503 (S3 모드에서 백엔드 검사는 항상 통과 — 아래 참고) |
 
-### readinessProbe.timeoutSeconds 는 dbAcquireTimeoutSecs 보다 커야 합니다
+### readinessProbe.timeoutSeconds 는 config.dbAcquireTimeoutSecs 보다 커야 합니다
 
 `/_internal/health` 는 DB 커넥션을 얻지 못하면 `config.dbAcquireTimeoutSecs` 만큼 붙들려
 있습니다. `timeoutSeconds` 가 그보다 짧으면 **서버가 판정을 내리기 전에 프로브가 먼저
-끊깁니다.** 기본값은 `12 > 10` 으로 맞춰져 있습니다. `dbAcquireTimeoutSecs` 를 올리면
+끊깁니다.** 기본값은 `12 > 10` 으로 맞춰져 있습니다. `config.dbAcquireTimeoutSecs` 를 올리면
 이 값도 함께 올리세요. 차트는 렌더 시점에 이 부등식을 검증하고, 어긋나면 설치가
 실패합니다.
 

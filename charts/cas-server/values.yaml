@@ -6,11 +6,11 @@
 #
 # ── 문서 ─────────────────────────────────────────────────────────────────────
 #   아키텍처 (스토리지 모델·백엔드·API 명세)
-#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.43/charts/cas-server/docs/architecture.md
+#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.44/charts/cas-server/docs/architecture.md
 #   사용법 (배포·키 관리·AWS CLI/boto3 예제)
-#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.43/charts/cas-server/docs/usage.md
+#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.44/charts/cas-server/docs/usage.md
 #   차트 README
-#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.43/charts/cas-server/README.md
+#     https://github.com/int2nexus/cas-server/blob/cas-server-0.1.44/charts/cas-server/README.md
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── 이미지 ────────────────────────────────────────────────────────────────────
@@ -33,7 +33,7 @@ image:
   #  - 해시별 쓰기 락 테이블의 즉시 회수. GC 실행 시에만 회수되므로,
   #    gc.enabled: false 배포에서는 유휴 바닥값이 상승한다 (gc 섹션 주석 참고)
   #  - auth.metricsToken. 그 토큰으로 스크레이프하면 401 이 된다
-  tag: "0.1.36"
+  tag: "0.1.37"
   # digest 로 핀하려면 여기에 넣으십시오 (`sha256:...`). 값이 있으면 tag 대신 이것이
   # 쓰이고, 렌더 결과가 `repository@sha256:...` 가 됩니다.
   #
@@ -114,7 +114,10 @@ config:
   dbMaxConnections: 20
   dbMinConnections: 2               # 항상 유지할 유휴 커넥션. 0이면 뜸한 뒤 첫 요청이 접속 핸드셰이크 비용을 문다(실측 68ms → 0.5ms)
   dbAcquireTimeoutSecs: 10          # DB 커넥션 획득 타임아웃 (초) — 부하 시 빠른 실패 선호. 아래 readinessProbe.timeoutSeconds 와 함께 움직인다
-  requestTimeoutSecs: 120           # 요청 처리 타임아웃 (초). 0=비활성화. 느린 S3 백엔드까지 포함한 요청 경로의 유일한 wall-clock 상한이다
+  requestTimeoutSecs: 120           # 요청 처리 타임아웃 (초). 0=비활성화(requestMaxSecs 는 남는다). 마지막으로 본문 바이트를 받은 때(본문 없는 요청은 요청 시작)부터 응답 헤더까지 잰다 — 본문이 흐르는 동안 끊지 않는다. 헤더 뒤에는 응답 본문을 읽지 않는 클라이언트만 이 시간으로 끊는다(README 「큰 업로드와 시한」)
+  requestMaxSecs: 3600              # 이미지 0.1.37 이상. 요청 시작부터 응답 헤더까지의 절대 상한 (초). 0=비활성화. 본문이 계속 흐르는 요청도 이 시간에 끊어, 느리게 흘리는 클라이언트가 업로드 허가를 무한정 쥐지 못하게 한다
+  s3ReadIdleTimeoutSecs: 60        # 이미지 0.1.37 이상. S3 백엔드 본문 읽기(객체 GET, 멀티파트 조립의 파트 읽기)의 무진행 시한 (초). 큰 객체는 전체 시간이 길어도 바이트가 흐르는 한 끊지 않는다. 멀티파트 조립의 진행 감시도 이 값을 쓴다(로컬 백엔드 포함). 0=비활성화(둘 다. 커밋 단계 상한은 60 으로 쳐서 남는다) — 운영에서 0 으로 두지 말 것(README)
+  s3RequestTimeoutSecs: 30          # 이미지 0.1.37 이상. S3 HEAD·DELETE·LIST 와 5 MiB 이하 단일 PUT 의 전체 시한 (초). 대상 범위는 README 「주요 values」. 응답 없는 백엔드에서 연결이 매달리지 않게 한다. 0=비활성화 — 운영에서 0 으로 두지 말 것(README)
   # GET 을 스토리지로 넘기는 307 redirect 의 URL 유효 시간 (초). 0 = 비활성화(기본값).
   #
   # **켜면 GET /{bucket}/{key} 가 본문이 아니라 307 을 돌려준다.** Location 이 오브젝트
@@ -172,8 +175,9 @@ config:
   # 확인하려면 업로드를 만들고 중단한 뒤 만료를 기다려야 하는데, 24시간이면 GC 주기까지
   # 더해 확인에 한 주가 걸린다. 몇 분으로 줄이면 즉시 판정할 수 있다.
   #
-  # **운영에서 짧게 잡지 말 것.** 진행 중인 업로드의 파트가 조립 전에 회수되면 그
-  # 업로드가 5xx 로 실패한다. 큰 파일을 올리는 클라이언트가 먼저 깨진다.
+  # **운영에서 짧게 잡지 말 것.** 진행 중인 업로드가 만료로 회수되면 그 업로드의
+  # UploadPart·Complete 가 404 NoSuchUpload 로 실패한다. 큰 파일을 올리는 클라이언트가
+  # 먼저 깨진다.
   multipartTtlSecs: 86400
 
   # ── 웹 콘솔 ────────────────────────────────────────────────────────────────
@@ -509,6 +513,7 @@ resources:
     cpu: "2000m"
     memory: "6Gi"
 
+# 서버는 SIGTERM 뒤 55 초까지 진행 중인 요청·조립을 기다린다(이미지 0.1.37 이상). 이 값을 그보다 짧게 두지 말 것
 terminationGracePeriodSeconds: 60
 
 # ── 헬스체크 프로브 ───────────────────────────────────────────────────────────
