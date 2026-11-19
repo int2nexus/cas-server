@@ -81,6 +81,51 @@ nexus-server 는 마이그레이션이 바이너리에 임베드되어 **기동 
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.3.33
+
+image: `int2jieun/nexus-server:0.1.38` → `int2jieun/nexus-server:0.1.39`
+digest: `sha256:9df8ba31bc908b7f7ed0a13c72ef7c8f818b06e9f8827654ab8df1123d8feb0d`
+
+**동작 변경** — explorer 의 annotation 필터(`annotation` 매처)를 실행하는 방식 하나입니다. 그 밖의 호출은 `0.1.38` 과 같습니다.
+
+1. **일찍 멈추는 경로.** explorer 목록 · projection(`POST /datasets/{id}/versions/{v}/samples/explorer`), 상한 개수
+   (`POST …/samples/explorer/count`, 기본 — 10,000 에서 멈춤), subset 페이지 읽기(`GET /subsets/{id}/samples`)입니다. `0.1.38` 은
+   매처마다 걸리는 sample_id 를 버전 전체에서 먼저 모았으므로(미리 해소), `limit` 이 1 이어도 흔한 값이면 걸리는 instances 행을 모두
+   읽었습니다. 이제 매처마다 그 미리 해소를 3 초 안에서 먼저 시도하고, 넘기면 그 매처만 샘플마다 탐침해 `limit`(개수는 상한)을
+   채우면 멈춥니다.
+   - 3 초는 매처마다 따로이고 설정 키가 아닙니다. 목록은 페이지마다 다시 시도하므로 3 초를 넘기는 매처는 페이지마다 최대 3 초를
+     씁니다(DB 커넥션을 기다리는 시간은 별도).
+   - 결과 집합 · 정렬 · cursor · offset · 응답 모양은 바뀌지 않습니다.
+2. **결과 전부를 보는 경로는 `0.1.38` 과 같은 문장으로 돕니다.** 전수 개수(`POST …/samples/explorer/count?exact=true`), facet 개수
+   (`POST …/facets/counts`), CVAT 세션 계획(`POST …/annotation-sessions/plan`), subset 물질화(`POST /subsets/{id}/version`), by-filter
+   쓰기 셋(`PATCH …/samples/meta/by-filter`, `POST` · `DELETE …/samples/tags`, `PATCH …/samples/keypoint-info`)입니다. 매처들의
+   교집합이 비면 남은 매처를 해소하지 않는 것만 다르고, 결과는 같습니다.
+3. **느려질 수 있는 경우(받아들인 것).** 매처의 `0.1.38` 미리 해소가 3 초를 넘고 그 값이 이 버전에 드물거나 없으면, 3 초를 쓴 뒤
+   탐침이 범위 전체를 걸어 `0.1.38` 보다 느립니다. 「이 버전에는 없거나 드물지만 다른 dataset 에는 행이 많은 값」과 인덱스로 좁히지
+   못하는 조건(예: `component.type` 만 준 매처)이 해당합니다. 로컬 합성 DB(instances 약 510 만 행, 110 만 샘플 버전)에서 이 버전에
+   없는 `{component: {type: polygon}}` 매처가 따뜻한 캐시 5.3 → 8.9 초, 차가운 캐시 6.1 ~ 6.3 → 22 ~ 23 초였고, 흔한 그룹
+   `limit=1` 은 1.88 → 1.73 초였습니다. 운영 규모의 시간은 표와 버전의 크기에 따라 다릅니다.
+4. **PostgreSQL 에 보이는 것.** 3 초에 끊긴 시도는 PostgreSQL 로그에 `canceling statement due to statement timeout` 오류로 남을 수
+   있고, `pg_stat_statements` 에는 기록되지 않습니다. 시도 문장은 머리 주석 `/* explorer-prefetch-attempt */` 로 구분합니다.
+5. **지표 `nexus_explorer_matcher_exec_total{exec,reason}`.** 필터를 컴파일할 때마다(목록은 페이지마다) 쓰인 annotation 매처마다
+   하나를 셉니다. 다섯 시리즈 모두 `0` 부터 나옵니다.
+
+   | `exec` | `reason` | 뜻 |
+   |---|---|---|
+   | `prefetch` | `budget_ok` | 1 의 경로에서 3 초 안에 미리 해소가 끝남 |
+   | `prefetch` | `forced` | 2 의 경로의 미리 해소 |
+   | `probe` | `budget_exceeded` | 미리 해소가 3 초를 넘어 탐침 — 그 요청이 이 매처에 3 초를 썼다 |
+   | `probe` | `attempt_failed` | 시도가 시한이 아닌 오류로 실패해 탐침 — 오르면 DB 오류를 본다 |
+   | `probe` | `forced` | 시험 전용, 운영에서는 늘 `0` |
+
+**마이그레이션** — 없음. 롤백 안전(이미지 `0.1.38` 로 되돌리면 동작이 이전으로 돌아가고 5 의 지표가 사라집니다).
+**설정 키** — 없음
+**호환성** — `0.1.38` 파드와 섞여 돌아도 됩니다(스키마가 같습니다). 특정 SDK 버전을 요구하지 않습니다.
+**운영 조치** — 없음(필수 아님). 올린 뒤 annotation 필터가 걸린 explorer 목록 · 상한 개수의 응답이 전보다 느려지고, 그 요청과 함께
+`nexus_explorer_matcher_exec_total{reason="budget_exceeded"}` 가 오르며 결과가 적거나 비면 3 의 경우입니다(응답 시간은
+`axum_http_requests_duration_seconds` 의 `endpoint` 가 `/datasets/{dataset_id}/versions/{version}/samples/explorer` ·
+`…/samples/explorer/count` 인 시리즈). 되돌릴 때는 `image.tag` 를 `0.1.38` 로 바꿉니다.
+
 ## 0.3.32
 
 image: `int2jieun/nexus-server:0.1.37` → `int2jieun/nexus-server:0.1.38`
@@ -342,7 +387,7 @@ digest: `sha256:e8ef4c61380c97f4d8683f5a09ae824de872aee4e528501459fc4a575df72f7e
   `autovacuum_analyze_scale_factor = 0.01`) — 대량 사본 쓰기 직후 통계가 비어 계획이 나빠지지 않게 합니다.
 - **예상 소요시간** — 행 수와 무관하게 표 생성만입니다(수 초 이내, 샘플 150 만 DB 에서 56 ms).
 - **롤백** — 사본·관측이 생긴 뒤에는 데이터를 잃습니다. 절차와 SQL 은 차트 README
-  [되돌리기 › 039 가 적용된 DB](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.32/charts/nexus-server/README.md#039-가-적용된-db) 이고, **파드를 0 개로 내린 뒤** SQL 을 돌리고 이전 판 리비전으로
+  [되돌리기 › 039 가 적용된 DB](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.33/charts/nexus-server/README.md#039-가-적용된-db) 이고, **파드를 0 개로 내린 뒤** SQL 을 돌리고 이전 판 리비전으로
   `helm rollback` 합니다(파드를 0 개로 내리므로 rollback 전에 Recreate 로 바꿀 필요는 없습니다. helm 4 면 rollback 뒤 README 되돌리기 4 대로 RollingUpdate 로
   되돌립니다). 파드가 떠 있는 채 SQL 을 돌리면 그 파드가 재시작하며
   039 를 다시 적용합니다. `0.1.33` ~ `0.1.36` 으로 되돌릴 때는 039 만 걷습니다. 잃는 것과 미리 떠 둘 것(사본 표 내보내기)은 그 절에
