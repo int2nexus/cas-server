@@ -9,6 +9,35 @@ pip install --extra-index-url https://int2nexus.github.io/cas-server/sdk/simple/
 `scripts/publish_sdk.py` 는 `sdk/pyproject.toml` 의 버전과 같은 `## <버전>` 절이 이 파일에 없으면
 빌드하지 않고 멈춥니다. 최신 버전이 위로 오게 적습니다.
 
+## 0.1.30
+
+- **`ds.fork(...)` 에 필터를 주면 걸린 샘플의 `sample_id` 만 받고, 빈 문자열 필터를 필터로 봅니다.**
+  - 메모리: 종전에는 `samples(include_annotations=False)` 로 걸린 샘플의 경량 행(meta·태그·이미지 주소 포함)을 전부 모은 뒤 id 를 뽑아, meta 가 행당 3 KB 면 SDK 메모리가 샘플당 약 10 KB(100 만 샘플이면 약 10 GB)였습니다. 이제 explorer projection(`fields=["sample_id"]`)으로 id 만 읽습니다. 서버가 새 버전에 담을 id 목록을 받으므로 그 목록(샘플 100 만 개에 약 90 MB)은 남습니다. nexus-server `0.1.25` 이하 파드는 projection 을 몰라 행 전체를 주지만, 그때도 페이지마다 id 만 남깁니다.
+  - 필터 판정: 종전에는 `split=""`·`label=""`·`group_key=""` 를 참거짓으로 판정해 필터가 없는 것으로 보고 버전 전체를 fork 했습니다(`ds.samples()` 는 같은 값을 필터로 보냅니다). 이제 `samples()` 와 같이 `None` 이 아니면 필터입니다. `sample_ids`·`tags`·`exclude_tags` 의 빈 값(`[]`·`""` 등)과 `meta={}` 는 종전처럼 필터 없음입니다(버전 전체 fork). 그 밖의 필터 뜻과 오류는 같습니다.
+  - **호환성:** `split`·`label`·`group_key` 에 빈 문자열을 「필터 없음」의 기본값으로 넘기던 호출은 이제 그 값을 가진 샘플만 담거나, 걸린 샘플이 없으면 `ValueError`(「필터에 매칭되는 샘플이 없습니다」)입니다 — 전체를 fork 하려면 그 인자를 빼거나 `None` 을 넘기십시오.
+- **`ds.rewrite_thumbnails(role)` 은 버전의 샘플 목록을 모아 두지 않고, 그 핸들의 CAS 로 읽고 씁니다.**
+  - 메모리: 종전에는 `list_samples()` 로 버전의 샘플 행(에셋 정보 포함) 전부를 받은 뒤 URL 목록을 만들어 넘겼습니다. 이제 목록을 페이지씩 읽으며 URL 을 하나씩 `nx.rewrite_thumbnails` 에 흘려 넣습니다(아래 항목). 반환은 그 함수의 결과 그대로입니다.
+  - CAS: 종전에는 `nx.rewrite_thumbnails` 에 CAS 를 넘기지 않아 모듈 전역 접속(`nx.connect()` 로 연 것, 없으면 자동 접속)을 썼습니다 — `Dataset.load_or_create(cas=...)` 로 다른 CAS 를 준 핸들에서 다른 CAS 에 닿거나 자동 접속이 실패했습니다. `cas=` 를 직접 주면 그 값을 쓰고, `cas=None` 은 주지 않은 것과 같습니다.
+- **`nx.rewrite_thumbnails(refs)` 는 `refs` 를 먼저 다 읽지 않습니다.**
+  - 메모리: 종전에는 `refs` 전체를 대상 목록으로 만든 뒤 작업을 한꺼번에 스레드 풀에 넣었습니다. 이제 읽는 대로 넣고, 진행 중인 작업이 `workers × 4` 개에 이르면 하나라도 끝날 때까지 다음을 읽지 않습니다 — 제너레이터를 넘기면 메모리는 `refs` 의 길이가 아니라 처리한 객체 수(같은 객체를 한 번만 처리하려고 쥐는 `(bucket, key)` 집합)와 실패 수에 비례합니다.
+  - 같은 것: 반환의 키와 뜻·중복 거르기(같은 `(bucket, key)` 는 처음 나온 하나만)·실패 격리, `workers=None` 은 종전처럼 스레드 풀의 기본 일꾼 수입니다.
+  - 달라진 것: `failed` 의 키 순서가 실패한 순서입니다(종전에는 잘못된 참조가 먼저였습니다). 진행 막대의 전체 수는 `refs` 가 `len()` 을 가질 때만 그 값(중복·잘못된 참조 포함)이고 끝나면 실제로 처리한 수로 맞춥니다.
+  - 도중에 멈추면(`refs` 제너레이터가 서버 오류를 낸 경우, `KeyboardInterrupt` 등) 아직 시작하지 않은 작업은 취소하고 도는 작업만 마저 거둔 뒤 그때까지의 결과(반환과 같은 dict)를 그 예외의 `partial_result` 에 실어 올립니다 — 쓴 썸네일은 되돌리지 않으므로 무엇을 썼는지 보고 남은 것만 다시 할 수 있습니다. 종전에는 `refs` 를 다 읽은 뒤 쓰기 시작해, 읽는 도중 멈추면 쓴 것도 결과도 없었습니다. `ds.rewrite_thumbnails` 가 샘플 목록 페이지를 읽다 실패한 경우도 이 길입니다.
+  - 거두는 동안 다시 멈추면(두 번째 Ctrl-C) 도는 작업을 기다리지 않고 그 나중 예외를 올립니다(첫 예외는 `__cause__`) — 그 작업이 뒤에서 쓴 썸네일은 결과에 없을 수 있고(다시 써도 같은 결과입니다), 도는 스레드는 멈출 수 없어 프로세스가 끝날 때는 그 작업이 끝나기를 기다립니다.
+- **`ds.clone()` 의 옛 서버 경로는 원본 목록을 모아 두지 않고, 잘못된 대상·`batch_size` 를 보내기 전에 거절합니다.** 이 경로는 clone job 이 없는 nexus-server(`0.1.16` 이하)에서 `import_samples` 를 반복하는 폴백이고, clone job 이 있는 서버의 경로는 바뀌지 않았습니다.
+  - 메모리: 종전에는 `list_samples()` 로 원본 샘플 행 전부를 받은 뒤 id 를 뽑아 `batch_size` 씩 보냈습니다. 이제 목록을 페이지씩 읽으며 `batch_size` 가 모일 때마다 보냅니다. 진행 막대는 묶음 수가 아니라 보낸 샘플 수를 셉니다(전체 수는 표시하지 않습니다).
+  - `batch_size` 가 1 이상의 정수(numpy 정수 등 `__index__` 를 가진 값 포함, `bool` 제외)가 아니면 새 dataset 을 만들기 전에 `ValueError` 입니다 — 종전에는 0 이면 dataset 을 만든 뒤 `ValueError`(빈 dataset 이 남았습니다), 음수면 dataset 만 만들고 아무것도 복사하지 않았습니다.
+  - 대상이 원본 버전 자신(같은 dataset·같은 버전)이면 보내기 전에 `ValueError` 입니다(이름이 아니라 연 dataset 의 id 로 판정합니다). 종전에는 원본 버전에 원본 샘플을 한 벌 더 복사했습니다(샘플이 두 배가 됩니다). 이제는 원본 목록을 읽으며 보내므로 막지 않으면 방금 만든 사본을 다시 읽어 끝나지 않습니다.
+- **`ds.list_samples(max_samples=0)` 은 빈 목록입니다.** 종전에는 샘플 하나를 넣은 뒤 상한을 세어 한 건을 돌려줬습니다. 이제 서버에 묻지 않고 `[]` 를 돌려줍니다. 음수도 같습니다.
+- **`ds.to_df(sample_fields=True, chunksize=N)` 의 draft 경로는 `tags`·`split` 을 버전 크기만큼 들고 있지 않습니다.** 종전에는 explorer 행을 받으며 `{sample_id: (tags, split)}` 맵을 따로 채워 끝까지 들고 있어, `chunksize` 를 줘도 버전 크기만큼 자랐습니다. 이제 행과 그 샘플의 `(tags, split)` 을 짝으로 함께 흘려 맵이 없습니다. 결과는 같습니다. `chunksize` 가 없으면 행을 정렬하려고 전부 받으므로 이 경로의 최대 메모리는 바뀌지 않았습니다. sealed 경로(메인 manifest 를 통째로 받아 맵을 만든다)는 바뀌지 않았습니다.
+- **`ds.distinct(field)` 의 훑기는 값 목록을 만들지 않습니다.** 종전에는 `values()` 로 걸린 샘플의 값 리스트를 전부 만든 뒤 고유 값을 골랐습니다. 이제 읽는 대로 고유 값만 남깁니다. 결과는 같습니다.
+- **무거운 읽기 셋은 응답 헤더를 기다리다 읽기 시한을 넘기면 다시 보내지 않습니다.**
+  - 대상 요청은 `POST .../samples/explorer`·`POST .../samples/explorer/count`·`GET /subsets/{id}/samples` 셋입니다. 이 요청을 보내는 메서드는 `ds.samples()`·`ds.iter_samples()`·`ds.values()`·`ds.distinct()`(훑는 경로 — `fast=True` 로 histogram 을 읽는 경우는 해당 없음)·`ds.shuffle()`·`ds.sort_by()`, 필터를 준 `ds.fork()`(새 버전에 넣을 id 를 모으는 읽기), draft 버전의 `ds.to_df()`·`ds.fingerprint()`(sealed 는 seal 스냅샷을 읽어 해당 없음, `source="explorer"` 는 해당), `ds.backfill_dims()`(샘플 목록 읽기), 저장된 개수가 없는 버전의 `len(ds)`, `ds.set_keypoint_info(confirm=True)`(개수 읽기), `Subset.samples()`·`Subset.to_df()`, 그리고 `NexusClient.explore_samples()`·`explore_samples_page()`·`count_samples()`·`list_sample_ids_by_label()`·`subset_samples()` 입니다. `nx.rewrite_thumbnails`·`ds.rewrite_thumbnails()` 는 manifest 목록을 읽어 해당하지 않습니다.
+  - 연결을 맺은 뒤 응답 헤더를 기다리다 난 읽기 시한 초과(`ReadTimeout`)와 nexus 가 내지 않은 504(`X-Request-Id` 없음, 프록시·게이트웨이)는 종전에는 `retry_timeout` 안에서 다시 보냈는데, 서버에서 같은 전체 탐색이 아직 돌고 있으면 DB 부하만 두 배가 되어(120 초 시한이 두 번 — 240 초 뒤 실패) 이제 곧바로 예외입니다. 시한 초과는 `requests` 예외 그대로이고 Python 3.11 이상에서는 「다시 보내지 않았습니다 …」 안내가 노트로 붙으며, 504 는 `NexusError(status_code=504)` 메시지 끝에 같은 안내가 붙습니다.
+  - **그대로 다시 보내는 것**: 연결 단계의 실패(연결 거부·연결 타임아웃), 502·nexus 가 내지 않은 503, 시한이 아닌 연결 끊김(리셋), 응답 헤더를 받은 뒤 본문을 받던 도중의 읽기 시한 초과(헤더가 왔으면 서버의 DB 일은 끝났으므로 다시 보내도 탐색이 겹치지 않습니다)는 종전처럼 `retry_timeout` 까지 다시 보냅니다. 달라지는 점은 잠깐 느려진 DB 의 시한 초과와 파드 교체 중 게이트웨이 504 가 곧바로 예외가 되는 것입니다.
+  - 목록을 돌려주는 메서드(`samples()`·`values()`·`to_df()` 등)는 도중에 멈추면 그때까지 읽은 것을 돌려주지 않고 예외만 올리며, `iter_samples()` 는 그 자리에서 멈추고 이미 받은 행은 유효합니다(`shuffle()`·`sort_by()` 는 id 를 먼저 다 모으므로 그 단계에서 멈추면 받은 행이 없고, 행을 내기 시작한 뒤 멈추면 이미 받은 행은 유효합니다) — `timeout` 을 늘리거나 필터를 좁혀 다시 부릅니다. 대가로 L4 의 연결 리셋(RST)은 서버가 처리 중이어도 여전히 다시 보냅니다. 전수 모드 facet 개수(`resend=False`)와 그 밖의 요청의 재시도 규칙은 바뀌지 않았습니다.
+  - **올리는 순서**: 흔한 annotation 값 필터의 explorer 가 빨라진 nexus-server `0.1.39` 를 먼저 올리고 SDK 를 올리십시오 — 옛 서버에서 이 SDK 는 그 필터의 시한 초과를 다시 보내지 않아 곧바로 예외가 됩니다(종전 SDK 도 다시 보낸 뒤 결국 실패했습니다). 새 서버에서 빨라지는 것은 일찍 멈추는 읽기(목록·projection·상한 개수 — 흔한 값 필터면 페이지마다 그 필터의 annotation 조건 하나당 최대 3 초를 쓴 뒤 빨라진 길로 갑니다)이고, 결과 전부를 세는 전수 개수(`count_samples(..., exact=True)`·저장된 개수가 없는 버전의 `len(ds)`·`ds.set_keypoint_info(confirm=True)` 의 개수 읽기)는 서버에서도 종전과 같은 시간이 들어 그 시한 초과도 곧바로 예외입니다.
+
 ## 0.1.29
 
 - **`ds.backfill_dims()` 는 버전 전체를 메모리에 올리지 않습니다.** 종전에는 그 버전의 샘플 행 전부(meta 포함)를 모은 뒤 전량을 재고, 다 잰 뒤에 서버로 보냈습니다 — meta 가 행당 3 KB 면 SDK 메모리가 샘플당 약 10 KB(100 만 샘플이면 약 10 GB)였고, 재는 도중에 멈추면 쓴 것이 하나도 없었습니다. 이제 한 페이지(1,000 개)를 읽을 때마다 대상을 골라 재고, 모인 항목을 `chunk_size`(기본 500)씩 바로 보냅니다. 메모리는 버전 크기와 무관하고, 도중에 멈춰도 그때까지 보낸 청크는 반영돼 있습니다 — 채우기 모드는 다시 부르면 남은 것만 고르고, `overwrite=True` 는 다시 재되 이미 고친 것은 `unchanged` 로 보내지 않습니다. 반환의 키와 뜻은 같습니다. 달라진 것: 진행 막대 대신 `verbose=True` 일 때 20 페이지마다 진행 한 줄을 찍고, 쓰는 도중 예외가 나면 그때까지 적용한 수를 한 줄 찍은 뒤 예외를 그대로 올립니다. 헤더를 읽지 못한 객체의 `RuntimeWarning` 은 끝에 한 번(개수 합)입니다. 훑는 동안 그 버전에 새로 들어온 샘플은 빠질 수 있습니다(다시 부르면 잡힙니다).
