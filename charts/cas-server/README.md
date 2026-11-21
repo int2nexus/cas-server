@@ -5,9 +5,9 @@ HTTP API를 제공한다.
 
 ## 문서
 
-- [아키텍처](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.44/charts/cas-server/docs/architecture.md)
+- [아키텍처](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.45/charts/cas-server/docs/architecture.md)
   — 스토리지 모델(CAS·dedup·GC), 백엔드 구성, S3 호환 API 명세, 에러 코드
-- [사용법](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.44/charts/cas-server/docs/usage.md)
+- [사용법](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.45/charts/cas-server/docs/usage.md)
   — 배포 절차, 웹 UI 키 관리, AWS CLI/boto3 예제, 내부 API
 - [변경 이력](CHANGELOG.md)
   — 버전별 동작 변경·마이그레이션·설정 키. 각 항목은 해당 GitHub Release 본문과 동일하다
@@ -49,7 +49,7 @@ kubectl apply -f sealed-secret.yaml -n <namespace>
 배포에서 그 값이 없으면 스크레이프가 `401`** 이다. 용도는 [메트릭 스크레이프](#메트릭-스크레이프) 참고.
 
 `useExternalSecret: true`(기본값)면 Secret 의 `auth-secret-master-key` 를, `false` 면 `secrets.secretMasterKey` 를 비우면 NoAuth 모드(인증 없음, 내부망 전용)로 동작한다. 상세 절차와 값 교체
-방법은 [`examples/sealed-secret.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.44/charts/cas-server/examples/sealed-secret.yaml) 참고.
+방법은 [`examples/sealed-secret.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.45/charts/cas-server/examples/sealed-secret.yaml) 참고.
 
 ## 설치
 
@@ -57,7 +57,7 @@ kubectl apply -f sealed-secret.yaml -n <namespace>
 helm install cas-server int2nexus/cas-server -n <namespace> -f values-prod.yaml
 ```
 
-`values-prod.yaml`은 직접 작성하거나 [`examples/values-prod.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.44/charts/cas-server/examples/values-prod.yaml)을
+`values-prod.yaml`은 직접 작성하거나 [`examples/values-prod.yaml`](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.45/charts/cas-server/examples/values-prod.yaml)을
 내려받아 값을 채운 뒤 사용하세요(이 레포를 clone했다면 `charts/cas-server/examples/values-prod.yaml`).
 
 ### S3 / MinIO 모드 values 예시
@@ -101,7 +101,7 @@ storage:
 예외 셋을 알아 두십시오.
 
 - **`/_api/*` 중 인가를 보지 않는 것은 `HEAD /_api/blobs/{hash}` 와 `/_api/whoami`
-  둘뿐입니다.** 앞은 업로드 전 중복 확인 경로라([사용법](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.44/charts/cas-server/docs/usage.md) 의 「블롭 dedup 사전 확인」), 뒤는 주체
+  둘뿐입니다.** 앞은 업로드 전 중복 확인 경로라([사용법](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.45/charts/cas-server/docs/usage.md) 의 「블롭 dedup 사전 확인」), 뒤는 주체
   자신의 권한을 비추는 것이라 그렇습니다. `HEAD` 와 같은 경로의 `GET` 은 `ListBuckets` 를
   요구합니다 — 응답의 `references` 가 그 내용을 참조하는 모든 버킷·키를 싣기 때문입니다.
   `/_api/*` 전체에 인가가 걸리는 것은 **이미지 `0.1.28` 이상**입니다. 그 이하에서는 유효한
@@ -262,7 +262,7 @@ kubectl rollout restart -n <namespace> deploy/<fullname>   # 릴리스명이 아
 | `cas_sts_reject_total{reason}` | counter | 건수 | STS 거절. `reason` 은 `invalid_token` · `expired_token` · `no_mapping` · `template_unusable` · `idp_unavailable` · `validation`. 〃 |
 | `cas_integrity_mismatch_total{source}` | counter | 건수 | 선언 체크섬과 받은 바이트가 다른 건수. `source` 는 `content_sha256` · `trailer_checksum`(바이트가 어긋남) · `trailer_protocol`(`x-amz-trailer` 선언을 어김). **`config.integrityCheck` 가 `off` 가 아닌 배포에만 나옵니다** (이미지 `0.1.29` 이상). `log` 에서 이 값이 곧 `enforce` 의 예상 거절 건수입니다 — 요청당 한 번만 셉니다 |
 | `cas_integrity_unchecked_total{algo,form}` | counter | 건수 | 체크섬이 왔는데 **대조하지 못한** 건수. `algo` 는 `sha1` · `other` 등 닫힌 집합이고 `form` 은 `trailer` · `header` 입니다. **여기 잡히는 것은 거절되지 않습니다** — 거절되는 것은 위의 `cas_integrity_mismatch_total` 입니다. 0 이 아니면 그만큼이 무검사로 통과하고 있습니다 |
-| `cas_mpu_complete_total{result}` | counter | 건수 | 멀티파트 Complete 의 조립 결과. `result` 는 `ok` 또는 실패한 S3 오류 코드(`InternalError` · `SlowDown` · `ServiceUnavailable` · `InvalidPart` · `InvalidDigest` 등 열린 집합 — 실패 경보는 `result!="ok"` 로 거십시오)이며, 클라이언트가 받는 `<Error>` 본문의 코드는 `InternalError` 또는 `SlowDown` 뿐이라 라벨과 다를 수 있습니다. **`200` 본문의 `<Error>` 는 HTTP 지표에 성공으로 잡히므로 실패는 이 지표로 봅니다.** 헤더 전 오류(`400`·`404`·`503`)와 Abort 쪽 `SlowDown` 은 세지 않습니다. 헤더 뒤 실패는 요청 로그의 응답 줄에도 헤더 시점의 `200` 으로 남습니다([아키텍처 6장](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.44/charts/cas-server/docs/architecture.md#6-에러-코드-및-대응)) (이미지 `0.1.37` 이상) |
+| `cas_mpu_complete_total{result}` | counter | 건수 | 멀티파트 Complete 의 조립 결과. `result` 는 `ok` 또는 실패한 S3 오류 코드(`InternalError` · `SlowDown` · `ServiceUnavailable` · `InvalidPart` · `InvalidDigest` 등 열린 집합 — 실패 경보는 `result!="ok"` 로 거십시오)이며, 클라이언트가 받는 `<Error>` 본문의 코드는 `InternalError` 또는 `SlowDown` 뿐이라 라벨과 다를 수 있습니다. **`200` 본문의 `<Error>` 는 HTTP 지표에 성공으로 잡히므로 실패는 이 지표로 봅니다.** 헤더 전 오류(`400`·`404`·`503`)와 Abort 쪽 `SlowDown` 은 세지 않습니다. 헤더 뒤 실패는 요청 로그의 응답 줄에도 헤더 시점의 `200` 으로 남습니다([아키텍처 6장](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.45/charts/cas-server/docs/architecture.md#6-에러-코드-및-대응)) (이미지 `0.1.37` 이상) |
 | `cas_mpu_complete_seconds` | histogram | 초 | 조립에 걸린 시간 (〃) |
 | `cas_mpu_complete_running` | gauge | 건수 | 진행 중인 조립 작업 수. 클라이언트가 끊겨도 조립은 끝날 때까지 셉니다 (〃) |
 | `cas_mpu_hash_combine_total{result}` | counter | 건수 | 조립 해시를 파트별 계산값으로 합친 결과와 실제 조립 결과의 대조. **대조만 하고 저장에는 쓰지 않습니다.** `match` · `mismatch` · `ineligible`(합칠 수 없는 파트 구성 — 파트가 둘 이상이고, 마지막을 뺀 파트가 모두 같은 2 의 거듭제곱 KiB 크기이며, 마지막 파트가 그 크기 이하여야 합니다. AWS CLI·boto3 기본 8 MiB 는 해당하고 5 MiB 는 아닙니다. 저장소가 파트 메타데이터를 거절한 경우도 여기입니다). 이 대조를 위해 S3 모드의 파트 객체에는 사용자 메타데이터 `x-amz-meta-cas-cv`·`x-amz-meta-cas-cv-offset`·`x-amz-meta-cas-part-hash` 가 붙고, 로컬 모드는 파트 옆에 `part_N.cv` 파일이 생깁니다. `mismatch` 는 `0` 이어야 합니다 — 오르면 경고 로그 `조립 해시 합치기 불일치` 의 `upload_id` 와 함께 알려 주십시오 (이미지 `0.1.37` 이상) |
@@ -581,7 +581,7 @@ DB 도 타지 않습니다. 그 이전 이미지에서는 `blobs` 전량을 안�
 
 주기는 데이터 크기가 아니라 **회수 대상이 쌓이는 속도**로 정하십시오. 스캔 비용은 회수할
 blob 이 0건이든 수천 건이든 같습니다. 판단 기준과 미루는 비용 계산은
-[docs/usage.md](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.44/charts/cas-server/docs/usage.md) 의 "주기를 정하는 기준" 을 참고하십시오.
+[docs/usage.md](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.45/charts/cas-server/docs/usage.md) 의 "주기를 정하는 기준" 을 참고하십시오.
 
 `gc.phases` 는 이미지 `0.1.20` 이상이 해석합니다. **`sweep` 은 `0.1.25` 이상**이라,
 `0.1.20`~`0.1.24` 에 보내면 서버가 `400` 으로 거절하고 그 Job 이 실패합니다.
@@ -897,9 +897,9 @@ sum(increase(cas_sts_issue_total{result="issued"}[15m]))   # 정상을 실패로
 
 ## 대량 적재 중에는 GC를 끄십시오 (모든 이미지 버전)
 
-대량 적재 중에는 `gc.enabled: false`를 권장합니다. GC는 orphan 후보마다 해시별 쓰기 락을
-물리 삭제와 DB 삭제 구간 내내 쥐므로 같은 내용을 올리는 PUT이 그동안 대기하고, blob 전수
-조인이 DB에 부하를 더하기 때문입니다.
+대량 적재 중에는 `gc.enabled: false`를 권장합니다. GC는 1,000 개 묶음의 해시별 쓰기 락을
+그 묶음의 물리 삭제와 DB 삭제가 끝날 때까지 쥐므로 그 blob 들과 같은 내용을 올리는 PUT이
+그동안 대기하고, blob 전수 조인이 DB에 부하를 더하기 때문입니다.
 
 **적재가 끝나면 다시 켜십시오.** 꺼 둔 동안 orphan blob이 회수되지 않아 오브젝트
 스토리지 사용량이 조용히 누적됩니다.
