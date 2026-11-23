@@ -87,7 +87,7 @@ cas-server 는 기동 시 `sqlx::migrate!` 로 `migrations/` 를 적용합니다
 ## 0.1.45
 
 image: `int2jieun/cas-server:0.1.38`
-digest: `sha256:b16724323639009184ba06c45f98c16df07bede33f31882c6ca40ee7fb8a3875`
+digest: `sha256:ab69e781ede72640cc5787aa722117e3873b3be7514e7c75f8a2c1ab276a3a3a`
 
 **동작 변경** — GC 의 `orphan`·`sweep` 단계가 blob 을 1,000 개씩 묶어 회수해 크게 빨라졌습니다. S3 모드는 묶음마다 `DeleteObjects` 로 지웁니다
 **동작 변경** — 회수 중인 묶음의 blob 과 같은 내용을 올리는 PUT 은 그 묶음이 끝날 때까지 기다립니다(이전에는 blob 하나를 지우는 동안이었습니다)
