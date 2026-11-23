@@ -44,6 +44,19 @@ nexus-server 버전을 함께 씁니다.
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.1.25
+
+image: `jiwonkim97/nexus-client:0.1.27`
+digest: `sha256:d3aa5a88bab713a247ad0b2b612b1eed1c28dfb7b04a97d053ce68a02caa63c8`
+
+이번 릴리스: 샘플 필터에서 서버가 세지 않는 필드에는 값별 개수를 묻지 않음. 프록시 계약(`/api`·`/cas`, backendUrl·casUrl 해석)은 변경 없음.
+
+**동작 변경** - `/api`·`/cas` 프록시 경로와 backendUrl·casUrl 해석은 변경 없음. 아래는 이미지 동작이다.
+- 값별 개수 요청(`POST .../facets/counts`)을 서버가 세는 필드(`tags`, `meta.<enum|bool|string>`, `group_key`, `<group>.label`, `<group>.component.type`)에만 보낸다. 컴포넌트 속성(`<group>.component.<type>.<attr>`)과 인스턴스 `track_id` · `id` 는 묻지 않는다. 이전 판은 이 필드를 물어 400 을 받았고 숫자만 숨겼다. 화면은 그대로(값 목록만, 숫자 없음).
+
+**마이그레이션** - 없음
+**설정 키** - 없음
+
 ## 0.1.24
 
 image: `jiwonkim97/nexus-client:0.1.26`
