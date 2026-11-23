@@ -99,8 +99,10 @@ digest: `sha256:ab69e781ede72640cc5787aa722117e3873b3be7514e7c75f8a2c1ab276a3a3a
   SELECT storage_backend_id, count(*) FROM blobs GROUP BY 1;
   ```
 
+  DB 에 질의하지 않으려면 `GET /_api/backends`(`bucket` 이 `*` 인 `ListBuckets` 권한)로 갈음할 수 있습니다. `backend_type` 이 `unknown` 인 항목의 `blob_count` 가 `0` 이 아니면 위 경우입니다
+
 **운영 조치** — 차트 `0.1.44`(이미지 `0.1.37`) 이하로 되돌릴 때, 이 버전에서 돈 GC 실행 중 `/_api/gc/history` 에 `status` 가 `failed`·`running` 이거나 `errors` 가 `0` 이 아닌 것이 있으면, **되돌리기 전에 이 버전에서 `sweep` 단계를 한 번 돌리고 그 실행이 `success`·`errors: 0` 인 것을 확인하십시오**(`POST /_internal/gc?phases=sweep`, [README 「GC 단계와 두 CronJob」](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.45/charts/cas-server/README.md#gc-단계와-두-cronjob)). 그러지 않으면 되돌린 버전에서 그 blob 과 같은 내용을 다시 올린 PUT 이 `200` 을 받고도 GET 이 `404` 일 수 있습니다
-**주의** — `DeleteObjects` 요청 전체가 실패하거나(저장소가 지원하지 않는 경우 등) 그 요청이 `config.s3RequestTimeoutSecs`(기본 30 초) 안에 끝나지 않으면, 묶음마다 경고 로그 `GC: 묶음 삭제 요청 실패 — 하나씩 지운다` 를 남기고 하나씩 지웁니다(이전 속도). 그동안 그 묶음의 blob 과 같은 내용을 올리는 PUT 은 묶음이 끝날 때까지 기다립니다. 그 로그의 `error` 가 시한 초과이면 `config.s3RequestTimeoutSecs` 를 늘리십시오
+**주의** — `DeleteObjects` 요청 전체가 실패하거나(저장소가 지원하지 않는 경우 등) 그 요청이 `config.s3RequestTimeoutSecs`(기본 30 초) 안에 끝나지 않으면, 묶음마다 경고 로그 `GC: 묶음 삭제 요청 실패 — 하나씩 지운다` 를 남기고 그 묶음의 저장소 삭제를 blob 하나씩 합니다. 그동안 그 묶음의 blob 과 같은 내용을 올리는 PUT 은 묶음이 끝날 때까지 기다립니다. 그 로그의 `error` 가 시한 초과이면 `config.s3RequestTimeoutSecs` 를 늘리십시오
 **마이그레이션** — 없음. **롤백 하한은 `0.1.28` 그대로입니다**(되돌리기 전 조치는 위 운영 조치)
 **설정 키** — 없음
 **호환성** — 차트 `0.1.43`(이미지 `0.1.36`) 이하에서 올리면 [0.1.44](https://github.com/int2nexus/cas-server/blob/cas-server-0.1.45/charts/cas-server/CHANGELOG.md#0144) 의 변경도 함께 받습니다
