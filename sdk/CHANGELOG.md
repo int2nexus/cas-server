@@ -9,6 +9,129 @@ pip install --extra-index-url https://int2nexus.github.io/cas-server/sdk/simple/
 `scripts/publish_sdk.py` 는 `sdk/pyproject.toml` 의 버전과 같은 `## <버전>` 절이 이 파일에 없으면
 빌드하지 않고 멈춥니다. 최신 버전이 위로 오게 적습니다.
 
+## 0.1.31
+
+- **호환성(중요): annotation 쓰기는 객체로만 합니다 — dict 를 받는 쓰기를 공개 API 에서 뺐습니다.** 빠진 것과 대신 쓰는 것:
+  `Dataset.save_annotation`·`Dataset.merge_annotation`·`Dataset.patch_annotations` → `ds.load_sample(sid)` 로 받은
+  `AnnotatedSample` 을 고쳐 `s.save()`. `NexusClient.ingest`·`ingest_batch`·`patch_annotations`·`merge_sample_annotations` →
+  `Dataset` 의 `add`/`flush`·`load_sample`/`save()`(이 넷은 밑줄 이름의 내부 메서드가 됐습니다). `AnnotatedSample.merge(dict)` →
+  `merge(AnnotatedSample)`. 그룹 자리에 dict·행 dict 리스트·`RawGroup` 대입과 `s["meta"] = dict` → 그룹 객체의 `add`·`remove`·
+  `replace` 와 `s["meta"] = nx.Meta({...})`. 빠진 메서드는 대신 쓸 것을 알려 주는 중간 단계 없이 `AttributeError` 이고, dict 대입은
+  `TypeError` 입니다.
+- **호환성(중요): `nx.Sample(annotation=)` 은 `AnnotatedSample`(또는 `None`)만 받습니다.** dict·로컬 경로·URL 은 `TypeError` 이고
+  메시지에 바꾸는 방법이 있습니다. dict 는 `nx.AnnotatedSample.from_dict(d, group_kinds)`, 로컬 JSON 파일은 새
+  `nx.AnnotatedSample.from_file(path, group_kinds)` 로 바꿉니다(`from_dict` 에 매핑이 아닌 값을 주면 `TypeError`, 파일의 최상위가
+  JSON 객체가 아니면 `NexusValidationError`). URL(CAS 에 있는 annotation JSON)을 받던 경로는 대신할 입구가
+  없습니다 — 받아 와서 `from_dict` 합니다. 생성 뒤 `sample.annotation` 에 dict 를 넣으면 `flush` 준비 단계에서 그 샘플만 같은
+  `TypeError` 로 실패합니다.
+- **`AnnotatedSample.from_dict(ann, group_kinds)`·`from_file(path, group_kinds)` 는 바꾸는 순간 검사합니다**(쓰기 입구). 위반이면
+  `NexusValidationError` 입니다. 서버에서 읽는 경로(`load_sample`·`iter_samples`·`shuffle`·`sort_by`)는 검사하지 않으므로 이미
+  저장된 틀린 값도 열립니다. 선언된 그룹이라도 값이 배열이 아니거나 객체가 아닌 원소가 있으면 `RawGroup` 으로 읽혀 `common_field`
+  (`det`·`det[i]`)로 거절됩니다.
+- **검증 규칙(서버와 같은 사례 묶음을 씁니다).** component 는 공통 필드가 아닌 키의 값 중 `type` 이 문자열인 객체이고, `type` 은
+  `classification`·`value`·`values`·`keypoint_2d`·`keypoint_3d`·`bounding_box`·`cuboid_3d`·`mask`·`polygon`·`polyline` 열 가지만
+  받습니다. **모르는 `type` 은 이제 거절합니다**(종전에는 범용 `Label` 로 읽어 저장됐습니다). `type` 이 문자열이 아닌 객체
+  (`invalid_type`)와 `type` 이 없는데 키 이름이 위 열 가지 중 하나인 객체(`missing_type`)도 거절합니다. 수는 유한해야 하고(`NaN`·
+  무한대와 f64 를 넘는 큰 정수(`10**400`)는 `non_finite`), 공통 필드는 서버와 같이 `track_id` 32 비트 정수·`confidence` 32 비트 실수 범위만 받습니다(종전에는 넘는
+  값을 그대로 보내 annotation 쓰기(`save()`)는 서버가 400 이었고, 적재(`flush`)는 서버가 그 값만 비우고 저장했습니다). 타입별 필수 필드는 종전 규칙 그대로이고(keypoint 의 `num_keypoints`·`visibility`,
+  `cuboid_3d.rotation` 은 선택), 좌표·confidence 범위와 id 형식은 보지 않습니다.
+- **`NexusValidationError.errors`** — 위반을 첫 하나에서 멈추지 않고 모두 `nx.Issue(path, reason, message)`(이 판에서 공개한 타입)로
+  싣고, 메시지는 앞 5 개를 요약합니다. `path` 는 `<그룹>[<행 번호>].<component 키>.<필드>`(component 전체는 `.<필드>` 없음, 공통 필드는
+  `<그룹>[<행 번호>].<필드>`, 그룹 규칙은 `duplicate_id` 가 `<그룹>[<행 번호>].id`·`container_component_count` 가
+  `<그룹>[<행 번호>]`·`container_mixed_types` 가 `<그룹>`)입니다. `reason` 은 `unknown_type`·`invalid_type`·`missing_type`·`field_type`·
+  `field_length`·`min_points`·`length_mismatch`·`non_finite`·`mask_invalid`·`empty_label`·`duplicate_id`·`container_component_count`·
+  `container_mixed_types`·`common_field` 이고 SDK 만 쓰는 것은 `duplicate_component_type`·`non_finite` 둘입니다(서버는 유한하지
+  않은 수를 `field_type` 으로 냅니다). `AnnotatedSample.validate()` 도
+  모든 그룹의 위반을 모아 한 번에 내고, 예외 없이 목록만 보려면 그룹(`LabelGroup`·`LabelContainer`·`RawGroup`)의
+  `g.issues(name)` 를 씁니다(`name` 은 path 머리에 붙는 그룹 이름). `save()` 에서 서버가 `code: "annotation_invalid"` 로 거절한 400 도 같은 예외이고 `errors` 에
+  서버 목록을 싣습니다.
+- **검증은 세 시점에서 같은 규칙으로 합니다.** ⑴ 생성 — 키워드로 만든 component(`nx.Detection(rect=[...])`)는 생성자에서
+  검사합니다. 그래서 `nx.Detection()` 을 빈 채로 만들고 나중에 `.rect = ...` 로 채우는 코드는 생성에서 실패합니다. wire dict 로 만든
+  component(`nx.Detection({...})`)는 생성 때 검사하지 않습니다. ⑵ 대입·편집 — `add`·`replace`·그룹 객체 대입·`set_field`·
+  `add_labels`·`merge`. ⑶ `save()`·`flush` — 보낼 그룹 전체를 검사하고 위반이면 아무것도 보내지 않습니다. 생성 뒤 속성을 바꾼
+  경우(`det.rect = [0.1]`)는 ⑶ 에서 걸립니다.
+- **호환성(중요): `nx.Instance(label, components=None, *, id=None, track_id=None, confidence=None, extras=None)`.** 종전의
+  `Instance(id, label, components)` 처럼 위치 인자로 부르는 코드는 깨집니다(셋이면 `TypeError`, 둘이면 둘째가 `components` 라
+  `NexusValidationError` `invalid_type`). `id` 를 생략하면 UUID v4 를 채웁니다. `components` 는 `{이름: Label}` dict 또는 `Label`
+  리스트이고, 리스트면 키는 그 component 의 `type` 값(`nx.Detection` 은 `bounding_box`)입니다. 같은 `type` 이 둘 이상이면
+  `NexusValidationError`(`duplicate_component_type`)이고 이때는 dict 로 넘깁니다. dict·리스트가 아닌 `components` 는 `invalid_type`
+  입니다.
+- **호환성: 그룹 편집은 `add(instance)`·`remove(instance_id)`·`replace(instances)` 셋입니다.** `remove` 는 instance 객체가 아니라 id 를
+  받고 그 id 의 행을 모두 뺍니다(없는 id·빈 id 는 `KeyError` — id 없는 행은 `replace` 로). 종전처럼 객체를 넘기면(`g.remove(g[0])`)
+  `g.remove(inst.id)` 로 부르라는 `TypeError` 입니다. `add` 의 인자 이름이 `inst` 에서 `instance` 로 바뀌어 키워드로 부르던
+  `add(inst=...)` 는 `TypeError` 입니다. `add`·`replace` 는 넣으려는 행의 규칙과 결과
+  그룹의 그룹 규칙(그룹 안 id 유일, `container` 는 행마다 component 하나·같은 타입)을 넣기 전에 검사하고 위반이면 그룹을 바꾸지
+  않습니다. 결과 그룹 전체를 보므로 읽어 온 그룹에 id 중복·`container` 위반이 이미 있으면 맞는 행도 `add` 할 수 없습니다 — 먼저
+  `remove`/`replace` 로 고칩니다. `g.instances` 는 읽기 전용 tuple 이 됐습니다(`g.instances[0] = ...`·`append` 는 `TypeError`·
+  `AttributeError`, `g.instances = [...]` 재대입도 `AttributeError` — `replace` 를 씁니다). 읽기(`g[i]`·`len(g)`·순회)는 그대로이고, `Instance` 가 아닌 값을 `add` 하면 `TypeError` 입니다.
+- **호환성: 대입은 그 이름에 선언된 종류의 그룹 객체만 받고, 새 그룹은 그룹 종류를 먼저 선언해야 만듭니다.** `s[name] = g`·
+  `s.set_field(name, g)`·`s.add_labels(..., label_field=name)` 는 그 이름이 선언돼 있고 선언 종류의 클래스(`LabelGroup`/
+  `LabelContainer`)일 때만 쓰고 아니면 `NexusValidationError` 입니다(메시지에 `ds.declare_group_kinds` 안내). 대입하는 그룹은 그
+  자리에서 통째 검사합니다. dataset 핸들도 `group_kinds` 도 없이 만든 `AnnotatedSample` 에는 어떤 그룹도 대입할 수 없습니다.
+  `clear_field`·`copy` 는 종전과 같고, `copy()` 사본은 원본 핸들의 지금 선언을 봅니다.
+- **`add_labels` 의 예외가 둘입니다.** 같은 id 가 대상 필드(또는 같은 호출 안)에 이미 있으면 종전처럼 `ValueError`, 행·그룹 규칙
+  위반은 `NexusValidationError` 입니다. 어느 쪽이든 아무것도 붙지 않습니다.
+- **`merge` 가 바뀌었습니다.** `other` 는 `AnnotatedSample` 만 받습니다(dict 는 `TypeError`). 모든 그룹의 결과를 먼저 만들고 검사한
+  뒤 한꺼번에 적용하므로 둘째 그룹에서 실패해도 첫째가 바뀌지 않습니다. 새로 들어오거나 통째 교체되는 그룹은 대입과 같은 검사를,
+  id 단위 병합은 들어온 행의 규칙과 결과 그룹의 규칙을 봅니다. `other` 의 `RawGroup` 은 대상 자리에 저장 상태가 같은 `RawGroup` 이
+  있으면 건너뛰고, 빈 자리·다른 값·타입 그룹 자리면 `TypeError` 입니다(`overwrite=False` 로 기존 필드를 건드리지 않는 경우는
+  종전대로 통과). 같은 dataset 에서 읽은 두 샘플을 기본값으로 `merge` 할 때 선언 안 된 그룹이 다르면 `fields`·`omit_fields` 로 뺍니다.
+- **선언 안 된 그룹(`RawGroup`)은 읽기와 왕복만 됩니다.** `.raw` 를 고쳐도 `save()` 는 그 그룹을 보내지 않습니다(`clear_field` 로
+  비운 것만 빈 그룹으로 보냅니다). 적재에서는 받되 배열이어야 하고, 원소는 객체이며 문자열 `label` 이 있어야 하고(`common_field` —
+  서버 적재는 `label` 없는 원소를 조용히 건너뛰므로 SDK 가 거절합니다), component 규칙과 그룹 안 id 유일로 검사합니다.
+- **호환성(중요): 그룹 종류의 기준은 dataset 에 저장된 값입니다.** 종전의 「핸들에서 선언한 값이 서버 저장값을 이긴다」를
+  없앴습니다. 핸들은 열 때와 선언 뒤의 서버 응답으로 종류를 갖고 `flush`·`save()` 는 그 값으로 검사합니다. 적재용
+  `AnnotatedSample` 이 만들 때 받은 `group_kinds` 는 `flush` 가 쓰지 않고 그 dataset 핸들의 저장값으로 다시 판정합니다.
+- **호환성(중요): `ds.declare_group_kinds()`·`Dataset.load_or_create(group_kinds=)` 는 저장이 실패하면 예외입니다**(종전에는
+  경고만). 400 `code: "group_kind_rejected"`(서버가 `container` 선언 때 draft 버전의 행을 검사해 거절) → `NexusValidationError` 이고
+  `errors` 는 위반 행마다 `Issue(path="<그룹>[id=<instance id>]", reason, message)`(메시지에 샘플 id·버전), 서버 목록은 `rejected` 에
+  그대로 있습니다. 503 `code: "group_kind_check_incomplete"`(검사가 시한 안에 끝나지 않음) → `NexusError` 이고 자동으로 다시 보내지
+  않습니다. 어느 쪽이든 종류는 바뀌지 않았습니다. 256 키씩 나눠 보내므로 실패한 묶음 앞의 묶음은 이미 저장됐습니다. 예외가 아닌 것은
+  둘입니다: 403(viewer)은 종전처럼 그 핸들에만 두고 `RuntimeWarning`(읽기에만 쓰이고 적재 검사에는 쓰이지 않습니다), 서버가 저장하지
+  않는 이름(`meta`·샘플 필드 이름·앞뒤 공백·128 자 초과)은 보내지 않고 `RuntimeWarning` 이며 그 그룹은 `RawGroup` 으로 남아 편집할 수
+  없습니다.
+- **`Dataset.load_or_create(group_kinds=)` 의 저장 예외는 dataset·버전을 만든 뒤에 납니다.** 같은 인자로 다시 부르면 그것을 열고
+  선언을 다시 보냅니다. 400 이면 위반 행을 고치거나 그 그룹을 `group` 으로 선언할 때까지 같은 인자로는 매번 실패합니다.
+- **호환성(중요): nexus-server `0.1.28` 이하에는 쓸 수 없습니다.** 그룹 종류 저장 경로가 없는 서버에서 `declare_group_kinds` 는
+  `NexusError`(0.1.29 이상 필요)이고, 핸들 열기는 되지만 첫 쓰기(`flush`·`save()`·`promote`)가 그룹 종류를 다시 읽다 `NexusError`
+  입니다. 열 때 그룹 종류를 읽지 못한 경우(일시 장애)도 같습니다 — 첫 쓰기가 다시 읽고, 그래도 못 읽으면 아무것도 보내지 않습니다.
+  **서버 쪽 그룹 종류 검사는 nexus-server `0.1.40` 부터입니다** — 400 `group_kind_rejected`·503 `group_kind_check_incomplete` 와
+  `promote` 의 dataset 전체 검사가 그렇습니다. `0.1.29` ~ `0.1.39` 서버에서는 `container` 선언이 기존 행 검사 없이 저장됩니다.
+- **`AnnotatedSample.promote(name, kind) -> LabelGroup | LabelContainer`** — 선언 안 된 그룹을 편집하려 할 때 부릅니다. 그 샘플의 그
+  그룹(서버에서 읽은 저장 상태 — 고친 `.raw` 가 아니다)을 그 종류로 읽어 먼저 검사하고(위반이면 선언하지 않고
+  `NexusValidationError`), 통과하면 `ds.declare_group_kinds({name: kind})` 로 dataset 전체 검사를 서버에 맡깁니다. 서버가 거절하면 그
+  예외이고 샘플은 그대로입니다. 성공하면 `s[name]` 이 새 그룹이 되어 돌아오고, 그 그룹의 기준을 새 그룹의 값으로 맞추므로(id 없는
+  행에 채운 id 포함) 고치기 전의 `save()` 는 그 그룹을 보내지 않습니다. 핸들 없는 샘플은 `NexusValidationError`, 모르는 `kind` 는
+  `ValueError`, 없는 그룹은 `AttributeError`, 이미 타입 그룹이면 `TypeError`, 서버가 종류를 저장하지 않는 이름(`meta`·샘플 필드
+  이름·앞뒤 공백·128 자 초과)이면 `NexusValidationError` 이고, 서버에 그 이름이 다른 종류로 저장돼 있으면 선언하지
+  않고 `NexusValidationError`, 403 이라 저장하지 못하면 `NexusError` 입니다.
+- **`ds.find_invalid_annotations(*, page_size=1000, **filters) -> list[tuple[str, str, str]]`** — 버전의 annotation 을
+  `iter_samples` 로 읽어 같은 검증 함수로 훑고 `(sample_id, path, reason)` 목록을 돌려줍니다(그룹 종류는 dataset 저장값). 고치는 것은
+  그 목록을 보고 `load_sample` → 편집 → `save()` 로 합니다. 서버 설정 `explorer.draft_bulk_read_enabled` 를 끈 배포에서는 draft 버전에
+  그 403(`draft_bulk_read_disabled`)을 그대로 냅니다. `meta` 가 객체가 아닌 샘플은 보고하지 않습니다.
+- **`IngestResult.exception`** — `flush` 결과의 실패 원인이 annotation 검증이면 `NexusValidationError`(`errors` 에 `Issue`)를
+  담습니다. 서버가 item 을 `code: "annotation_invalid"` 로 거절한 경우와 SDK 사전 검사가 거른 경우가 같은 모양입니다. 사전 검사에서
+  `meta` 가 객체가 아니어도 같은 예외이지만 `errors` 는 비어 있고 사유는 메시지(`meta must be a JSON object`)에만 있습니다. 그 밖의 실패는
+  `None` 이고 `error` 문자열·`NexusBatchError.failures` 는 종전과 같습니다. 서버 item 은 위반을 100 개까지 싣으므로 정확히 100 개면
+  메시지에 더 있을 수 있다고 적습니다.
+- **`flush` 의 사전 검사** — 보내기 전에 샘플마다 그 dataset 의 저장된 그룹 종류로 다시 검사합니다. 위반이 있는 샘플은 보내지 않고
+  `IngestResult(ok=False, status_code=None, exception=NexusValidationError)` 입니다(`strict=True` 면 종전대로 `NexusBatchError`).
+  재전송 본문은 다시 검사하지 않습니다.
+- **호환성: 적재 본문은 `AnnotatedSample.to_dict()` 입니다.** 그래서 `AnnotatedSample` 을 만들 때 받은 `group_kinds` 에 선언된
+  그룹은 `id` 가 없거나 빈 행이 SDK 가 채운 UUID v4 id 로 저장됩니다(종전 dict 적재는 받은 그대로 보내 서버가 빈 id 로
+  저장했습니다). 만들 때 선언하지 않아 `RawGroup` 으로 읽힌 그룹은 dataset 에 종류가 저장돼 있어도 받은 그대로(id 없이) 나갑니다
+  — id 를 채우려면 만들 때 그 그룹을 `group_kinds` 에 넣습니다.
+- **이미 저장된 틀린 데이터와의 관계.** 서버는 그 요청이 새로 넣거나 바꾼 component 만 거절하지만 SDK 는 보내는 그룹 전체를
+  검사합니다. 그래서 읽어 온 그룹에 옛 틀린 행(모르는 `type`, `type` 이 문자열이 아닌 객체, 범위를 넘는 `track_id`·`confidence` 등)이
+  있으면 그 그룹을 고친 `save()` 는 그 행을 고치거나 빼기 전까지 `NexusValidationError` 입니다(그 그룹을 건드리지 않은 `save()` 는
+  보냅니다). 같은 샘플의 `s.validate()` 도 예외입니다. 찾는 방법은 `find_invalid_annotations()` 입니다.
+- **서버 검사는 nexus-server `0.1.40` 부터입니다.** 그 전 서버에서는 SDK 사전 검사만 걸립니다. PATCH 가 없는
+  0.1.18 미만 서버의 통째 교체 폴백(PUT)은 기준 없는 `RawGroup` 을 검사 없이 그대로 싣습니다.
+- **`list_datasets()`·`list_versions()`·`list_subsets()` 의 자동 순회가 마지막 행의 정렬 값을 `cursor_value` 로 함께 보냅니다.**
+  - 종전에는 다음 페이지를 마지막 행의 id(`cursor`)만으로 물었고, 서버가 그 행의 정렬 값을 다시 읽었습니다. 순회 도중 그 행이 지워지면 서버가 빈 페이지를 돌려 순회가 거기서 끝나 뒤의 항목이 오류 없이 빠졌고, 이름순(`sort="name"`)에서 그 행의 이름이 바뀌면 일부를 건너뛰었습니다. 한 페이지가 1,000 개라 dataset·버전·subset 이 1,000 개를 넘고 페이지 경계의 행이 그 사이 바뀔 때만 해당했습니다.
+  - 보내는 값은 dataset 이 정렬 기준(`sort="name"` 이면 `name`, 아니면 `created_at`), 버전이 `created_at`, subset 이 `updated_at` 이고 응답에 실린 문자열 그대로입니다. 행에 그 값이 없으면 `cursor` 만 보냅니다. 모르는 파라미터를 무시하는 옛 서버에는 종전과 같습니다(그 서버에서는 위 누락도 그대로입니다).
+  - `cursor` 로 직접 이어 받는 호출(`limit` 과 함께)을 위해 `NexusClient.list_datasets`·`list_versions`·`list_subsets` 와 `nx.list_datasets` 에 `cursor_value` 인자가 생겼습니다. nexus-server `0.1.40` 부터는 값 없이 지워진 행을 `cursor` 로 주면 빈 목록 대신 400 `cursor_not_found`(`NexusError`)를 냅니다 — 처음부터 다시 받거나 그 행의 정렬 값을 함께 주십시오. `limit` 만큼 돌아왔을 때의 경고 문구에 이어 받을 `cursor_value` 가 함께 나옵니다.
+
 ## 0.1.30
 
 - **`ds.fork(...)` 에 필터를 주면 걸린 샘플의 `sample_id` 만 받고, 빈 문자열 필터를 필터로 봅니다.**
