@@ -81,6 +81,106 @@ nexus-server 는 마이그레이션이 바이너리에 임베드되어 **기동 
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.3.34
+
+image: `int2jieun/nexus-server:0.1.39` → `int2jieun/nexus-server:0.1.40`
+digest: `sha256:1e9dcfcbf76b0f698a1ee784467edd57c7a7e926033fbc053c871e86d8d0052d`
+
+**동작 변경** — 여섯입니다. 1 ~ 3 은 annotation 쓰기 검증, 4 는 목록 커서, 5 는 버전 감사 갱신, 6 은 요청 로그입니다. 그 밖의 호출은
+`0.1.39` 와 같습니다.
+
+1. **annotation 쓰기가 component · 그룹 규칙을 검사합니다.** 대상은 `PUT` · `PATCH /datasets/{id}/versions/{v}/samples/{sample_id}/annotations`,
+   `POST /ingest`, `POST /ingest/batch` 입니다. 위반이 있으면 요청 전체가 `400` 이고 아무것도 쓰지 않습니다(적재는 샘플을 만들지
+   않고, `/ingest/batch` 는 그 item 만 `400` 입니다).
+   - component 는 공통 필드(`id` · `label` · `track_id` · `confidence`)가 아닌 키의 값 중 `type` 이 문자열인 객체입니다. `type` 은
+     `classification` · `value` · `values` · `keypoint_2d` · `keypoint_3d` · `bounding_box` · `cuboid_3d` · `mask` · `polygon` · `polyline`
+     열 가지만 받습니다 — **모르는 `type` 은 이제 거절합니다**(`0.1.39` 는 저장했습니다). `type` 이 문자열이 아닌 객체와, `type` 이
+     없는데 키 이름이 위 열 가지 중 하나인 객체(`"bounding_box": {"rect": [...]}`)도 거절합니다. 그 밖의 `type` 없는 값은 종전처럼
+     보존합니다.
+   - 타입마다 필드의 형식 · 길이를 봅니다(`rect` 숫자 4 개, `polygon` 점 3 개 이상 · 짝수 길이, `polyline` 점 2 개 이상, keypoint 의
+     좌표 · `visibility` 길이가 `num_keypoints` 와 같음, `cuboid_3d` 의 `center` 3 · `dimensions` 3 · `rotation` 9, `mask` RLE 의 크기 ·
+     런 합 · 전경, `classification.label` 은 비지 않은 문자열 등). 좌표 · `confidence` 의 범위와 id 형식은 보지 않습니다.
+   - 그룹 규칙: 그룹 안의 비어 있지 않은 `id` 는 유일합니다(그룹이 다르면 같아도 됩니다). `container` 로 선언된 그룹은 행마다
+     component 가 하나이고 그룹 안 모든 행이 같은 타입입니다. 선언이 없는 그룹에는 component 규칙과 id 유일만 겁니다.
+   - **그 요청이 새로 넣거나 바꾼 component 만 거절합니다.** 이미 저장된 틀린 행은 남고, 그 행을 그대로 다시 보내는 왕복(`GET` →
+     `PUT`)은 통과합니다. 옛 틀린 component 를 다른 행에 붙여 보내면 새로 넣은 것입니다. 수는 값으로 비교합니다(`2` 와 `2.0` 은 같습니다).
+   - 응답은 `{"error": "<N> 건의 annotation 규칙 위반", "code": "annotation_invalid", "errors": [{"path", "reason", "message"}]}`
+     입니다. `errors` 는 앞 100 개이고 넘치면 `errors_total` 에 전체 수를 싣습니다. `path` 는 `<그룹>[<행 번호>].<component 키>.<필드>`
+     (component 전체는 `.<필드>` 없음, 공통 필드는 `<그룹>[<행 번호>].<필드>`, 그룹 규칙은 `duplicate_id` 가 `<그룹>[<행 번호>].id` ·
+     `container_component_count` 가 `<그룹>[<행 번호>]` · `container_mixed_types` 가 `<그룹>`)이고 `reason` 은 `unknown_type` ·
+     `invalid_type` · `missing_type` · `field_type` · `field_length` · `min_points` · `length_mismatch` · `mask_invalid` ·
+     `empty_label` · `duplicate_id` · `container_component_count` · `container_mixed_types` · `common_field` 입니다(유한하지 않은 수는
+     `field_type`).
+   - **공통 필드 사유만 있는 거절은 `0.1.39` 와 같은 바이트입니다**(code 없는 `400`, `0.1.30` 부터의 규칙). component · 그룹 위반이
+     하나라도 있으면 `annotation_invalid` 이고 그 `errors` 맨 앞에 첫 공통 필드 사유 하나(`common_field`)를 함께 싣습니다. 한 그룹의 컴포넌트 이름 · 타입 판정
+     (code 없는 `400`)은 그대로이고, 두 검사에 함께 걸리면 `annotation_invalid` 입니다.
+   - `/ingest/batch` 의 실패 item 에 `code` · `errors` 가 실립니다(그 item 이 `annotation_invalid` 일 때만, `errors` 는 앞 100 개이고
+     `errors_total` 은 없습니다). 그 밖의 item 은 `0.1.39` 와 같은 바이트입니다.
+   - 적재는 문자열 `label` 이 없는 원소를 종전처럼 건너뛰고 규칙에서도 보지 않습니다. 공통 필드의 형식이 틀리면 종전처럼 그 값만
+     비웁니다.
+   - **sealed · 준비 중 버전에 대한 적재는 annotation 내용과 무관하게 `409` 입니다.** 그래서 객체가 아닌 `annotation_data` 를 그런
+     버전으로 보내면 `0.1.39` 는 `400`(`annotation_data must be a JSON object`)이었고 이제 `409` 입니다(서버 설정
+     `ingest.strict_annotation_parsing` 이 기본값 `true` 일 때 — `false` 면 종전에도 `409` 였습니다).
+   - 이미 커밋된 적재의 멱등 재전송은 검사 전에 `replayed` 로 끝납니다.
+   - 버전 사이의 복사(fork · clone job · 샘플 가져오기 · 링크의 `from_version`)는 저장된 행을 옮기는 것이라 검사하지 않습니다. 그래서
+     `container` 그룹에도 규칙에 어긋난 옛 행이 들어올 수 있습니다.
+2. **CVAT 가져오기는 규칙에 어긋난 도형을 반영하지 않습니다.** 거절하지 않고, 위반인 새 component 는 저장된 값을 남기고(없으면 그
+   component 를 빼고), 그룹 규칙을 어기는 행은 저장 행과 짝지어지면 저장 행으로 되돌리고 아니면 버리며, 옛 중복 id 가 남은 그룹은
+   통째로 저장값으로 둔 뒤 `warnings` 에 싣습니다. 이렇게 거른 편집이 있으면 세션의 가져오기 기준을
+   앞당기지 않으므로 `force` 없는 `close` 는 종전의 컴포넌트 타입 충돌처럼 `409` 이고, 맨 앞 경고가 `force=true` 를 안내합니다. CVAT 에서
+   그 도형을 고치거나 지우고 다시 가져오면 풀리고, 버려도 되면 `force=true` 로 닫습니다. 작업자가 바꾸지 않은 옛 행은 건드리지 않고
+   경고하지도 않습니다. 응답의 병합 통계(`created_instances` · `updated_components` 등)는 거르기 전의 값이라 실제로 쓴 수보다 클 수
+   있습니다.
+3. **`PATCH /datasets/{id}/group-kinds` 의 `container` 선언이 기존 행을 검사합니다.** `container` 를 새로 선언하거나 `group` 을
+   `container` 로 바꾸는 키는 그 dataset 의 draft 버전들이 읽는 행을 `container` 규칙으로 봅니다(`preparing` · `failed` · sealed 버전은
+   보지 않습니다). `group` 선언 · 지우기 · 이미 `container` 인 키는 검사하지 않습니다. 다만 같은 dataset 의 앞선 그룹 종류 PATCH 를
+   기다린 시간도 50 초 안에 들므로, 앞선 `container` 검사가 길면 검사가 없는 PATCH 도 아래 `503` 입니다.
+   - 어긋나면 `400` `{"error": "<N> 건이 container 규칙에 어긋나 그룹 종류를 바꾸지 않았습니다", "code": "group_kind_rejected",
+     "rejected": [{"group", "sample_id", "version", "instance_id", "reason"}]}` 입니다. `reason` 은 `container_component_count` ·
+     `container_mixed_types` 이고, 100 개를 찾으면 멈춥니다(그때 문구는 「100 건 이상」).
+   - 검사는 요청 하나에 50 초까지이고(같은 dataset 의 앞선 그룹 종류 PATCH 를 기다린 시간 포함, 설정 키가 아닙니다), 넘기면 `503`
+     `group_kind_check_incomplete` 입니다. 어느 쪽이든 그 요청의 선언은 하나도 바뀌지 않습니다. 검사가 끝난 직후 커밋된 쓰기와의
+     경합은 받아들였습니다.
+4. **dataset · 버전 · subset 목록이 선택 쿼리 `cursor_value` 를 받습니다.** `GET /datasets`, `GET /datasets/{id}/versions`,
+   `GET /datasets/{id}/versions/{v}/subsets` 의 `cursor`(마지막 행 id)에 그 행의 정렬 값을 응답 문자열 그대로 함께 주면 그 값에서
+   잇습니다 — dataset 은 정렬 기준(`sort=name` 이면 `name`, 아니면 `created_at`), 버전은 `created_at`, subset 은 `updated_at` 입니다.
+   - **값 없이 준 `cursor` 의 행이 지워졌으면 빈 목록 대신 `400` `cursor_not_found` 입니다.** `0.1.39` 는 빈 페이지를 돌려 클라이언트가
+     그 뒤 항목을 오류 없이 놓쳤습니다. 값을 주면 그 행이 지워져도 잇습니다. 형식이 틀린 값과 `cursor` 없이 준 값은 `400` 이고, 빈 값은 값이
+     없는 것으로 봅니다.
+   - 이름순 목록에서 커서 행의 이름이 그 사이 바뀐 경우는 값을 줄 때만 겹침 · 건너뜀이 없습니다(값이 없으면 종전처럼 지금 이름에서
+     잇습니다). 응답 모양은 그대로입니다.
+5. **같은 사람이 같은 버전을 1 초 안에 다시 쓰면 버전의 `updated_at` · `updated_by` 갱신을 건너뜁니다.** 건너뛸 때는 버전 행을 잠그지
+   않습니다. 같은 버전에 동시에 들어온 쓰기가 이 한 행에서 줄을 서며 DB 커넥션을 쥐던 것을 줄입니다.
+   - 대상: annotation `PUT` · `PATCH` · CVAT 도형 가져오기 · 일괄 meta 쓰기(items · by-filter) · 태그(단건 · items · by-filter) ·
+     keypoint-info by-filter · 크기 보정 · 에셋 붙이기 · CVAT 글 칸 가져오기 · `/ingest/batch`. 그대로인 것: 링크 · 링크 해제 · 샘플
+     가져오기 · clone · seal · 단건 `/ingest`.
+   - 버전 응답과 버전 비교(`base_audit` · `target_audit`)의 `updated_at` 이 마지막 쓰기보다 최대 1 초 이르게 보일 수 있습니다.
+     `updated_by` 는 사용자가 바뀌면 곧바로 바뀌고, 여러 사용자가 번갈아 쓰면 종전처럼 매번 갱신합니다.
+   - 로컬 재현(풀 16, PostgreSQL 18.6)에서 같은 버전에 동시 32 의 annotation `PATCH` 는 사용 중 커넥션 평균 14.3 → 4.0, 잠금 대기
+     최대 14 → 0 이었습니다.
+6. **`401` 밖의 `4xx` 응답은 요청 완료 로그 줄에 사유를 싣습니다.** 응답 본문의 `error` 문구(앞 512 자)와 `code`(있을 때)가 필드
+   `client_error` · `client_error_code` 로 그 요청의 `request_id` · `uri` · `user_id` 가 실리는 줄에 더해집니다. 새 로그 줄은 없습니다.
+   `401` 은 종전처럼 `auth_error` 이고, 재설정 링크의 판정 사유는 종전처럼 `reset_error` 입니다. 서버가 요청을 해석하기 전에 거절한
+   응답(형식이 틀린 JSON 본문 · 쿼리 · 경로 값의 `400` · `422`, `413`, `405`), 어느 경로에도 맞지 않은 요청의 `404`, `/ingest/batch` 의 item 오류, 문구가 고정인 `410`(버전 없는 옛 쓰기 경로) ·
+   `429`(적재 · 복제 상한)에는 실리지 않습니다. 문구에 요청의 입력값(이름 · 이메일 등)이 들어 있을 수 있습니다.
+
+**마이그레이션** — 없음. 롤백 안전(이미지 `0.1.39` 로 되돌리면 1 ~ 6 이 이전으로 돌아갑니다. 1 · 3 의 검사가 없어지고, 4 의
+`cursor_value` 는 무시되며, 3 으로 바꾼 그룹 종류와 그동안 쓴 데이터는 그대로 남습니다).
+**설정 키** — 없음
+**호환성** — `0.1.39` 파드와 섞여 돌아도 됩니다(스키마가 같습니다). 교체 동안은 1 · 3 의 검사가 파드에 따라 걸리거나 걸리지
+않습니다. 특정 SDK 버전을 요구하지 않지만, 규칙에 어긋난 annotation 을 보내던 클라이언트(옛 SDK 의 dict 쓰기 · 직접 HTTP)는 이제
+`400` 을 받습니다. 4 의 값을 보내지 않는 클라이언트는 목록을 넘기는 도중 커서 행이 지워지면 `400` `cursor_not_found` 를 받으므로
+처음부터 다시 받거나 값을 함께 보내야 합니다. SDK 는 `0.1.31` 부터 자동 순회에서 이 값을 보냅니다.
+**주의** — 3 의 검사가 도는 동안(최대 50 초) 그 dataset 행을 잠가 둡니다. 그동안 같은 dataset 의 이름 · 설명 · 태그 수정
+(`PATCH /datasets/{id}`), dataset 태그 붙이기 · 떼기(`POST` · `DELETE /datasets/{id}/tags`), 담당자 이관(일괄 이관과, 그 dataset 의
+담당자 계정 삭제 포함), dataset 삭제, 그 dataset 을 대상으로 한 clone job 롤백이 기다립니다(앞단 프록시의 읽기 타임아웃에 걸릴 수
+있습니다). 같은 dataset 의 다른 그룹 종류 PATCH 는 기다린 시간이 그 PATCH 의 50 초에 들어 `503` `group_kind_check_incomplete` 로 끝날
+수 있고, SDK 는 이 응답을 다시 보내지 않습니다. 적재와 annotation 쓰기는 기다리지 않습니다. 검사 시간은 draft 버전의 링크
+수에 비례합니다 — PostgreSQL 18 · instances 약 1 억 행에서 링크 100 만 개 draft 하나가 46 ~ 52 초였습니다. 시한 50 초는 그 dataset 의 draft 전부에
+걸리므로, 그 규모의 draft 가 하나면 `503` 일 수 있고 둘 이상이면 `container` 선언이 `503` 으로 끝나 바뀌지 않습니다.
+**운영 조치** — 없음(필수 아님). 올린 뒤 적재 · annotation 쓰기의 `400` 이 늘면 요청 로그의 `client_error_code` 가 `annotation_invalid`
+인 줄의 `uri` 로 보낸 클라이언트를 찾습니다(6). 되돌릴 때는 `image.tag` 를 `0.1.39` 로 바꿉니다.
+
 ## 0.3.33
 
 image: `int2jieun/nexus-server:0.1.38` → `int2jieun/nexus-server:0.1.39`
@@ -387,7 +487,7 @@ digest: `sha256:e8ef4c61380c97f4d8683f5a09ae824de872aee4e528501459fc4a575df72f7e
   `autovacuum_analyze_scale_factor = 0.01`) — 대량 사본 쓰기 직후 통계가 비어 계획이 나빠지지 않게 합니다.
 - **예상 소요시간** — 행 수와 무관하게 표 생성만입니다(수 초 이내, 샘플 150 만 DB 에서 56 ms).
 - **롤백** — 사본·관측이 생긴 뒤에는 데이터를 잃습니다. 절차와 SQL 은 차트 README
-  [되돌리기 › 039 가 적용된 DB](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.33/charts/nexus-server/README.md#039-가-적용된-db) 이고, **파드를 0 개로 내린 뒤** SQL 을 돌리고 이전 판 리비전으로
+  [되돌리기 › 039 가 적용된 DB](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.34/charts/nexus-server/README.md#039-가-적용된-db) 이고, **파드를 0 개로 내린 뒤** SQL 을 돌리고 이전 판 리비전으로
   `helm rollback` 합니다(파드를 0 개로 내리므로 rollback 전에 Recreate 로 바꿀 필요는 없습니다. helm 4 면 rollback 뒤 README 되돌리기 4 대로 RollingUpdate 로
   되돌립니다). 파드가 떠 있는 채 SQL 을 돌리면 그 파드가 재시작하며
   039 를 다시 적용합니다. `0.1.33` ~ `0.1.36` 으로 되돌릴 때는 039 만 걷습니다. 잃는 것과 미리 떠 둘 것(사본 표 내보내기)은 그 절에

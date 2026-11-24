@@ -693,7 +693,9 @@ Sample의 `meta` 필드도 같은 방식으로 관측한다. 어떤 필드가 �
 
 재계산은 `POST /datasets/{dataset_id}/versions/{version}/schema/recompute` 다. 받으면 늘 202 로 답하고(준비 중·실패 Version 과 Seal 스냅샷이 없는 Sealed Version 은 409) 진행은 `GET /api/v1/schema-jobs/{job_id}` 로 본다(결과의 `conflicts` 가 한 이름의 두 타입을 알린다). 지정 삭제는 `DELETE .../schema/{labels|components|meta-fields}` 이고 데이터를 확인하지 않으며 Sealed Version 은 409 다. 재계산은 Seal·Fork 작업 줄과 따로 파드마다 하나씩 돈다(`schema_jobs`).
 
-그룹의 **종류**(인스턴스를 담는 `group` 인가, 임의 구조를 담는 `container` 인가)는 관측으로 정하지 않고 사람이 선언한다. 선언은 `dataset_group_kinds` 에 Dataset 단위로 저장하고(`GET|PATCH /datasets/{dataset_id}/group-kinds`, 서버 `0.1.29`+), Seal 스냅샷·GT 형식에는 넣지 않으며 Clone 이 함께 복사한다. 모양을 추론하지 않으므로 선언이 없는 그룹은 원시 그룹으로 읽힌다.
+그룹의 **종류**(인스턴스를 담는 `group` 인가, 임의 구조를 담는 `container` 인가)는 관측으로 정하지 않고 사람이 선언한다. 선언은 `dataset_group_kinds` 에 Dataset 단위로 저장하고(`GET|PATCH /datasets/{dataset_id}/group-kinds`, 서버 `0.1.29`+), Seal 스냅샷·GT 형식에는 넣지 않으며 Clone 이 함께 복사한다. 모양을 추론하지 않으므로 선언이 없는 그룹은 원시 그룹으로 읽힌다. `container` 를 새로 선언하거나 `group` 을 `container` 로 바꾸면 그 Dataset 의 draft Version 들이 읽는 행을 `container` 규칙(행마다 component 하나, 그룹 안 같은 타입)으로 검사하고, 어긋나면 400 `group_kind_rejected`(어긋난 행 목록), 50 초(같은 Dataset 의 앞선 그룹 종류 변경을 기다린 시간 포함) 안에 다 보지 못하면 503 `group_kind_check_incomplete` 이며 어느 쪽이든 선언은 바뀌지 않는다(서버 `0.1.40`+). Sealed Version 의 행은 보지 않는다.
+
+annotation 쓰기(PUT·PATCH·적재·CVAT 가져오기)는 component 와 그룹 규칙을 검사한다(서버 `0.1.40`+). component 는 공통 필드가 아닌 키의 값 중 `type` 이 문자열인 객체이고 `type` 은 GT 형식의 열 가지만 받으며, 타입마다 필수 필드의 형식·길이를 본다. 그룹 안 비어 있지 않은 `id` 는 유일해야 하고, `container` 그룹은 위 규칙을 따른다. 위반은 400 `annotation_invalid` 에 `errors: [{path, reason, message}]` 로 모아 싣는다. **그 요청이 새로 넣거나 바꾼 component 만 거절한다** — 이미 저장된 틀린 행은 남고 그대로 다시 보내도 막히지 않는다. CVAT 가져오기는 거절하지 않고 어긋난 도형을 반영하지 않은 채 경고하며 세션의 가져오기 기준을 앞당기지 않는다. Version 사이 복사(Fork·Clone·Import·링크의 `from_version`)는 저장된 행을 옮기는 것이라 검사하지 않는다.
 
 ## 9. API, SDK 계층 구조
 Nexus는 비즈니스 규칙, 저장소 접근, 외부 인터페이스를 계층별로 분리하여 설계하였다.  
