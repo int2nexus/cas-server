@@ -6,16 +6,16 @@
 #
 # ── 문서 ─────────────────────────────────────────────────────────────────────
 #   아키텍처 (도메인 모델·버전 관리·스냅샷 구조)
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.34/charts/nexus-server/docs/architecture.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.35/charts/nexus-server/docs/architecture.md
 #   사용법 (설치·SDK 연결·Dataset 워크플로우)
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.34/charts/nexus-server/docs/usage.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.35/charts/nexus-server/docs/usage.md
 #   차트 README
-#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.34/charts/nexus-server/README.md
+#     https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.35/charts/nexus-server/README.md
 # ─────────────────────────────────────────────────────────────────────────────
 
 image:
   repository: int2jieun/nexus-server
-  tag: "0.1.40"
+  tag: "0.1.41"
   # digest 로 핀하려면 여기에 넣으십시오 (`sha256:...`). 값이 있으면 tag 대신 이것이
   # 쓰이고, 렌더 결과가 `repository@sha256:...` 가 됩니다.
   #
@@ -372,7 +372,8 @@ auth:
 #                                        전체 수가 없거나 0 이면 시리즈가 없다
 #   nexus_http_requests_cancelled_total  응답 전에 클라이언트가 끊은 요청 누적. 라벨 method·endpoint
 #   nexus_annotation_instance_writes_total  그룹을 보낸 annotation 쓰기를 커밋 뒤 샘플마다 센 누적.
-#                                        라벨 mode = direct·group·legacy_converted·unchanged(넷 다 0 부터)
+#                                        라벨 mode = direct·group·legacy_converted·unchanged(넷 다 0 부터,
+#                                        legacy_converted 는 더 늘지 않는다)
 #   nexus_cas_delete_failures_total      삭제와 seal 잔여 정리에서 지우지 못한 객체 누적.
 #                                        라벨 kind = asset·thumbnail·snapshot, 셋 다 0 부터.
 #                                        asset·thumbnail 은 다시 정리되지 않는다. snapshot 은 버전 삭제에서 오른 것은

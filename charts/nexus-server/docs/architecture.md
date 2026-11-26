@@ -196,7 +196,7 @@ Sealed Version은 직접 수정할 수 없다.
 기존 Version을 변경하려면 새로운 Draft Version을 생성(Fork)하여 작업한다.  
 새 Draft는 부모 Version의 Sample 구성을 그대로(또는 지정한 Sample만) 이어받으며, 이후 필요한 Sample과 Annotation만 변경한다.  
 이를 통해 이전 Version은 그대로 유지되며 새로운 Version만 변경된다.  
-Annotation 과 Sample 필드는 부모의 Version 전용 행·그룹 표식·`meta`/태그/split 사본 가운데 자식에 링크된 Sample 의 것을 복사하고, 공유 행·공유 값은 복사하지 않는다(부모가 옛 형식이면 자식에 표식을 새로 넣는다, §5.2). 복사는 Fork 가 실제로 돌 때의 부모 값이다 — 작업 줄에서 대기한 Fork 는 그 사이 부모에 들어간 쓰기를 본다. 부모의 스키마 관측도 함께 물려받는다(§8.3).  
+Annotation 과 Sample 필드는 부모의 Version 전용 행·그룹 표식·`meta`/태그/split 사본 가운데 자식에 링크된 Sample 의 것을 복사하고, 공유 행·공유 값은 복사하지 않는다(§5.2). 복사는 Fork 가 실제로 돌 때의 부모 값이다 — 작업 줄에서 대기한 Fork 는 그 사이 부모에 들어간 쓰기를 본다. 부모의 스키마 관측도 함께 물려받는다(§8.3).  
 Version 설명은 Fork 로 이어받지 않는다 — 설명은 그 Version 에 대한 메모이고 새 Draft 는 다른 Version 이다(Fork 요청에 새 설명을 줄 수는 있다).
  
 ### 4.5 버전 불변성
@@ -238,7 +238,7 @@ Sample 과 그 멤버십·Asset 은 Version 간에 공유되며, Annotation 과 
 
 ### 5.2 Copy-on-Write
 Ingest 로 적재된 Annotation 은 모든 Version 이 공유하는 공유(base) Instance(공유 행)이다. CoW 의 단위는 **(Sample, 그룹)** 이다(서버 `0.1.29`+). Version 에서 Sample 의 그룹 하나를 고치면 그 그룹만 그 Version 전용 Instance(버전 행)로 쓰고, 표식 표 `instance_overrides` 에 (Sample, Version, 그룹) 표식을 남긴다. 그 Version 에서는 표식이 있는 그룹만 버전 행이 공유 행을 가리고, 고치지 않은 그룹은 계속 공유 행을 읽는다.  
-Fork 시 부모 Version 의 버전 행·표식·사본 가운데 자식에 링크된 Sample 의 것이 새 Version 으로 함께 복사되고, 공유 행은 복사 없이 계속 공유된다. 수정되지 않은 Sample·그룹은 저장 공간을 더 쓰지 않는다. 부모가 옛 형식(표식 없이 버전 행만 있음)인 Sample 은 자식에 모든 그룹의 표식을 새로 넣어 그룹 단위로 만든다 — 자식이 읽는 내용은 부모와 같다(서버 `0.1.30`+).
+Fork 시 부모 Version 의 버전 행·표식·사본 가운데 자식에 링크된 Sample 의 것이 새 Version 으로 함께 복사되고, 공유 행은 복사 없이 계속 공유된다. 수정되지 않은 Sample·그룹은 저장 공간을 더 쓰지 않는다.
 
 쓰기에는 두 모드가 있다.
 
@@ -247,7 +247,7 @@ Fork 시 부모 Version 의 버전 행·표식·사본 가운데 자식에 링�
 
 어느 모드든 **바뀐 그룹만 쓴다** — 쓰기 결과를 그룹마다 지금 값과 비교해(GT 의 `id`·`label`·`track_id`·`confidence`·컴포넌트를 보고 서버 내부 `instance_id` 는 보지 않는다. `confidence` 는 비트로 비교해 `-0.0` 과 `0.0` 을 다르게 본다) 다른 그룹만 쓰므로, 바뀌지 않은 그룹의 내부 `instance_id` 가 다시 발급되지 않는다. 쓰기 모드별 횟수는 지표 `nexus_annotation_instance_writes_total{mode}` 로 보인다.
 
-표식 표가 생기기 전에 쓰인 Sample(표식 없이 버전 행만 있는 옛 형식)은 그 Version 에서 버전 행만 읽는다(옛 규칙). 그런 Sample 은 처음 쓸 때, 그 Version 을 Fork 할 때(자식 쪽), 또는 버전 행 정리 때 모든 그룹에 표식을 넣어 그룹 단위로 바뀐다(읽는 내용은 같다).
+표식 표가 생기기 전에 쓰인 Sample(표식 없이 버전 행만 있는 옛 형식)도 같은 규칙으로 읽는다 — 표식이 없으니 그룹마다 공유 행이다(서버 `0.1.41`+). 그 버전 행은 버전 행 정리가 읽히지 않는 행으로 지운다.
 
 운영자가 실행하는 서브커맨드 `nexus-server compact-instances`(서버 `0.1.30`+, 기본 dry-run, 차트 README 「annotation 버전 행 정리(compact-instances)」)는 어느 Version 이 읽는 내용도 바꾸지 않는 범위에서 행을 줄인다 — 읽히지 않는 버전 행과 공유 행과 같은 버전 행은 지우고, 그 Sample 을 읽는 Version 이 링크된 하나뿐이면 버전 행을 공유 행으로 옮기며, 읽는 모든 Version 이 표식으로 덮은 공유 행은 지운다(공유 행을 지우는 이 두 단계는 끌 수 있다 — `--no-move` 는 옮기기만, `--keep-shared` 는 둘 다 끈다, 서버 `0.1.32`+). 그보다 먼저 링크가 끊긴 (Sample, Version) 의 버전 행·표식·`meta`/태그/split 사본(아무도 읽지 않는 잔여, [5.2.1](#521-링크와-링크-해제))을 지운다(`--keep-residue` 로 끈다). 정리 뒤에는 Version 조회의 내부 `instance_id` 가 바뀔 수 있고(내용은 같다), Version 을 지정하지 않은 `GET /instances` 의 행이 바뀌며, 어느 Version 에도 링크되지 않은 정리된 Sample 을 다시 링크하면 적재 때 값이 아니라 옮긴 Version 의 값을 보고, 덮인 공유 행이 지워진 그룹은 비어 보인다(공유 행을 남기려면 `--keep-shared`). 되돌릴 수 없다(undo 기록으로만 손으로 복구한다).
 
@@ -293,9 +293,7 @@ Annotation을 조회할 때는 그룹마다 현재 Version의 표식을 보고, 
 
 ```mermaid
 flowchart TD
-    A["Sample 조회"] --> L{"표식 없이 버전 행만 있는<br/>옛 형식인가?"}
-    L -->|예| V0["그 Version 의 버전 행만 사용"]
-    L -->|아니오| G["그룹마다"]
+    A["Sample 조회"] --> G["그룹마다"]
     G --> B{"(Sample, Version, 그룹)<br/>표식이 있는가?"}
     B -->|예| C["그 그룹의 버전 행 사용<br/>(0 개면 빈 그룹)"]
     B -->|아니오| D["그 그룹의 공유 행 사용"]
@@ -674,7 +672,7 @@ DatasetVersion  Sample
 
 ### 8.2 Annotation Versioning
 Annotation은 instances 테이블에서 관리된다.  
-공유 Annotation과 Version별 Annotation을 하나의 데이터 모델로 관리하며(`dataset_version_id` 가 비어 있으면 공유 행), 이를 통해 Copy-on-Write 구조를 구현한다. 어느 그룹을 Version 전용 행으로 읽을지는 `instance_overrides` 의 (Sample, Version, 그룹) 표식이 정한다 — 표식이 있는 그룹은 그 Version 의 전용 행(0 개면 빈 그룹)을, 없는 그룹은 공유 행을 쓴다. Fork 는 부모의 전용 행·표식·`meta`/태그/split 사본 가운데 **자식에 링크된 Sample 의 것만** 복사하므로(부모가 옛 형식이면 자식에 표식을 새로 넣는다, §5.2) 자식이 부모를 참조하지 않는다. Version 을 지우면 표식·사본·전용 행을 차례로 함께 지우고, Sample 을 지우면 표식과 사본(`version_sample_fields`)을 같은 트랜잭션에서 지운다. 두 표는 `samples` 에 FK 를 두지 않는다 — 가장 쓰기가 많은 표에 잠금을 더 얹지 않기 위해서다.
+공유 Annotation과 Version별 Annotation을 하나의 데이터 모델로 관리하며(`dataset_version_id` 가 비어 있으면 공유 행), 이를 통해 Copy-on-Write 구조를 구현한다. 어느 그룹을 Version 전용 행으로 읽을지는 `instance_overrides` 의 (Sample, Version, 그룹) 표식이 정한다 — 표식이 있는 그룹은 그 Version 의 전용 행(0 개면 빈 그룹)을, 없는 그룹은 공유 행을 쓴다. Fork 는 부모의 전용 행·표식·`meta`/태그/split 사본 가운데 **자식에 링크된 Sample 의 것만** 복사하므로(§5.2) 자식이 부모를 참조하지 않는다. Version 을 지우면 표식·사본·전용 행을 차례로 함께 지우고, Sample 을 지우면 표식과 사본(`version_sample_fields`)을 같은 트랜잭션에서 지운다. 두 표는 `samples` 에 FK 를 두지 않는다 — 가장 쓰기가 많은 표에 잠금을 더 얹지 않기 위해서다.
 
 ### 8.3 Annotation Schema
 Explorer에서 사용하는 Annotation Schema는 별도의 관측 테이블에 관리된다.  

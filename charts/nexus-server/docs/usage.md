@@ -38,7 +38,7 @@ pip install --upgrade --extra-index-url https://int2nexus.github.io/cas-server/s
 python -c "import importlib.metadata as m; print(m.version('int2nexus-sdk'))" 
 ```
 
-이 문서는 서버 `0.1.40`(차트 `0.3.34`)과 SDK `0.1.31` 기준이다. SDK `0.1.31` 은 서버 `0.1.29` 이상이 필요하다(그보다 낮은 서버에서는 그룹 종류 선언과 첫 쓰기가 `NexusError`). 서버 `0.1.37` 이상에서 SDK 가 `0.1.28` 보다 낮으면 태그 저장·크기 보정이 `410` 이고, 다른 버전에 있는 샘플의 링크가 `400` 이다. **SDK `0.1.31` 부터 annotation 쓰기는 객체(`AnnotatedSample`)로만 한다** — dict 를 받던 쓰기 메서드는 빠졌다([5장](#5-annotation-편집)). SDK는 서버와 따로 발행되므로 위 명령으로 최신을 유지한다 — 문서의 기능이 없다는 에러가 나면 대개 SDK가 낮은 것이다. 버전별 변경은 [차트 CHANGELOG](../CHANGELOG.md)와 [SDK 변경 이력](https://int2nexus.github.io/cas-server/sdk/changelog.html)에 있다.
+이 문서는 서버 `0.1.41`(차트 `0.3.35`)과 SDK `0.1.32` 기준이다. SDK `0.1.32` 는 서버 `0.1.29` 이상이 필요하다(그보다 낮은 서버에서는 그룹 종류 선언과 첫 쓰기가 `NexusError`). 서버 `0.1.37` 이상에서 SDK 가 `0.1.28` 보다 낮으면 태그 저장·크기 보정이 `410` 이고, 다른 버전에 있는 샘플의 링크가 `400` 이다. **SDK `0.1.31` 부터 annotation 쓰기는 객체(`AnnotatedSample`)로만 한다** — dict 를 받던 쓰기 메서드는 빠졌다([5장](#5-annotation-편집)). SDK는 서버와 따로 발행되므로 위 명령으로 최신을 유지한다 — 문서의 기능이 없다는 에러가 나면 대개 SDK가 낮은 것이다. 버전별 변경은 [차트 CHANGELOG](../CHANGELOG.md)와 [SDK 변경 이력](https://int2nexus.github.io/cas-server/sdk/changelog.html)에 있다.
 
 ### 2.2 연결 설정
 
@@ -55,6 +55,8 @@ print(resp.status_code, "(409 = 이미 존재, 무시 가능)")
 ```
 
 설정 값의 우선순위는 **인자 > 환경변수 > 설정 파일**이다. 코드에 명시한 값이 항상 이기고, CI는 환경변수로 로컬 설정 파일을 덮을 수 있다.
+
+**`nexus_url` 은 nexus-server 가 받는 경로의 기준 주소다.** SDK 가 그 뒤에 `/api/v1/auth/login`·`/datasets` 같은 경로를 붙인다. nexus-server 에 바로 붙으면 `http://<host>:8090` 이고, 앞단(nexus-client 등)이 경로 접두어를 떼고 nexus-server 로 넘기면 그 접두어까지 적는다 — nexus-client 를 거치면 `http://<nexus-client 주소>/api`. 틀리면 로그인이 `404` 이고, SDK `0.1.32`+ 는 메시지에 이 주소를 확인하라는 안내를 붙인다.
 
 **(1) 설정 파일 — 권장**
 

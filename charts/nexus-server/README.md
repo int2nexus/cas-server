@@ -4,9 +4,9 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
 
 ## 문서
 
-- [아키텍처](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.34/charts/nexus-server/docs/architecture.md)
+- [아키텍처](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.35/charts/nexus-server/docs/architecture.md)
   — 도메인 모델, Version 생명주기, Annotation CoW, 스냅샷·Manifest 구조
-- [사용법](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.34/charts/nexus-server/docs/usage.md)
+- [사용법](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.35/charts/nexus-server/docs/usage.md)
   — 설치, Python SDK 연결, Dataset 적재·검색·seal 워크플로우, API 레퍼런스
 - [변경 이력](CHANGELOG.md)
   — 버전별 동작 변경·마이그레이션·설정 키. 각 항목은 해당 GitHub Release 본문과 동일하다
@@ -22,7 +22,7 @@ ML 학습 데이터 카탈로그 서버. cas-server 위에서 파일을 **Sample
   선택 키가 셋 더 있고, 쓰는 기능이 있을 때만 넣는다 — CVAT annotation 편집 세션의
   `NEXUS__CVAT__PASSWORD`, superuser의 `NEXUS__AUTH__SUPERUSER_PASSWORD`,
   지표의 `NEXUS__METRICS__TOKEN`(values 스위치가 없다 — 이 키가 곧 스위치다).
-  전체 목록은 [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.34/charts/nexus-server/examples/secret.example.yaml).
+  전체 목록은 [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.35/charts/nexus-server/examples/secret.example.yaml).
 - **CVAT은 선택** — 설정하지 않아도 서버는 정상 동작한다. 세션 생성·계획·결과 회수만 503이 되고 카탈로그·업로드·seal·조회는 영향이 없다.
 - **superuser도 선택** — 설정하지 않으면 관리자를 만들 부트스트랩 수단이 없다(`users.role = admin`은 백필하지 않는다). 다만 **CVAT과 달리 반쪽 설정은 조용히 꺼지지 않고 기동을 실패시킨다**(아래 참조).
 
@@ -56,7 +56,7 @@ kubectl create secret generic nexus-server -n <namespace> --dry-run=client -o ya
 kubectl apply -f sealed-nexus-server.yaml -n <namespace>
 ```
 
-평문 예시: [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.34/charts/nexus-server/examples/secret.example.yaml).
+평문 예시: [`examples/secret.example.yaml`](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.35/charts/nexus-server/examples/secret.example.yaml).
 Secret 이름은 `secret.existingSecret`(비우면 릴리즈 fullname, 기본 `nexus-server`)과 일치해야 한다.
 
 - `NEXUS__JWT__SECRET`은 직접 생성하는 임의의 비밀 키(로그인 JWT HS256 서명용)  
@@ -175,13 +175,13 @@ requests.post(f"{base}/api/v1/admin/datasets/transfer-owner",
 - **임시 비밀번호는 응답에 한 번만 실려 온다.** 서버 어디에도 저장되지 않으니 그 자리에서 전달하고, 받은 사람은 곧바로 `client.change_password(...)`로 바꾼다. 재설정해도 그 사람의 기존 토큰은 만료(`jwt.ttlHours`)까지 유효하다 — "잊어버림"을 푸는 도구지 "탈취 즉시 차단"이 아니다.
 - **재설정 링크는 임시 비밀번호 대신 쓰는 일회용 토큰이다.** 발급은 본문 `{"email", "expires_in_hours"}`(1~72, 필수)이고 `201` 응답에 `token` 평문이 한 번만 실린다. 사용자는 인증 없이 `POST /api/v1/auth/password-reset/inspect`(`{token}` → 이메일·만료 확인)와 `POST /api/v1/auth/password-reset/complete`(`{token, new_password}` → `204`, 로그인은 따로 한다)를 부른다. 판정 실패(없음·이미 씀·만료·대상 부적격)는 모두 `400` `reset_link_invalid` 하나이고 사유는 요청 로그의 `reset_error` 에만 남는다. 새 비밀번호가 규칙에 맞지 않으면 `code` 없는 `400` 이고 링크는 소모되지 않는다. 사용자당 살아 있는 링크는 하나이며, 다시 발급하거나 임시 비밀번호 재설정·본인 비밀번호 변경을 하면 이전 링크는 무효다. 링크를 사용자에게 전달하는 경로의 보안은 운영자 몫이다.
 - **계정 정지는 삭제가 아니다.** 이메일을 계속 점유하므로 그 주소로 재가입할 수 없고, `active: true`로 해제하면 그대로 돌아온다. 정지하면 로그인이 `403 forbidden`이 되고, **이미 발급된 토큰도 캐시 수명(`auth.revocationCacheTtlSecs`, 기본 5초) 안에 막힌다.**
-- **담당자 이전은 인가를 옮기지 않는다.** 이전 담당자도 계속 쓰고 지울 수 있다 — 역할이 `editor`이기 때문이다. 옮겨가는 것은 「다시 넘길 자격」 하나다. 담당자가 없는 dataset(`GET /datasets?unowned=true`)은 위험한 상태가 아니라 **인수 대기**이고, `editor` 이상이면 그대로 쓰고 지울 수 있다. 담당자가 있는 dataset을 넘기는 것은 담당자 본인이 한다([사용법 8.2](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.34/charts/nexus-server/docs/usage.md#82-담당자-이전)).
+- **담당자 이전은 인가를 옮기지 않는다.** 이전 담당자도 계속 쓰고 지울 수 있다 — 역할이 `editor`이기 때문이다. 옮겨가는 것은 「다시 넘길 자격」 하나다. 담당자가 없는 dataset(`GET /datasets?unowned=true`)은 위험한 상태가 아니라 **인수 대기**이고, `editor` 이상이면 그대로 쓰고 지울 수 있다. 담당자가 있는 dataset을 넘기는 것은 담당자 본인이 한다([사용법 8.2](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.35/charts/nexus-server/docs/usage.md#82-담당자-이전)).
 
 **로그인·가입·갱신·OIDC 교환의 `200` 응답은 모두 `{ token, user_id, email }`이다** — 로그인 화면이 실어 쓰는 토큰 필드는 `token`이다. 가입이 승인 대기(`auth.approvalRequired`)면 `202`이고 타입이 다르다.
 
 ### 로봇 계정 발급
 
-사람이 없는 워크로드(적재 잡·스케줄러·CI)용 계정이다. 쓰는 쪽은 [사용법 2.3](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.34/charts/nexus-server/docs/usage.md#23-로봇-토큰으로-연결)의 `nx.connect(robot_token=...)`로 붙는다.
+사람이 없는 워크로드(적재 잡·스케줄러·CI)용 계정이다. 쓰는 쪽은 [사용법 2.3](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.35/charts/nexus-server/docs/usage.md#23-로봇-토큰으로-연결)의 `nx.connect(robot_token=...)`로 붙는다.
 
 계정 생성(`POST /api/v1/admin/robots`, body `{"name": "...", "role": "editor", "display_name": "..."}`, `display_name`만 선택)의 이름은 소문자·숫자·하이픈 1~48자이고 하이픈으로 시작하거나 끝날 수 없다(`400`). **이름 검사가 `role` 검사보다 먼저 돈다** — 이름이 틀린 동안에는 `role` 오류를 볼 수 없다. 로봇의 `role`은 `editor`·`viewer`뿐이고 `admin`은 `400`이다 — `admin` 로봇의 장수명 토큰은 그대로 관리 평면 전권이 되기 때문이다. 경로의 `user_id`는 정수다(UUID를 넣으면 본문 검사 전에 `400`).
 
@@ -625,7 +625,7 @@ SELECT NOT EXISTS (SELECT 1 FROM instance_overrides);
 
 ## annotation 버전 행 정리(compact-instances)
 
-`nexus-server compact-instances` 는 `instances` 표에 쌓인 버전별 복사본과, 링크가 끊긴 (샘플, 버전)에 남은 기록을 정리한다. HTTP 서버로 뜨지 않고 마이그레이션도 돌리지 않으며, DB(`database.url`)에만 접속한다. 맨 먼저 링크가 끊긴 (샘플, 버전)의 버전 행·그룹 표식·meta·태그·split 사본(아무 버전도 읽지 않는다)을 지운다(잔여 단계). 그다음 옛 형식(버전 행은 있고 그룹 표식이 없는 샘플·버전)을 그룹 표식 형식으로 바꾸고, 읽기 규칙이 읽지 않는 버전 행(표식이 있는 샘플·버전에서 표식이 없는 그룹의 버전 행)을 지운다. 그 뒤 하는 일은 셋이다.
+`nexus-server compact-instances` 는 `instances` 표에 쌓인 버전별 복사본과, 링크가 끊긴 (샘플, 버전)에 남은 기록을 정리한다. HTTP 서버로 뜨지 않고 마이그레이션도 돌리지 않으며, DB(`database.url`)에만 접속한다. 맨 먼저 링크가 끊긴 (샘플, 버전)의 버전 행·그룹 표식·meta·태그·split 사본(아무 버전도 읽지 않는다)을 지운다(잔여 단계). 그다음 읽기 규칙이 읽지 않는 버전 행(그 그룹의 표식이 없는 버전 행 — 그 버전이 링크됐거나 표식이 있을 때)을 지운다. 표식이 하나도 없는 링크된 (샘플, 버전)의 버전 행(옛 형식)도 여기 들고, 그런 쌍은 지금 서버가 공유 행으로 읽으므로 내용이 바뀌지 않는다. 그 뒤 하는 일은 셋이다.
 
 1. 공유 행과 내용이 같은 버전 행 복사본을 지운다(그룹 단위 비교).
 2. 읽는 버전이 하나뿐이고 그 버전에 링크된 샘플의 버전 행을 공유 행으로 옮긴다. sealed 버전도 포함한다.
@@ -964,7 +964,7 @@ curl -H "Authorization: Bearer $METRICS_TOKEN" localhost:8090/_internal/metrics
 | 삭제 정리 | `nexus_cas_delete_failures_total`(라벨 `kind` = `asset`·`thumbnail`·`snapshot`) | 삭제와 seal 잔여 정리에서 지우지 못하고 남긴 객체 누적. 셋 다 `0` 부터 나온다. **`asset`·`thumbnail` 은 다시 정리되지 않는다.** 버전 삭제에서 오른 `snapshot` 은 [스냅샷 잔여 점검](#스냅샷-잔여-점검reconcile-snapshots)의 `--apply` 로 지우고, seal 잔여 정리에서 오른 `snapshot` 은 그 버전을 지울 때 다시 지운다 — bucket·key 는 대개 같은 시각의 로그 `CAS object 삭제 실패`·`CAS 썸네일 삭제 실패`·`스냅샷 객체 CAS 삭제 실패` 줄에 있다(버전 삭제 뒤 정리 판정 자체가 DB 오류로 실패한 경우는 `삭제 뒤 CAS 정리 판정 실패` 줄에 dataset_id·version 만 남는다) |
 | seal 결과 | `nexus_seal_total`(라벨 `result` = `completed`·`failed`) · `nexus_seal_duration_seconds`(히스토그램, 같은 라벨) | 끝난 seal 의 수와 소요. 요청이 끊긴 seal·대기했다 일꾼이 돌린 seal 도 끝날 때 기록하므로 앞단 프록시의 읽기 타임아웃을 소요 분포에 맞춰 정한다. `already_sealed` 거절과 잠금을 못 잡아 줄로 돌린 작업은 세지 않는다. 히스토그램은 첫 seal 이 끝나야 나온다 |
 | 끊긴 요청 | `nexus_http_requests_cancelled_total`(라벨 `method`·`endpoint`) | 응답 전에 클라이언트나 프록시가 연결을 끊은 요청 누적. `endpoint` 는 아래 HTTP 요청 지표와 같은 규칙이다. 첫 끊김이 생겨야 나온다 |
-| annotation 쓰기 | `nexus_annotation_instance_writes_total`(라벨 `mode` = `direct`·`group`·`legacy_converted`·`unchanged`) | 그룹을 보낸 annotation 쓰기(PUT·PATCH·CVAT 가져오기)를 커밋 뒤 샘플마다 한 번 센다. 넷 다 `0` 부터 나온다. `direct` 는 그 샘플을 링크한 버전이 그 draft 하나이고 그 버전에 그 샘플의 기록(사본·버전 행·표식)이 없어 공유 행을 고친 쓰기, `group` 은 바뀐 그룹만 버전 전용으로 쓴 쓰기, `legacy_converted` 는 옛 형식 샘플을 첫 쓰기에서 그룹 단위로 바꾼 쓰기, `unchanged` 는 바뀐 그룹이 없어 인스턴스를 쓰지 않은 것이다 |
+| annotation 쓰기 | `nexus_annotation_instance_writes_total`(라벨 `mode` = `direct`·`group`·`legacy_converted`·`unchanged`) | 그룹을 보낸 annotation 쓰기(PUT·PATCH·CVAT 가져오기)를 커밋 뒤 샘플마다 한 번 센다. 넷 다 `0` 부터 나온다. `direct` 는 그 샘플을 링크한 버전이 그 draft 하나이고 그 버전에 그 샘플의 기록(사본·버전 행·표식)이 없어 공유 행을 고친 쓰기, `group` 은 바뀐 그룹만 버전 전용으로 쓴 쓰기, `legacy_converted` 는 옛 형식 샘플을 첫 쓰기에서 그룹 단위로 바꾼 쓰기(지금 서버는 변환하지 않아 늘지 않는다), `unchanged` 는 바뀐 그룹이 없어 인스턴스를 쓰지 않은 것이다 |
 | explorer annotation 필터 | `nexus_explorer_matcher_exec_total`(라벨 `exec` = `prefetch`·`probe`, `reason` = `budget_ok`·`forced`·`budget_exceeded`·`attempt_failed`) | 필터를 컴파일할 때마다(목록·projection 은 페이지마다) 쓰인 annotation 매처마다 하나를 센다. 다섯 짝(`prefetch`×`budget_ok`·`forced`, `probe`×`budget_exceeded`·`attempt_failed`·`forced`) 모두 `0` 부터 나온다. `prefetch/budget_ok` 는 일찍 멈추는 경로(목록·projection·상한 개수·subset 페이지 읽기)에서 매처의 미리 해소가 3 초 안에 끝난 것, `prefetch/forced` 는 결과 전부를 보는 경로(전수 개수·facet 개수·세션 계획·subset 물질화·by-filter 쓰기)의 미리 해소, `probe/budget_exceeded` 는 미리 해소가 3 초를 넘어 그 매처만 샘플마다 탐침한 것(그 요청이 3 초를 썼다), `probe/attempt_failed` 는 시도가 시한이 아닌 오류로 실패해 탐침한 것(오르면 DB 오류를 본다), `probe/forced` 는 시험 전용이다. **`budget_exceeded` 가 오르는데 결과가 적거나 빈 요청이 느리면 이 버전에 드문 값을 버전 전체에서 탐침하는 경우다** |
 | 스키마 재계산 | `nexus_schema_jobs_total`(라벨 `result` = `done`·`failed`) | 끝난 재계산 작업 수. 둘 다 `0` 부터 나온다. 버전 작업 줄과 따로 돌아 `nexus_version_jobs_*` 에 들지 않는다 |
 | 버전 사본 | `nexus_version_sample_fields_bytes` · `nexus_version_sample_fields_rows_estimate` | 버전에서 고친 meta·태그·split 사본 표의 크기(힙·TOAST·색인 합계 바이트)와 행 수 추정(PostgreSQL 통계, 마지막 VACUUM·ANALYZE 기준). DB 전체 값이라 파드마다 같고 표를 읽지 않는다. 조회가 실패하거나 제한을 넘기면 직전 값이 남는다. 사본은 버전을 지울 때까지 남으므로 증가 추세를 본다 |

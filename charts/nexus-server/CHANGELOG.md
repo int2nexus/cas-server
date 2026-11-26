@@ -81,6 +81,64 @@ nexus-server 는 마이그레이션이 바이너리에 임베드되어 **기동 
 
 <!-- 새 버전 섹션은 이 줄 바로 아래에, 최신이 위로 오게 추가하세요 -->
 
+## 0.3.35
+
+image: `int2jieun/nexus-server:0.1.40` → `int2jieun/nexus-server:0.1.41`
+digest: `sha256:55dba9dfc6e36ff45cfa51ad9a503bae1f0571fc85964c4e43e8bab31fb3b046`
+
+**동작 변경** — 넷입니다. 모두 annotation 의 옛 형식(그 버전의 행은 있고 그룹 표식이 하나도 없는 (샘플, 버전), `0.1.29` 이하의
+쓰기가 남긴 모양)을 다루는 방식입니다. **옛 형식 쌍이 없는 DB 에서는 어느 조회 결과도 `0.1.40` 과 같습니다.**
+
+1. **읽기 규칙에서 옛 형식 갈래를 걷었습니다.** 그룹마다 (샘플, 버전, 그룹) 표식이 있으면 그 버전의 행, 없으면 공유 행을 읽습니다.
+   `0.1.40` 까지는 옛 형식 쌍을 「그 버전의 행만 읽고 공유 행은 전부 가림」으로 읽었고, 이제 그 쌍은 공유 행으로 보입니다. 버전
+   조회 · explorer · facet · seal 스냅샷 · 버전 비교가 모두 이 규칙을 따릅니다.
+2. **annotation 쓰기 · fork · 링크의 `from_version` 복사가 옛 형식을 변환하지 않습니다.** `0.1.40` 은 옛 형식 샘플에 처음 쓰거나 옛
+   형식 버전에서 fork · 복사할 때 모든 그룹에 표식을 넣어 그 내용을 이어받게 했습니다. 이제 쓰기는 바뀐 그룹에만 표식을 남기고,
+   fork · 복사는 행 · 표식을 그대로 복제합니다. 지표 `nexus_annotation_instance_writes_total{mode="legacy_converted"}` 는 더 늘지 않습니다(시리즈는 `0` 으로 남습니다).
+3. **`compact-instances` 의 옛 형식 변환 단계가 없어졌습니다.** 결과 JSON 의 `legacy_pairs_converted` 는 늘 `0` 입니다. 읽히지 않는
+   버전 행을 지우는 단계가 「그 그룹의 표식이 없는 버전 행, 그 버전이 링크됐거나 표식이 있을 때」로 넓어져 링크된 옛 형식 쌍의 버전
+   행을 지웁니다(undo 기록에 남습니다). `legacy_pairs_remaining` 은 건너뛴 샘플의 쌍뿐 아니라 정리 뒤에도 남는 표식 없는 버전 행
+   (샘플, 버전) 을 모두 셉니다(`--keep-residue` 로 남긴 잔여 포함).
+4. **버전 결과를 읽는 SQL 에서 옛 형식 조건이 빠졌습니다.** explorer annotation 필터를 미리 해소하는 두 문장은 버전 행 쪽이 그룹 표식의
+   `EXISTS` 하나가 되고, 공유 행 쪽은 끝의 「그 (샘플, 버전) 에 버전 행이 없음」 조건이 빠집니다. 결과 전부를 보는 경로(전수 개수 ·
+   facet 개수 · 세션 계획 · subset 물질화 · by-filter 쓰기)와 일찍 멈추는 경로의 3 초 시도가 이 두 문장을 씁니다.
+   PostgreSQL 18 · instances 약 1.5 억 행(데이터가 PG 메모리의 약 10 배)인 측정 DB 에서 `0.1.40` 과 비교했습니다. 버전 비교가 읽은
+   버퍼는 generic 계획에서 0.57 배(254 → 210 초), seal 은 0.61 배(198 → 176 초)였고, explorer · facet · 쓰기 · fork 와 동시 실행
+   시나리오의 시간은 같은 수준이었습니다(3 초 시도에서 끊기는 explorer 목록 두 시나리오는 generic 계획에서 그 3 초 동안 읽은 버퍼가
+   2 ~ 3 배였습니다). facet 개수 한 시나리오(한 그룹 라벨의 전수 개수)는 버퍼가 1.40 배(0.53 → 0.79 초)였습니다.
+   동시 읽기 32(풀 16)는 두 판 모두 풀 획득 시한 초과 오류가 났고, 같은 판도 회차마다 65 ~ 164 건으로 흔들려 두 판을 가르지
+   못했습니다(두 번 잰 값 `0.1.40` 65 · 164, `0.1.41` 133 · 204). 동시 8 이하는 두 판 모두 오류가 없었습니다.
+
+**마이그레이션** — 없음. 롤백 안전(이미지 `0.1.40` 으로 되돌리면 1 ~ 4 가 이전으로 돌아갑니다. 옛 형식 쌍이 없는 DB 에서는 그동안
+`0.1.41` 이 쓴 데이터를 `0.1.40` 도 같은 내용으로 읽습니다).
+**설정 키** — 없음
+**호환성** — `0.1.40` 파드와 섞여 돌아도 됩니다(스키마가 같습니다). 옛 형식 쌍이 남아 있으면 교체 동안 그 쌍이 파드에 따라 다르게
+보입니다. 특정 SDK 버전을 요구하지 않습니다.
+**운영 조치** — 올리기 전에 링크된 옛 형식 쌍이 없어야 합니다.
+- `0.1.30` 이상의 `compact-instances --apply --all` 을 마쳤고, 그 실행의 `skipped` 가 모두 `0` 이며(`--resume` 으로 이었으면 이은
+  실행 **모두** — `--resume` 은 앞 실행이 끝낸 배치 안에서 건너뛴 샘플을 다시 보지 않습니다), 그 뒤 `0.1.29` 이하 이미지로 되돌리거나
+  DB 를 그 전 시점으로 복원하지 않았으면 할 일이 없습니다. 그 판들의 정리는 처리한 샘플의 링크된 옛 형식 쌍을 모두 표식 형식으로 바꾸고
+  (링크가 끊긴 쌍은 `0.1.36` 까지는 바꾸고 `0.1.37` 부터는 `--keep-residue` 가 아니면 지웁니다), `0.1.30` ~ `0.1.40` 의 쓰기 · fork ·
+  링크의 `from_version` 복사는 옛 형식을 새로 만들지 않습니다.
+- 그렇지 않으면 `0.1.40` 에서 아래 질의가 `0` 인지 봅니다. `0` 이 아니면 **`0.1.40` 의** `compact-instances`(dry-run 뒤 `--apply`)로
+  표식 형식으로 바꾼 뒤 올립니다. `0.1.41` 의 정리는 그 쌍의 버전 행을 지우므로 먼저 돌리지 않습니다. 읽기 전용이라 복제본에서
+  돌려도 되고, 비용은 instances 의 버전 행 수를 따릅니다(`ops-indexes` 의 `instance-version` 인덱스가 있으면 그 인덱스만 읽습니다).
+
+  ```sql
+  SELECT count(*) AS legacy_pairs
+  FROM (
+      SELECT DISTINCT i.dataset_version_id, i.sample_id
+      FROM instances i
+      WHERE i.dataset_version_id IS NOT NULL
+        AND EXISTS (SELECT 1 FROM dataset_version_samples l
+                    WHERE l.dataset_version_id = i.dataset_version_id AND l.sample_id = i.sample_id)
+        AND NOT EXISTS (SELECT 1 FROM instance_overrides o
+                        WHERE o.sample_id = i.sample_id AND o.dataset_version_id = i.dataset_version_id)
+  ) x;
+  ```
+
+- 되돌릴 때는 `image.tag` 를 `0.1.40` 으로 바꿉니다.
+
 ## 0.3.34
 
 image: `int2jieun/nexus-server:0.1.39` → `int2jieun/nexus-server:0.1.40`
@@ -487,7 +545,7 @@ digest: `sha256:e8ef4c61380c97f4d8683f5a09ae824de872aee4e528501459fc4a575df72f7e
   `autovacuum_analyze_scale_factor = 0.01`) — 대량 사본 쓰기 직후 통계가 비어 계획이 나빠지지 않게 합니다.
 - **예상 소요시간** — 행 수와 무관하게 표 생성만입니다(수 초 이내, 샘플 150 만 DB 에서 56 ms).
 - **롤백** — 사본·관측이 생긴 뒤에는 데이터를 잃습니다. 절차와 SQL 은 차트 README
-  [되돌리기 › 039 가 적용된 DB](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.34/charts/nexus-server/README.md#039-가-적용된-db) 이고, **파드를 0 개로 내린 뒤** SQL 을 돌리고 이전 판 리비전으로
+  [되돌리기 › 039 가 적용된 DB](https://github.com/int2nexus/cas-server/blob/nexus-server-0.3.35/charts/nexus-server/README.md#039-가-적용된-db) 이고, **파드를 0 개로 내린 뒤** SQL 을 돌리고 이전 판 리비전으로
   `helm rollback` 합니다(파드를 0 개로 내리므로 rollback 전에 Recreate 로 바꿀 필요는 없습니다. helm 4 면 rollback 뒤 README 되돌리기 4 대로 RollingUpdate 로
   되돌립니다). 파드가 떠 있는 채 SQL 을 돌리면 그 파드가 재시작하며
   039 를 다시 적용합니다. `0.1.33` ~ `0.1.36` 으로 되돌릴 때는 039 만 걷습니다. 잃는 것과 미리 떠 둘 것(사본 표 내보내기)은 그 절에
