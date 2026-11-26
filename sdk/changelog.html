@@ -18,6 +18,15 @@ h2{border-bottom:1px solid #d0d7de;padding-bottom:4px;margin-top:2em}
 </code></pre>
 <p><code>scripts/publish_sdk.py</code> 는 <code>sdk/pyproject.toml</code> 의 버전과 같은 <code>## &lt;버전&gt;</code> 절이 이 파일에 없으면
 빌드하지 않고 멈춥니다. 최신 버전이 위로 오게 적습니다.</p>
+<h2>0.1.32</h2>
+<ul>
+<li><strong>로그인이 <code>404</code> 이면 메시지가 <code>nexus_url</code> 을 확인하라고 알려 줍니다.</strong> <code>Login failed (404): &lt;본문&gt;</code> 뒤에 요청한 주소와
+  「<code>nexus_url</code> 이 nexus-server API 주소인지, 앞단(nexus-client 등)이 떼고 넘기는 경로 접두어(예: <code>/api</code>)까지 적었는지」 안내가
+  붙습니다. 그 메시지의 본문은 앞 200 자까지이고(전체는 <code>server_message</code>) 주소에는 <code>nexus_url</code> 의 사용자 · 비밀번호를 싣지 않습니다.
+  다른 상태 코드의 메시지는 그대로입니다. 예외 타입(<code>NexusAuthError</code>)과 <code>status_code</code> 도 같습니다.</li>
+<li><strong>문서.</strong> <code>nexus_url</code> 의 뜻(nexus-server 가 받는 경로의 기준 주소)과 nexus-client 를 거칠 때의 예(<code>http://&lt;nexus-client 주소&gt;/api</code>)를
+  <code>README.md</code>·<code>usage.md</code> 에 적었습니다.</li>
+</ul>
 <h2>0.1.31</h2>
 <ul>
 <li><strong>호환성(중요): annotation 쓰기는 객체로만 합니다 — dict 를 받는 쓰기를 공개 API 에서 뺐습니다.</strong> 빠진 것과 대신 쓰는 것:

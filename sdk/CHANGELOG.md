@@ -9,6 +9,15 @@ pip install --extra-index-url https://int2nexus.github.io/cas-server/sdk/simple/
 `scripts/publish_sdk.py` 는 `sdk/pyproject.toml` 의 버전과 같은 `## <버전>` 절이 이 파일에 없으면
 빌드하지 않고 멈춥니다. 최신 버전이 위로 오게 적습니다.
 
+## 0.1.32
+
+- **로그인이 `404` 이면 메시지가 `nexus_url` 을 확인하라고 알려 줍니다.** `Login failed (404): <본문>` 뒤에 요청한 주소와
+  「`nexus_url` 이 nexus-server API 주소인지, 앞단(nexus-client 등)이 떼고 넘기는 경로 접두어(예: `/api`)까지 적었는지」 안내가
+  붙습니다. 그 메시지의 본문은 앞 200 자까지이고(전체는 `server_message`) 주소에는 `nexus_url` 의 사용자 · 비밀번호를 싣지 않습니다.
+  다른 상태 코드의 메시지는 그대로입니다. 예외 타입(`NexusAuthError`)과 `status_code` 도 같습니다.
+- **문서.** `nexus_url` 의 뜻(nexus-server 가 받는 경로의 기준 주소)과 nexus-client 를 거칠 때의 예(`http://<nexus-client 주소>/api`)를
+  `README.md`·`usage.md` 에 적었습니다.
+
 ## 0.1.31
 
 - **호환성(중요): annotation 쓰기는 객체로만 합니다 — dict 를 받는 쓰기를 공개 API 에서 뺐습니다.** 빠진 것과 대신 쓰는 것:
